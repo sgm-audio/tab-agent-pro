@@ -1,0 +1,96 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
+tabagent_env/
+
+# PyTorch
+*.pth
+*.pt
+checkpoints/
+lightning_logs/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Project-specific
+input/
+output/
+user_memory/
+separated_stems/
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.m4a
+*.mid
+*.midi
+*.tab
+*.json
+!examples/*.wav
+!examples/*.mp3
+
+# Temporary files
+*.tmp
+*.bak
+*.log
+temp/
+tmp/
+*.cache
+
+# Model files (large files)
+models/
+*.onnx
+*.safetensors
+*.bin
+
+# Environment files
+.env
+.env.local
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Gradio/HF
+flagged/
+gradio_cached_examples/
+
+# ReaPack
+!index.xml
+!reaper/*.lua
