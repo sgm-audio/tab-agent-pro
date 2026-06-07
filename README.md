@@ -4,21 +4,9 @@ emoji: 🎸
 colorFrom: blue
 colorTo: purple
 sdk: gradio
-sdk_version: 4.50.0
+sdk_version: 4.44.1
 app_file: app.py
-pinned: true
 license: mit
-tags:
-  - music
-  - audio
-  - transcription
-  - guitar
-  - bass
-  - tablature
-  - basic-pitch
-  - music-information-retrieval
-models: []
-datasets: []
 ---
 
 # 🎸 Tab Agent - AI Tablature Transcription (MVP)
