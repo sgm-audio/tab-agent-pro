@@ -345,4 +345,4 @@ AI-powered transcription for guitar and bass using **Basic Pitch** (Spotify's pr
 if __name__ == "__main__":
     demo = create_ui()
     demo.queue()  # Enable queuing for progress tracking
-    demo.launch()
+    demo.launch(server_name="0.0.0.0")
