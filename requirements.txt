@@ -13,5 +13,6 @@ scipy>=1.11.0
 
 # MIDI handling
 pretty-midi==0.2.10
+note-seq==0.0.5
 
 # Gradio is handled by HF Spaces runtime
