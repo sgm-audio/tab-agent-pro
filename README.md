@@ -14,6 +14,12 @@ license: mit
 
 Upload an audio file and get accurate, playable tablature with technique detection and optimal fingering!
 
+## 🚀 Try It Now
+
+**Live on HuggingFace Spaces:** [scottymills-tab-agent-pro.hf.space](https://scottymills-tab-agent-pro.hf.space)
+
+Upload an audio file, select Guitar or Bass, and get tablature in seconds.
+
 ## ✨ Features
 
 - 🤖 **Basic Pitch AI Model** - Spotify's proven production-ready transcription model
