@@ -6,7 +6,7 @@
 spaces
 
 # Web Interface
-gradio>=4.50.0
+gradio
 
 # Core transcription (Basic Pitch with TensorFlow)
 basic-pitch==0.3.2
