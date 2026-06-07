@@ -14,6 +14,15 @@ license: mit
 
 Upload an audio file and get accurate, playable tablature with technique detection and optimal fingering!
 
+## ⏱️ Processing Times
+
+Audio transcription runs on CPU (free tier). Expect:
+- **30-second clip:** ~15 seconds
+- **3-minute song:** ~90 seconds
+- **Full-length track:** 2-4 minutes
+
+Processing is slower than GPU-accelerated services but completely free. Grab a coffee while it works. ☕
+
 ## 🚀 Try It Now
 
 **Live on HuggingFace Spaces:** [scottymills-tab-agent-pro.hf.space](https://scottymills-tab-agent-pro.hf.space)
