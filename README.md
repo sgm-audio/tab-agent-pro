@@ -3,9 +3,8 @@ title: Tab Agent - AI Tablature Transcription (MVP)
 emoji: 🎸
 colorFrom: blue
 colorTo: purple
-sdk: gradio
-sdk_version: 4.44.1
-app_file: app.py
+sdk: docker
+app_file: DOCKERFILE.dockerfile
 license: mit
 ---
 

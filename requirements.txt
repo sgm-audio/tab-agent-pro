@@ -1,18 +1,17 @@
-# Tab Agent MVP - Hugging Face Spaces Requirements
-# Optimized for CPU-basic deployment
+# Tab Agent MVP - Docker Space Requirements
+gradio>=4.0.0
 
-# Core transcription (Basic Pitch with ONNX backend, no TF needed)
+# Core transcription (Basic Pitch with TensorFlow)
 basic-pitch==0.3.2
+tensorflow>=2.4.1,<2.16.0
+numpy<2.0
 
 # Audio processing
 librosa==0.10.2
 soundfile==0.12.1
 scipy>=1.11.0
-numpy
 
 # MIDI handling
 pretty-midi==0.2.10
 
-# No TensorFlow - Basic Pitch falls back to ONNX runtime on CPU
-# No Demucs - too heavy for free CPU tier (add with ZeroGPU later)
-# No PyTorch - not needed for Basic Pitch transcription
+# Gradio is handled by HF Spaces runtime
