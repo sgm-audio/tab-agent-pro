@@ -8,12 +8,17 @@ Optimized for Zero GPU deployment with Basic Pitch model.
 
 import os
 import sys
+import time
 import tempfile
 import zipfile
 from pathlib import Path
 from datetime import datetime
 import gradio as gr
 import numpy as np
+import json
+
+# Health checks & structured logging
+from monitoring import health, get_logger
 
 # Zero GPU support for faster processing
 try:
@@ -26,6 +31,7 @@ except ImportError:
 # Import Tab Agent modules
 from agents import SplitterAgent, EarAgent, TabAgent
 from main import export_tab_to_txt, export_tab_to_json
+from suno_postprocessor import process_suno_audio, SunoNotePostprocessor
 
 # Configuration
 TEMP_DIR = tempfile.gettempdir()
@@ -97,19 +103,38 @@ def _process_audio_impl(
         session_dir = OUTPUT_DIR / f"session_{timestamp}"
         session_dir.mkdir(exist_ok=True)
 
+        # Track processing time for ETA / README accuracy
+        start_time = time.time()
+
         # Get file info
         audio_path = Path(audio_file)
         song_name = audio_path.stem
 
         progress(0.1, desc="🎵 Initializing agents...")
 
+        # Stage 0: Suno artifact detection and preprocessing
+        progress(0.15, desc="🔍 Analyzing audio quality...")
+        processed_audio, is_suno, suno_metrics = process_suno_audio(
+            str(audio_path),
+            output_path=str(session_dir / f"{song_name}_processed.wav")
+        )
+
+        # Adjust thresholds for AI-generated audio
+        if is_suno:
+            onset_threshold = 0.6
+            frame_threshold = 0.4
+        else:
+            onset_threshold = 0.5
+            frame_threshold = 0.3
+
         # Initialize agents (auto-detects GPU via Zero GPU)
         splitter = SplitterAgent(output_dir=str(session_dir / "stems"))
         ear = EarAgent(device="auto")  # Auto-detect: GPU if available, else CPU
+        suno_postprocessor = SunoNotePostprocessor()
 
         # Stage 1-3: Stem separation and processing
         progress(0.2, desc="🎵 Separating audio stems (Demucs)...")
-        stems = splitter.separate_stems(str(audio_path))
+        stems = splitter.separate_stems(processed_audio)
 
         progress(0.3, desc="🎸 Processing guitar stems...")
         if instrument_type == "Guitar":
@@ -124,7 +149,7 @@ def _process_audio_impl(
             processed_stems = {"bass": bass_clean}
 
         # Stage 4: Transcription
-        progress(0.5, desc="🎸 Transcribing to MIDI (Basic Pitch)...")
+        progress(0.5, desc="🎸 Transcribing to MIDI...")
 
         results = {}
         for stem_name, stem_path in processed_stems.items():
@@ -134,12 +159,16 @@ def _process_audio_impl(
             # Transcribe
             notes_raw = ear.transcribe_stem(
                 stem_path,
-                target=instrument_type
+                target=instrument_type,
+                onset_threshold=onset_threshold,
+                frame_threshold=frame_threshold,
             )
             notes_clean = ear.humanize_and_clean(
                 notes_raw,
                 is_bass=(instrument_type == "Bass")
             )
+            # Apply Suno post-processing if needed
+            notes_clean = suno_postprocessor.process(notes_clean, is_suno, suno_metrics)
 
             # Export MIDI
             if include_midi:
@@ -189,6 +218,7 @@ def _process_audio_impl(
         progress(1.0, desc="✅ Complete!")
 
         # Generate status message
+        elapsed = time.time() - start_time
         file_count = len(list(session_dir.glob("*.*"))) - 1  # Exclude zip
         status_msg = f"""
 ✅ **Transcription Complete!**
@@ -196,6 +226,7 @@ def _process_audio_impl(
 - **Song**: {song_name}
 - **Instrument**: {instrument_type}
 - **Files Generated**: {file_count}
+- **Processing Time**: {elapsed:.1f}s
 - **Formats**: {', '.join([
     'MIDI' if include_midi else '',
     'Tab' if include_tab else '',
@@ -317,9 +348,9 @@ AI-powered transcription for guitar and bass using **Basic Pitch** (Spotify's pr
 
         with gr.Accordion("🔗 Links & Resources", open=False):
             gr.Markdown("""
-- **GitHub**: [Tab-Agent Repository](https://github.com/YOUR_USERNAME/Tab-Agent)
-- **ReaPack**: [Install for Reaper](https://github.com/YOUR_USERNAME/Tab-Agent#reaper-integration)
-- **Documentation**: [Full Guide](https://github.com/YOUR_USERNAME/Tab-Agent/blob/main/README.md)
+- **GitHub**: [Tab-Agent Repository](https://github.com/scottmills306/tab-agent-pro)
+- **ReaPack**: [Install for Reaper](https://github.com/scottmills306/tab-agent-pro#reaper-integration)
+- **Documentation**: [Full Guide](https://github.com/scottmills306/tab-agent-pro/blob/main/README.md)
 - **Basic Pitch**: [Spotify Research](https://github.com/spotify/basic-pitch)
 
 **License**: MIT | **Python**: 3.10+ | **Model**: Basic Pitch | **Acceleration**: Zero GPU
@@ -343,6 +374,27 @@ AI-powered transcription for guitar and bass using **Basic Pitch** (Spotify's pr
 
 # Main entry point
 if __name__ == "__main__":
+    import uvicorn
+    from fastapi import FastAPI
+    from fastapi.middleware.wsgi import WSGIMiddleware
+    import threading
+
     demo = create_ui()
-    demo.queue()  # Enable queuing for progress tracking
-    demo.launch(server_name="0.0.0.0")
+    demo.queue()
+
+    # Create a parent FastAPI app that mounts Gradio + health endpoints
+    parent_app = FastAPI()
+
+    @parent_app.get("/health")
+    async def health_endpoint():
+        return health.as_dict()
+
+    @parent_app.get("/health/metrics")
+    async def metrics_endpoint():
+        from monitoring import default_metrics
+        return default_metrics.summary()
+
+    # Mount Gradio under the parent app
+    parent_app = gr.mount_gradio_app(parent_app, demo, path="/")
+
+    uvicorn.run(parent_app, host="0.0.0.0", port=7860)

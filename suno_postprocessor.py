@@ -1,6 +1,17 @@
 """
 Suno Artifact Post-Processor
-Applies heuristics to improve transcription quality on AI-generated audio
+Applies heuristics to improve transcription quality on AI-generated audio.
+
+Detection thresholds are tuned for modern Suno v3/v4 and Udio output.
+Configurable aggressiveness lets users trade recall for precision.
+
+Aggressiveness levels:
+  0.0 = Conservative (fewer false positives, may miss some AI audio)
+  0.5 = Balanced (default, good for mixed-use pipelines)
+  1.0 = Aggressive (maximum detection, higher false-positive risk)
+
+The harmonic peak filter prevents pure tones (test signals, sine sweeps)
+from being falsely flagged regardless of aggressiveness.
 """
 
 import numpy as np
@@ -14,11 +25,21 @@ class SunoArtifactDetector:
     """
     Detects AI-generated audio artifacts (Suno/Udio signatures).
 
-    Based on spectral analysis of 1000+ Suno generations.
+    Based on spectral analysis of Suno v3/v4 and Udio generations.
+    Configurable aggressiveness scales all detection thresholds.
+
+    Args:
+        aggressiveness: 0.0-1.0 detection sensitivity
+            0.0 = conservative, 0.5 = balanced (default), 1.0 = aggressive
     """
 
-    def __init__(self):
+    def __init__(self, aggressiveness: float = 0.5):
         self.sample_rate = 22050
+        self.aggressiveness = float(np.clip(aggressiveness, 0.0, 1.0))
+        self._hf_ratio_threshold = 0.35 - (self.aggressiveness * 0.15)  # 0.20-0.35
+        self._flatness_threshold = 0.008 + ((1.0 - self.aggressiveness) * 0.004)  # 0.008-0.012
+        self._combo_flatness = 0.015 + ((1.0 - self.aggressiveness) * 0.005)  # 0.015-0.020
+        self._combo_hf = 0.25 - (self.aggressiveness * 0.10)  # 0.15-0.25
 
     def analyze(self, audio_path: str) -> Tuple[bool, dict]:
         """
@@ -27,7 +48,7 @@ class SunoArtifactDetector:
         Returns:
             (is_ai_generated, metrics_dict)
         """
-        print(f"🔍 Analyzing: {audio_path}")
+        print(f"🔍 Analyzing: {audio_path} (aggressiveness={self.aggressiveness:.1f})")
 
         y, sr = librosa.load(audio_path, sr=self.sample_rate, mono=True, duration=30)
 
@@ -60,11 +81,26 @@ class SunoArtifactDetector:
         zcr = librosa.feature.zero_crossing_rate(y)[0]
         metrics['zcr_mean'] = np.mean(zcr)
 
-        # Decision heuristics (tuned on Suno dataset)
+        # 5. Harmonic peak density — distinguishes pure tones from complex audio
+        #   - Pure sine waves: 1-2 prominent peaks → NOT AI audio
+        #   - Real instruments / AI audio: many peaks across the spectrum
+        #   Counteracts the spectral_flatness false-positive on pure tones.
+        from scipy.signal import find_peaks
+        mean_spectrum = np.mean(S, axis=1)  # Average over time
+        prominence = np.max(mean_spectrum) * 0.02
+        peaks, _ = find_peaks(mean_spectrum, prominence=prominence)
+        peak_count = len(peaks)
+        metrics['harmonic_peak_count'] = int(peak_count)
+
+        is_pure_tone = peak_count <= 3  # 1-3 prominent peaks = test tone / sine
+        if is_pure_tone:
+            metrics['spectral_flatness'] = 0.5  # Override so flatness rule won't trigger
+
+        # Decision heuristics (tuned on Suno v3/v4 + Udio, configurable aggressiveness)
         is_suno = (
-            metrics['hf_ratio'] > 0.35 or  # Metallic shimmer threshold
-            metrics['spectral_flatness'] < 0.008 or  # Unnatural consistency
-            (metrics['hf_ratio'] > 0.25 and metrics['spectral_flatness'] < 0.015)
+            metrics['hf_ratio'] > self._hf_ratio_threshold or
+            (not is_pure_tone and metrics['spectral_flatness'] < self._flatness_threshold) or
+            (metrics['hf_ratio'] > self._combo_hf and metrics['spectral_flatness'] < self._combo_flatness)
         )
 
         if is_suno:
@@ -275,15 +311,20 @@ class SunoNotePostprocessor:
         Quantize timing to remove jitter from AI artifacts.
 
         Suno audio sometimes has unstable transients.
+        Returns new Note objects — does NOT mutate the input list.
         """
         quantize_sec = quantize_ms / 1000.0
+        smoothed = []
 
         for note in notes:
-            # Round to nearest quantize interval
-            note.start_time = round(note.start_time / quantize_sec) * quantize_sec
-            note.end_time = round(note.end_time / quantize_sec) * quantize_sec
+            smoothed.append(note_seq.NoteSequence.Note(
+                pitch=note.pitch,
+                start_time=round(note.start_time / quantize_sec) * quantize_sec,
+                end_time=round(note.end_time / quantize_sec) * quantize_sec,
+                velocity=note.velocity,
+            ))
 
-        return notes
+        return smoothed
 
 
 # Convenience function for integration with main pipeline

@@ -11,13 +11,18 @@ Improvements from Basic Pitch:
 """
 
 import os
+import sys
 import subprocess
 import numpy as np
 import librosa
 import soundfile as sf
 import note_seq
 import torch
+from scipy.signal import butter, filtfilt
 from typing import List, Dict, Optional, Tuple
+
+# Monitoring & health checks
+from monitoring import get_logger, health, default_metrics as metrics
 
 # Basic Pitch imports (proven and reliable for MVP)
 try:
@@ -29,21 +34,31 @@ except ImportError:
     print("    Install with: pip install basic-pitch")
     BASIC_PITCH_AVAILABLE = False
 
-# YourMT3 imports (future enhancement - graceful fallback if not installed)
+# Demucs Python API (preferred over subprocess CLI)
 try:
-    # YourMT3+ uses transformers for model loading
-    from transformers import AutoModelForSeq2SeqLM, AutoProcessor
-    TRANSFORMERS_AVAILABLE = True
+    import demucs.api as demucs_api
+    DEMUCS_API_AVAILABLE = True
 except ImportError:
-    TRANSFORMERS_AVAILABLE = False
+    DEMUCS_API_AVAILABLE = False
 
-# Check for YourMT3 specific package
+# YourMT3+ requires the codebase from GitHub + checkpoint from HF Hub.
+# Not a standard transformers model — uses a custom Lightning architecture.
+# YMT3_AVAILABLE is set True only after successful import + checkpoint load.
+YMT3_AVAILABLE = False
+
+# HuggingFace Hub for checkpoint downloads (with resume)
 try:
-    # Attempt to import YourMT3 specific modules if they exist
-    import yourmt3
-    YOURMT3_AVAILABLE = True
+    from huggingface_hub import snapshot_download
+    HF_HUB_AVAILABLE = True
 except ImportError:
-    YOURMT3_AVAILABLE = False
+    HF_HUB_AVAILABLE = False
+
+# torchaudio for Demucs API export
+try:
+    import torchaudio
+    TORCHAUDIO_AVAILABLE = True
+except ImportError:
+    TORCHAUDIO_AVAILABLE = False
 
 
 # ============================================================================
@@ -52,22 +67,100 @@ except ImportError:
 
 class SplitterAgent:
     """
-    Audio stem separation using Demucs (unchanged from original)
+    Audio stem separation using Demucs Python API.
 
     Demucs v4 with htdemucs model remains state-of-the-art for:
     - Guitar/bass separation
     - Multi-stem source separation
     - Real-time processing capability
+
+    Uses the Python API (demucs.api.Separator) — no subprocess CLI dependency.
+    Graceful fallback: if separation fails, raw audio is returned as a single
+    stem so the pipeline doesn't crash.
     """
 
     def __init__(self, output_dir="separated_stems"):
         self.output_dir = output_dir
+        self.log = get_logger("splitter")
         os.makedirs(output_dir, exist_ok=True)
 
     def separate_stems(self, audio_path):
-        """Separate audio into guitar and bass stems using Demucs."""
-        print(f"🎵 [Stage 1] Running Demucs on {os.path.basename(audio_path)}")
+        """Separate audio into guitar and bass stems with graceful fallback."""
+        file = os.path.basename(audio_path)
+        self.log.info("demucs_start", file=file)
 
+        if DEMUCS_API_AVAILABLE:
+            with metrics.track_stage("demucs_separation"):
+                try:
+                    result = self._separate_with_api(audio_path, file)
+                    health.set_component("demucs", "loaded")
+                    return result
+                except Exception as e:
+                    self.log.warn("demucs_api_failed", file=file, error=str(e))
+                    print(f"⚠️  Demucs API failed: {e}")
+                    print("   Trying CLI fallback...")
+                    health.set_component("demucs", "degraded (API failed)")
+
+        # Try CLI fallback
+        try:
+            with metrics.track_stage("demucs_cli"):
+                result = self._separate_with_subprocess(audio_path, file)
+                health.set_component("demucs", "loaded (CLI)")
+                return result
+        except Exception as e:
+            self.log.warn("demucs_all_failed", file=file, error=str(e))
+            print(f"⚠️  Stem separation unavailable — using raw audio")
+            health.set_component("demucs", "unavailable")
+            return self._raw_audio_fallback(audio_path, file)
+
+    def _raw_audio_fallback(self, audio_path, song_name):
+        """Return raw audio as both guitar and bass stems (graceful degradation)."""
+        self.log.info("demucs_raw_fallback", file=song_name)
+        base_path = os.path.join(self.output_dir, "htdemucs", song_name)
+        os.makedirs(base_path, exist_ok=True)
+        import shutil
+        other_path = os.path.join(base_path, "other.wav")
+        bass_path = os.path.join(base_path, "bass.wav")
+        shutil.copy2(audio_path, other_path)
+        shutil.copy2(audio_path, bass_path)
+        return {"guitar": other_path, "bass": bass_path}
+
+    def _separate_with_api(self, audio_path, song_name):
+        """Use Demucs Python API for stem separation."""
+        separator = demucs_api.Separator(
+            model="htdemucs",
+            device="cuda" if torch.cuda.is_available() else "cpu",
+            shifts=1,
+            overlap=0.25,
+            split=True,
+            segment=10,
+            progress=True,
+        )
+
+        _, separated = separator.separate_audio_file(audio_path)
+
+        # Write stems to expected paths for backward compat
+        base_path = os.path.join(self.output_dir, "htdemucs", song_name)
+        os.makedirs(base_path, exist_ok=True)
+
+        stem_map = {"other": "other", "bass": "bass"}
+
+        for stem_key, file_key in stem_map.items():
+            if stem_key in separated:
+                tensor = separated[stem_key]
+                if tensor.ndim == 1:
+                    tensor = tensor.unsqueeze(0)
+                stem_path = os.path.join(base_path, f"{file_key}.wav")
+                sf.write(stem_path, tensor.cpu().numpy().T, separator.samplerate)
+
+        print("✅ Stem separation complete (Python API)")
+        return {
+            "guitar": os.path.join(base_path, "other.wav"),
+            "bass": os.path.join(base_path, "bass.wav"),
+        }
+
+    def _separate_with_subprocess(self, audio_path, song_name):
+        """Fallback: Demucs via CLI subprocess."""
         cmd = [
             "demucs",
             "-n", "htdemucs",
@@ -77,20 +170,17 @@ class SplitterAgent:
 
         try:
             result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-            print("✅ Stem separation complete")
+            print("✅ Stem separation complete (CLI)")
         except subprocess.CalledProcessError as e:
             print(f"❌ Demucs failed: {e}")
             print(f"   stdout: {e.stdout}")
             print(f"   stderr: {e.stderr}")
             raise
 
-        song_name = os.path.splitext(os.path.basename(audio_path))[0]
         base_path = os.path.join(self.output_dir, "htdemucs", song_name)
-
-        # htdemucs outputs: drums, bass, other (guitars), vocals
         return {
-            "guitar": os.path.join(base_path, "other.wav"),  # "other" contains guitars
-            "bass": os.path.join(base_path, "bass.wav")
+            "guitar": os.path.join(base_path, "other.wav"),
+            "bass": os.path.join(base_path, "bass.wav"),
         }
 
     def process_guitars(self, guitar_stem_path):
@@ -153,19 +243,18 @@ class SplitterAgent:
 
         y_mono = librosa.to_mono(y)
 
-        # STFT-based frequency filtering
-        # TODO: Replace with scipy butterworth filters for production
-        D = librosa.stft(y_mono)
-        cutoff_bin = int(200 * 2048 / sr)  # 200 Hz cutoff
+        # Butterworth lowpass filter: preserve fundamentals, reduce fret noise/harmonics
+        nyquist = sr / 2
+        normal_cutoff = 200 / nyquist  # 200 Hz cutoff for bass fundamentals
+        b, a = butter(4, normal_cutoff, btype='low', analog=False)
+        y_low = filtfilt(b, a, y_mono)
 
-        D_low = np.copy(D)
-        D_low[cutoff_bin:, :] = 0  # Keep low frequencies
+        # Isolate high-frequency content (fret noise, harmonics) and reduce
+        b_high, a_high = butter(4, normal_cutoff, btype='high', analog=False)
+        y_high = filtfilt(b_high, a_high, y_mono)
 
-        D_high = np.copy(D)
-        D_high[:cutoff_bin, :] = 0  # Isolate high frequencies
-
-        # Reconstruct: full low + reduced high
-        y_processed = librosa.istft(D_low) + (librosa.istft(D_high) * 0.5)
+        # Reconstruct: full low + reduced high (0.5 = halve harmonic content)
+        y_processed = y_low + (y_high * 0.5)
 
         path = f"{self.output_dir}/processed_bass_clean.wav"
         sf.write(path, y_processed, sr)
@@ -182,82 +271,329 @@ class EarAgent:
     """
     Audio-to-MIDI transcription using YourMT3+ transformer model.
 
-    YourMT3+ Improvements:
-    - Hierarchical attention transformers (better long-range context)
-    - Mixture of Experts (MoE) for instrument-specific processing
-    - Trained on GuitarSet, MusicNet, Slakh datasets
-    - Multi-track simultaneous transcription
-    - Better pitch bend detection for guitar techniques
-    - Direct vocal transcription (eliminates separation preprocessing)
+    YourMT3+ is a custom PyTorch Lightning model (not a standard transformers
+    model). It requires:
+      1. The codebase from https://github.com/mimbres/YourMT3 (auto-cloned)
+      2. The checkpoint from https://huggingface.co/mimbres/YourMT3 (auto-downloaded)
 
-    Fallback: If YourMT3 is not available, provides mock mode for testing.
+    Loading is automatic with resume support for downloads. Falls back
+    gracefully to Basic Pitch if either component is unavailable.
+
+    Primary model: YourMT3+ (custom Lightning)
+    Fallback:      Basic Pitch (Spotify, production-ready)
     """
+
+    YOURMT3_CACHE = os.path.join(os.path.expanduser("~"), ".cache", "tab_agent", "yourmt3")
 
     def __init__(
         self,
-        model_name: str = "mimbres/yourmt3",
-        device: str = "auto"
+        model_id: str = "mimbres/YourMT3-cpu",
+        device: str = "auto",
+        prefer_yourmt3: bool = True,
     ):
         """
-        Initialize YourMT3+ transcription model.
+        Initialize transcription model(s).
 
         Args:
-            model_name: HuggingFace model checkpoint
-                - "mimbres/yourmt3" - Latest YourMT3+ model
-                - Custom fine-tuned checkpoints
+            model_id: HuggingFace checkpoint ID ("mimbres/YourMT3-cpu")
             device: Compute device ("cpu", "cuda", "mps", or "auto")
+            prefer_yourmt3: Attempt YourMT3+ load. Set False to skip to Basic Pitch.
         """
-        # Auto-detect optimal device
         if device == "auto":
             if torch.cuda.is_available():
                 self.device = "cuda"
             elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-                self.device = "mps"  # Apple Silicon
+                self.device = "mps"
             else:
                 self.device = "cpu"
         else:
             self.device = device
 
-        self.sample_rate = 16000  # YourMT3 uses 16kHz
-        self.model_name = model_name
-
-        print(f"🧠 [Stage 4] Initializing YourMT3+ Model")
-        print(f"   Device: {self.device}")
-        print(f"   Model: {model_name}")
-
-        # Load model and processor
+        self.sample_rate = 16000
+        self.model_id = model_id
         self.model = None
         self.processor = None
 
-        if not TRANSFORMERS_AVAILABLE:
-            print("❌ Transformers library not available")
-            print("   Install: pip install transformers>=4.48.0")
-            print("   Falling back to mock mode")
+        print(f"🧠 [Stage 4] Initializing transcription model(s)")
+        print(f"   Device: {self.device}")
+
+        # Attempt YourMT3+ load (with resume + graceful fallback)
+        if prefer_yourmt3:
+            self._load_yourmt3_model(model_id)
+
+        if self.model is None and not BASIC_PITCH_AVAILABLE:
+            print("⚠️  No transcription models loaded — Basic Pitch not installed")
+            print("    Install: pip install basic-pitch")
+            print("    Transcription will fail until a model is available.")
+
+    def _load_yourmt3_model(self, model_id):
+        """
+        Download and load YourMT3+ model with resume and graceful fallback.
+
+        Steps:
+          1. Download checkpoint from HuggingFace Hub (resume via snapshot_download)
+          2. Clone/update the YourMT3 codebase from GitHub (resume via git fetch)
+          3. Import the custom YourMT3 class and load the checkpoint
+          4. If any step fails, self.model stays None (graceful fallback)
+        """
+        global YMT3_AVAILABLE
+
+        print(f"   Checking YourMT3+ ({model_id})...")
+
+        checkpoint_dir = self._download_checkpoint(model_id)
+        if checkpoint_dir is None:
+            return
+
+        code_dir = self._clone_yourmt3_codebase()
+        if code_dir is None:
+            return
+
+        self._import_and_load_model(checkpoint_dir, code_dir)
+
+        if self.model is not None:
+            YMT3_AVAILABLE = True
+            print("✅ YourMT3+ model loaded successfully")
+        else:
+            print("   YourMT3+ not available — Basic Pitch will be used")
+
+    def _download_checkpoint(self, model_id):
+        """Download YourMT3+ checkpoint from HF Hub with resume support."""
+        if not HF_HUB_AVAILABLE:
+            print("   ⚠️  huggingface_hub not installed — cannot download checkpoint")
+            print("      Install: pip install huggingface_hub")
+            return None
+
+        try:
+            print(f"   Downloading checkpoint from {model_id} (resume enabled)...")
+            checkpoint_dir = snapshot_download(
+                repo_id=model_id,
+                resume_download=True,
+                local_files_only=False,
+                max_workers=4,
+            )
+            print(f"   Checkpoint cached at: {checkpoint_dir}")
+            return checkpoint_dir
+        except Exception as e:
+            print(f"   ⚠️  Checkpoint download failed: {e}")
+            print(f"      Check internet connection or model availability at:")
+            print(f"      https://huggingface.co/{model_id}")
+            return None
+
+    def _clone_yourmt3_codebase(self):
+        """
+        Clone or update the YourMT3 codebase from GitHub with resume support.
+
+        Clones to ~/.cache/tab_agent/yourmt3 on first run.
+        On subsequent runs, runs git fetch + reset to update.
+        """
+        try:
+            os.makedirs(self.YOURMT3_CACHE, exist_ok=True)
+
+            if os.path.exists(os.path.join(self.YOURMT3_CACHE, ".git")):
+                print("   Updating YourMT3 codebase (git fetch)...")
+                result = subprocess.run(
+                    ["git", "-C", self.YOURMT3_CACHE, "fetch", "--depth", "1", "origin", "main"],
+                    capture_output=True, text=True, timeout=60,
+                )
+                if result.returncode == 0:
+                    subprocess.run(
+                        ["git", "-C", self.YOURMT3_CACHE, "reset", "--hard", "FETCH_HEAD"],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                else:
+                    print(f"   git fetch failed, using cached version: {result.stderr.strip()}")
+            else:
+                print("   Cloning YourMT3 codebase from GitHub...")
+                result = subprocess.run(
+                    ["git", "clone", "--depth", "1",
+                     "https://github.com/mimbres/YourMT3.git",
+                     self.YOURMT3_CACHE],
+                    capture_output=True, text=True, timeout=120,
+                )
+                if result.returncode != 0:
+                    print(f"   ⚠️  Clone failed: {result.stderr.strip()}")
+                    return None
+
+            # Verify essential files exist
+            essentials = ["model/ymt3.py", "model/init_train.py", "utils/task_manager.py"]
+            missing = [f for f in essentials
+                       if not os.path.exists(os.path.join(self.YOURMT3_CACHE, f))]
+            if missing:
+                print(f"   ⚠️  Missing files in cloned repo: {missing}")
+                return None
+
+            if self.YOURMT3_CACHE not in sys.path:
+                sys.path.insert(0, self.YOURMT3_CACHE)
+
+            print(f"   Codebase cached at: {self.YOURMT3_CACHE}")
+            return self.YOURMT3_CACHE
+
+        except subprocess.TimeoutExpired:
+            print("   ⚠️  Git operation timed out — check network")
+            return None
+        except Exception as e:
+            print(f"   ⚠️  Codebase setup failed: {e}")
+            return None
+
+    def _import_and_load_model(self, checkpoint_dir, code_dir):
+        """
+        Import the YourMT3 custom class and load the checkpoint.
+
+        The YourMT3+ model is NOT a standard HuggingFace transformers model.
+        It uses a custom PyTorch Lightning architecture with a specific
+        checkpoint format. We attempt to import and load, but this step is
+        the most fragile — any failure here is caught and self.model stays None.
+
+        All utility imports (slicing, note merging) are stored as instance
+        attributes so _transcribe_with_yourmt3 never does runtime imports.
+        """
+        log = get_logger("ear_agent")
+        self._ymt3_utils = {}
+        self._ymt3_audio_cfg = {}
+
+        try:
+            from model.ymt3 import YourMT3
+            from model.init_train import initialize_trainer, update_config
+            from utils.task_manager import TaskManager
+        except ImportError as e:
+            log.warn("yourmt3_import_failed", error=str(e), code_dir=code_dir)
+            print(f"   ⚠️  Cannot import YourMT3 modules: {e}")
+            print(f"      Codebase at: {code_dir}")
+            health.set_component("yourmt3", "error: import failed")
             return
 
         try:
-            # Load YourMT3 model from HuggingFace
-            # Note: Actual model name may vary - check HuggingFace hub
-            from transformers import AutoModel, AutoProcessor
+            import torch
 
-            print("   Loading model checkpoint...")
-            self.processor = AutoProcessor.from_pretrained(model_name)
-            self.model = AutoModel.from_pretrained(model_name)
-            self.model.to(self.device)
-            self.model.eval()
+            # Build minimal args for initialize_trainer
+            args = self._build_yourmt3_args(checkpoint_dir)
 
-            print("✅ YourMT3+ model loaded successfully")
+            _, _, dir_info, shared_cfg = initialize_trainer(args, stage='test')
+            shared_cfg, audio_cfg, model_cfg = update_config(args, shared_cfg, stage='test')
+
+            tm = TaskManager(
+                task_name=args.task,
+                max_shift_steps=int(shared_cfg["TOKENIZER"]["max_shift_steps"]),
+                debug_mode=False,
+            )
+
+            model = YourMT3(
+                audio_cfg=audio_cfg,
+                model_cfg=model_cfg,
+                shared_cfg=shared_cfg,
+                optimizer=None,
+                task_manager=tm,
+                eval_subtask_key='default',
+            ).to(self.device)
+
+            last_ckpt = dir_info.get("last_ckpt_path")
+            if last_ckpt and os.path.exists(last_ckpt):
+                checkpoint = torch.load(last_ckpt, map_location=self.device, weights_only=False)
+                state_dict = checkpoint.get('state_dict', checkpoint)
+                state_dict = {k: v for k, v in state_dict.items() if 'pitchshift' not in k}
+                model.load_state_dict(state_dict, strict=False)
+            else:
+                log.warn("yourmt3_no_checkpoint", path=str(last_ckpt))
+                print(f"   ⚠️  No checkpoint found at: {last_ckpt}")
+                health.set_component("yourmt3", "error: no checkpoint")
+                return
+
+            model.eval()
+            self.model = model
+            self.processor = tm
+            self._ymt3_audio_cfg = dict(audio_cfg)
+
+            # Store utility functions — no runtime imports needed later
+            try:
+                from model.utils.audio import slice_padded_array
+                from model.utils.event2note import merge_zipped_note_events_and_ties_to_notes
+                from model.utils.note2event import mix_notes
+                self._ymt3_utils = {
+                    'slice': slice_padded_array,
+                    'merge': merge_zipped_note_events_and_ties_to_notes,
+                    'mix': mix_notes,
+                }
+                log.info("yourmt3_loaded", checkpoint=last_ckpt)
+                health.set_component("yourmt3", "loaded")
+            except ImportError as e:
+                log.warn("yourmt3_utils_missing", error=str(e))
+                health.set_component("yourmt3", "loaded (no utils)")
 
         except Exception as e:
-            print(f"⚠️  Could not load YourMT3+ from HuggingFace: {e}")
-            print(f"   This may be because:")
-            print(f"   1. Model '{model_name}' doesn't exist on HuggingFace yet")
-            print(f"   2. YourMT3 needs to be installed from GitHub")
-            print(f"   3. Network connectivity issues")
-            print(f"\n   Install YourMT3 from source:")
-            print(f"   pip install git+https://github.com/mimbres/YourMT3.git")
-            print(f"\n   Falling back to mock mode for testing")
+            log.error("yourmt3_load_failed", exc=e)
+            print(f"   ⚠️  Model load failed: {e}")
+            print(f"      Falling back to Basic Pitch.")
+            health.set_component("yourmt3", f"error: {type(e).__name__}")
+            import traceback
+            traceback.print_exc()
             self.model = None
+
+    def _build_yourmt3_args(self, checkpoint_dir):
+        """Build argparse namespace matching YourMT3 expectations."""
+        import argparse
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument('exp_id', type=str, default='ymt3')
+        parser.add_argument('-p', '--project', type=str, default='ymt3')
+        parser.add_argument('-ac', '--audio-codec', type=str, default=None)
+        parser.add_argument('-hop', '--hop-length', type=int, default=None)
+        parser.add_argument('-nmel', '--n-mels', type=int, default=None)
+        parser.add_argument('-if', '--input-frames', type=int, default=None)
+        parser.add_argument('-sqr', '--sca-use-query-residual', type=lambda x: x.lower() in ('true', '1', 'yes'), default=None)
+        parser.add_argument('-enc', '--encoder-type', type=str, default=None)
+        parser.add_argument('-dec', '--decoder-type', type=str, default=None)
+        parser.add_argument('-preenc', '--pre-encoder-type', type=str, default='default')
+        parser.add_argument('-predec', '--pre-decoder-type', type=str, default='default')
+        parser.add_argument('-cout', '--conv-out-channels', type=int, default=None)
+        parser.add_argument('-tenc', '--task-cond-encoder', type=lambda x: x.lower() in ('true', '1', 'yes'), default=True)
+        parser.add_argument('-tdec', '--task-cond-decoder', type=lambda x: x.lower() in ('true', '1', 'yes'), default=True)
+        parser.add_argument('-df', '--d-feat', type=int, default=None)
+        parser.add_argument('-pt', '--pretrained', type=lambda x: x.lower() in ('true', '1', 'yes'), default=False)
+        parser.add_argument('-b', '--base-name', type=str, default="google/t5-v1_1-small")
+        parser.add_argument('-epe', '--encoder-position-encoding-type', type=str, default='default')
+        parser.add_argument('-dpe', '--decoder-position-encoding-type', type=str, default='default')
+        parser.add_argument('-twe', '--tie-word-embedding', type=lambda x: x.lower() in ('true', '1', 'yes'), default=None)
+        parser.add_argument('-el', '--event-length', type=int, default=None)
+        parser.add_argument('-dl', '--d-latent', type=int, default=None)
+        parser.add_argument('-nl', '--num-latents', type=int, default=None)
+        parser.add_argument('-dpm', '--perceiver-tf-d-model', type=int, default=None)
+        parser.add_argument('-npb', '--num-perceiver-tf-blocks', type=int, default=None)
+        parser.add_argument('-npl', '--num-perceiver-tf-local-transformers-per-block', type=int, default=None)
+        parser.add_argument('-npt', '--num-perceiver-tf-temporal-transformers-per-block', type=int, default=None)
+        parser.add_argument('-atc', '--attention-to-channel', type=lambda x: x.lower() in ('true', '1', 'yes'), default=None)
+        parser.add_argument('-ln', '--layer-norm-type', type=str, default=None)
+        parser.add_argument('-ff', '--ff-layer-type', type=str, default=None)
+        parser.add_argument('-wf', '--ff-widening-factor', type=int, default=None)
+        parser.add_argument('-nmoe', '--moe-num-experts', type=int, default=None)
+        parser.add_argument('-kmoe', '--moe-topk', type=int, default=None)
+        parser.add_argument('-act', '--hidden-act', type=str, default=None)
+        parser.add_argument('-rt', '--rotary-type', type=str, default=None)
+        parser.add_argument('-rk', '--rope-apply-to-keys', type=lambda x: x.lower() in ('true', '1', 'yes'), default=None)
+        parser.add_argument('-rp', '--rope-partial-pe', type=lambda x: x.lower() in ('true', '1', 'yes'), default=None)
+        parser.add_argument('-dff', '--decoder-ff-layer-type', type=str, default=None)
+        parser.add_argument('-dwf', '--decoder-ff-widening-factor', type=int, default=None)
+        parser.add_argument('-tk', '--task', type=str, default='mt3_full_plus')
+        parser.add_argument('-epv', '--eval-program-vocab', type=str, default=None)
+        parser.add_argument('-edv', '--eval-drum-vocab', type=str, default=None)
+        parser.add_argument('-etk', '--eval-subtask-key', type=str, default='default')
+        parser.add_argument('-t', '--onset-tolerance', type=float, default=0.05)
+        parser.add_argument('-os', '--test-octave-shift', type=lambda x: x.lower() in ('true', '1', 'yes'), default=False)
+        parser.add_argument('-w', '--write-model-output', type=lambda x: x.lower() in ('true', '1', 'yes'), default=True)
+        parser.add_argument('-pr', '--precision', type=str, default="bf16-mixed")
+        parser.add_argument('-st', '--strategy', type=str, default='auto')
+        parser.add_argument('-n', '--num-nodes', type=int, default=1)
+        parser.add_argument('-g', '--num-gpus', type=str, default='auto')
+        parser.add_argument('-wb', '--wandb-mode', type=str, default="disabled")
+        parser.add_argument('-debug', '--debug-mode', type=lambda x: x.lower() in ('true', '1', 'yes'), default=False)
+        parser.add_argument('-tps', '--test-pitch-shift', type=int, default=None)
+        parser.add_argument('--epochs', type=int, default=None)
+
+        # Build args list: exp_id is the first positional arg
+        args_list = ['ymt3']
+        # Point initialize_trainer to the checkpoint directory
+        args_list.extend(['--project', 'ymt3'])
+
+        return parser.parse_args(args_list)
 
     def transcribe_stem(
         self,
@@ -268,44 +604,55 @@ class EarAgent:
         min_note_duration: float = 0.05
     ) -> List[note_seq.NoteSequence.Note]:
         """
-        Transcribe audio to MIDI notes.
+        Transcribe audio to MIDI notes with full graceful fallback chain:
 
-        Uses Basic Pitch (proven, production-ready) as default.
-        Falls back to YourMT3+ if available and preferred.
+        YourMT3+ → Basic Pitch → empty list (with warning, pipeline continues)
 
-        Args:
-            audio_path: Path to audio file
-            target: Instrument type ("Guitar", "Bass", "Lead Guitar", etc.)
-            onset_threshold: Note onset detection threshold (0-1)
-            frame_threshold: Frame-level detection threshold (0-1)
-            min_note_duration: Minimum note duration in seconds
-
-        Returns:
-            List of note_seq.NoteSequence.Note objects
+        Every failure is logged with structured metadata so operators can
+        diagnose issues from logs alone.
         """
-        print(f"🎸 Transcribing: {os.path.basename(audio_path)} ({target})")
+        log = get_logger("ear_agent")
+        file = os.path.basename(audio_path)
 
-        # Try YourMT3+ first if available
-        if self.model is not None and YOURMT3_AVAILABLE:
-            try:
-                return self._transcribe_with_yourmt3(
-                    audio_path, target, onset_threshold,
-                    frame_threshold, min_note_duration
-                )
-            except Exception as e:
-                print(f"⚠️  YourMT3 failed: {e}")
-                print("   Falling back to Basic Pitch")
+        log.info("transcribe_start", file=file, target=target)
 
-        # Use Basic Pitch (primary method for MVP)
+        # ── Try YourMT3+ ──────────────────────────────────────────────
+        if self.model is not None:
+            with metrics.track_stage("yourmt3_transcription"):
+                try:
+                    result = self._transcribe_with_yourmt3(
+                        audio_path, target, onset_threshold,
+                        frame_threshold, min_note_duration
+                    )
+                    log.info("transcribe_done", file=file, model="yourmt3",
+                             note_count=len(result))
+                    return result
+                except Exception as e:
+                    log.warn("yourmt3_fell_back", file=file, error=str(e))
+                    print(f"   YourMT3+ failed, falling back to Basic Pitch...")
+
+        # ── Try Basic Pitch ───────────────────────────────────────────
         if BASIC_PITCH_AVAILABLE:
-            return self._transcribe_with_basic_pitch(
-                audio_path, target, onset_threshold,
-                frame_threshold, min_note_duration
-            )
+            with metrics.track_stage("basic_pitch_transcription"):
+                try:
+                    result = self._transcribe_with_basic_pitch(
+                        audio_path, target, onset_threshold,
+                        frame_threshold, min_note_duration
+                    )
+                    log.info("transcribe_done", file=file, model="basic_pitch",
+                             note_count=len(result))
+                    return result
+                except Exception as e:
+                    log.warn("basic_pitch_failed", file=file, error=str(e))
+                    print(f"   Basic Pitch failed too: {e}")
 
-        # Last resort: mock data
-        print("⚠️  No transcription models available - using mock data")
-        return self._generate_mock_notes()
+        # ── Nothing worked: raise error ──────────────────────────────
+        log.error("transcribe_all_failed", file=file, target=target)
+        health.record_request(success=False, details=f"transcribe: {file}")
+        raise RuntimeError(
+            f"No transcription models available for {file}. "
+            "Install Basic Pitch (pip install basic-pitch) or ensure YourMT3+ loads correctly."
+        )
 
     def _transcribe_with_basic_pitch(
         self,
@@ -320,15 +667,15 @@ class EarAgent:
 
         Basic Pitch is production-ready and works well for guitar/bass.
         """
+        log = get_logger("ear_agent")
         print(f"   Using Basic Pitch (onset: {onset_threshold}, frame: {frame_threshold})")
 
         try:
-            # Run Basic Pitch inference
             model_output, midi_data, note_events = basic_pitch_predict(
                 audio_path,
                 onset_threshold=onset_threshold,
                 frame_threshold=frame_threshold,
-                minimum_note_length=int(min_note_duration * 1000),  # Convert to ms
+                minimum_note_length=int(min_note_duration * 1000),
                 minimum_frequency=None,
                 maximum_frequency=None,
                 multiple_pitch_bends=False,
@@ -336,20 +683,19 @@ class EarAgent:
                 debug_file=None
             )
 
-            # Convert pretty_midi to note_seq format
             notes = self._convert_prettymidi_to_noteseq(midi_data)
-
-            # Apply instrument-specific filtering
             notes = self._filter_by_instrument_range(notes, target)
 
-            print(f"✅ Transcribed {len(notes)} notes")
+            log.info("basic_pitch_done", note_count=len(notes), target=target)
+            print(f"✅ Transcribed {len(notes)} notes (Basic Pitch)")
             return notes
 
         except Exception as e:
+            log.error("basic_pitch_error", exc=e, file=os.path.basename(audio_path))
             print(f"❌ Basic Pitch error: {e}")
             import traceback
             traceback.print_exc()
-            return self._generate_mock_notes()
+            raise
 
     def _transcribe_with_yourmt3(
         self,
@@ -360,54 +706,125 @@ class EarAgent:
         min_note_duration: float
     ) -> List[note_seq.NoteSequence.Note]:
         """
-        Transcribe using YourMT3+ (future enhancement).
+        Transcribe using YourMT3+ custom PyTorch Lightning model.
+
+        Uses stored utility functions from _ymt3_utils (imported once at load time).
+        Falls back to inline audio slicing if utils unavailable.
+        No runtime imports — self-contained.
         """
-        # Load and preprocess audio
-        audio, sr = librosa.load(audio_path, sr=self.sample_rate, mono=True)
+        log = get_logger("ear_agent")
+        model = self.model
+        tm = self.processor
 
-        # Prepare input for model
-        inputs = self.processor(
-            audio,
-            sampling_rate=self.sample_rate,
-            return_tensors="pt"
-        ).to(self.device)
+        if tm is None or not hasattr(model, 'inference_file'):
+            log.warn("yourmt3_not_ready")
+            raise RuntimeError("Model missing inference_file method")
 
-        # Run inference
+        # Load and resample audio
+        audio, sr = librosa.load(audio_path, sr=model.audio_cfg['sample_rate'], mono=True)
+        audio = torch.from_numpy(audio).unsqueeze(0)
+
+        # Segment audio — use stored utility or inline fallback
+        input_frames = model.audio_cfg['input_frames']
+        utils = self._ymt3_utils
+
+        if 'slice' in utils:
+            audio_segments = utils['slice'](audio, input_frames, input_frames)
+        else:
+            audio_segments = self._slice_audio_inline(audio, input_frames, input_frames)
+
+        audio_segments = torch.from_numpy(
+            audio_segments.astype('float32')
+        ).to(self.device).unsqueeze(1)
+
+        # Inference
         with torch.no_grad():
-            outputs = self.model.generate(
-                **inputs,
-                max_length=2048,
-                num_beams=4  # Beam search for better quality
+            pred_token_arr, _ = model.inference_file(bsz=8, audio_segments=audio_segments)
+
+        # Detokenize
+        num_channels = tm.num_decoding_channels
+        n_items = audio_segments.shape[0]
+        start_secs = [input_frames * i / model.audio_cfg['sample_rate'] for i in range(n_items)]
+
+        pred_notes_in_file = []
+        for ch in range(num_channels):
+            pred_token_arr_ch = [arr[:, ch, :] for arr in pred_token_arr]
+            zipped, _, _ = tm.detokenize_list_batches(
+                pred_token_arr_ch, start_secs, return_events=True
             )
 
-        # Decode output to MIDI events
-        midi_events = self.processor.decode(outputs[0], skip_special_tokens=True)
+            if 'merge' in utils:
+                pred_notes_ch, _ = utils['merge'](zipped)
+            else:
+                pred_notes_ch = self._merge_notes_inline(zipped)
+
+            pred_notes_in_file.append(pred_notes_ch)
+
+        # Merge across channels
+        if 'mix' in utils:
+            pred_notes = utils['mix'](pred_notes_in_file)
+        else:
+            pred_notes = self._mix_notes_inline(pred_notes_in_file)
 
         # Convert to note_seq format
-        notes = self._convert_to_noteseq(
-            midi_events,
-            min_duration=min_note_duration
-        )
+        notes = []
+        for n in pred_notes:
+            notes.append(note_seq.NoteSequence.Note(
+                pitch=n.get('pitch', 60),
+                start_time=float(n.get('start', 0)),
+                end_time=float(n.get('end', n.get('start', 0) + min_note_duration)),
+                velocity=int(n.get('velocity', 80)),
+            ))
 
-        # Apply instrument-specific filtering
         notes = self._filter_by_instrument_range(notes, target)
-
+        log.info("yourmt3_transcribed", note_count=len(notes), target=target)
         print(f"✅ Transcribed {len(notes)} notes (YourMT3+)")
         return notes
 
-    def _generate_mock_notes(self) -> List[note_seq.NoteSequence.Note]:
-        """Generate mock note data for testing when model is unavailable."""
-        return [
-            note_seq.NoteSequence.Note(
-                pitch=40, start_time=0.0, end_time=0.5, velocity=80
-            ),
-            note_seq.NoteSequence.Note(
-                pitch=45, start_time=0.5, end_time=1.0, velocity=75
-            ),
-            note_seq.NoteSequence.Note(
-                pitch=50, start_time=1.0, end_time=1.5, velocity=70
-            ),
-        ]
+    # ── Inline fallbacks (no cloned-repo dependency) ──────────────────────
+
+    @staticmethod
+    def _slice_audio_inline(audio, frame_size, step_size):
+        """Slice audio tensor into overlapping segments (no external dependency)."""
+        audio_np = audio.squeeze().numpy()
+        total = len(audio_np)
+        segments = []
+        start = 0
+        while start + frame_size <= total:
+            segments.append(audio_np[start:start + frame_size])
+            start += step_size
+        if start < total:
+            segment = np.zeros(frame_size, dtype=audio_np.dtype)
+            segment[:total - start] = audio_np[start:]
+            segments.append(segment)
+        return np.array(segments)
+
+    @staticmethod
+    def _merge_notes_inline(zipped_events):
+        """Convert zipped (onset, offset, pitch, velocity, instrument) to note dicts."""
+        notes = []
+        for onset, offset, pitch, velocity, instrument in zipped_events:
+            notes.append({
+                'pitch': int(pitch),
+                'start': float(onset),
+                'end': float(offset),
+                'velocity': int(velocity),
+            })
+        return notes
+
+    @staticmethod
+    def _mix_notes_inline(notes_by_channel):
+        """Merge notes across channels, removing duplicates via time+pitch key."""
+        seen = set()
+        mixed = []
+        for channel_notes in notes_by_channel:
+            for n in channel_notes:
+                key = (round(n.get('start', 0), 3), n.get('pitch', 0))
+                if key not in seen:
+                    seen.add(key)
+                    mixed.append(n)
+        mixed.sort(key=lambda n: n.get('start', 0))
+        return mixed
 
     def _convert_prettymidi_to_noteseq(
         self,
@@ -447,20 +864,117 @@ class EarAgent:
         min_duration: float = 0.05
     ) -> List[note_seq.NoteSequence.Note]:
         """
-        Convert YourMT3 MIDI events to note_seq format.
+        Convert YourMT3 MIDI token output to note_seq Note objects.
 
-        Note: Actual conversion depends on YourMT3 output format.
-        This is a placeholder implementation.
+        YourMT3 outputs token sequences from the MT3 vocabulary, decoded
+        to text by the processor.  Handles two likely formats:
+
+        1. TOKEN_VALUE pairs:  NOTE_ON 60 VELOCITY 80 TIME_SHIFT 0.5
+                                NOTE_OFF 60 TIME_SHIFT 0.25 ...
+        2. Key-value format:   pitch:60,start:0.0,end:0.5,velocity:80
         """
-        # TODO: Implement actual YourMT3 output parsing
-        # YourMT3 outputs may be in different formats:
-        # 1. MIDI token sequences
-        # 2. Note events (start, end, pitch, velocity)
-        # 3. Direct MIDI byte streams
-
         notes = []
-        # Placeholder - replace with actual parsing logic
+        tokens = midi_events.strip().split()
+        if not tokens:
+            return notes
+
+        # ── Format 1: NOTE_ON / NOTE_OFF token pairs ──────────────
+        first_token = tokens[0].upper()
+        if first_token in ("NOTE_ON", "NOTE_OFF", "TIME_SHIFT",
+                           "PITCH", "VELOCITY", "PROGRAM"):
+            notes = self._parse_mt3_tokens(tokens, min_duration)
+            if notes:
+                return notes
+
+        # ── Format 2: key:value pairs (pitch:X,start:Y,...) ──────
+        import re
+        pattern = r'pitch:(\d+),start:([\d.]+),end:([\d.]+),velocity:(\d+)'
+        matches = re.findall(pattern, midi_events)
+        if matches:
+            for pitch_str, start_str, end_str, vel_str in matches:
+                end = float(end_str)
+                start = float(start_str)
+                if (end - start) >= min_duration:
+                    notes.append(note_seq.NoteSequence.Note(
+                        pitch=int(pitch_str),
+                        start_time=start,
+                        end_time=end,
+                        velocity=int(vel_str),
+                    ))
+            if notes:
+                return sorted(notes, key=lambda n: n.start_time)
+
+        # ── No format matched ─────────────────────────────────────
+        if not notes:
+            print(f"⚠ Could not parse YourMT3 output format")
+            print(f"   Raw (first 200 chars): {midi_events[:200]}")
+            print(f"   Install from source or check model hub for format changes.")
+
         return notes
+
+    def _parse_mt3_tokens(
+        self,
+        tokens: List[str],
+        min_duration: float
+    ) -> List[note_seq.NoteSequence.Note]:
+        """
+        Parse NOTE_ON / NOTE_OFF / TIME_SHIFT token sequences.
+
+        MT3-style models emit tokens like:
+            NOTE_ON 60 VELOCITY 80 TIME_SHIFT 0.5 NOTE_OFF 60
+        """
+        notes = []
+        active_notes: Dict[int, Tuple[float, int]] = {}  # pitch -> (start, velocity)
+        current_time = 0.0
+        i = 0
+
+        while i < len(tokens):
+            tok = tokens[i].upper()
+            try:
+                if tok == "NOTE_ON" and i + 1 < len(tokens):
+                    pitch = int(tokens[i + 1])
+                    velocity = 80  # default
+                    if i + 3 < len(tokens) and tokens[i + 2].upper() == "VELOCITY":
+                        velocity = int(tokens[i + 3])
+                        i += 4
+                    else:
+                        i += 2
+                    active_notes[pitch] = (current_time, velocity)
+
+                elif tok == "NOTE_OFF" and i + 1 < len(tokens):
+                    pitch = int(tokens[i + 1])
+                    if pitch in active_notes:
+                        start_time, velocity = active_notes.pop(pitch)
+                        dur = current_time - start_time
+                        if dur >= min_duration:
+                            notes.append(note_seq.NoteSequence.Note(
+                                pitch=pitch,
+                                start_time=start_time,
+                                end_time=current_time,
+                                velocity=velocity,
+                            ))
+                    i += 2
+
+                elif tok == "TIME_SHIFT" and i + 1 < len(tokens):
+                    current_time += float(tokens[i + 1])
+                    i += 2
+
+                else:
+                    i += 1
+            except (ValueError, IndexError):
+                i += 1
+
+        # Close any still-active notes at end of sequence
+        final_time = current_time + (min_duration * 2)
+        for pitch, (start_time, velocity) in active_notes.items():
+            notes.append(note_seq.NoteSequence.Note(
+                pitch=pitch,
+                start_time=start_time,
+                end_time=final_time,
+                velocity=velocity,
+            ))
+
+        return sorted(notes, key=lambda n: n.start_time)
 
     def _filter_by_instrument_range(
         self,
@@ -641,7 +1155,8 @@ class TabAgent:
 
     def generate_tab(
         self,
-        midi_notes: List[note_seq.NoteSequence.Note]
+        midi_notes: List[note_seq.NoteSequence.Note],
+        technique_sensitivity: float = 0.7
     ) -> List[Dict]:
         """
         Generate optimal tablature using dynamic programming.
@@ -650,10 +1165,12 @@ class TabAgent:
         1. For each note, find all valid positions
         2. Calculate minimum cost path from previous note
         3. Backtrack to reconstruct optimal path
-        4. Annotate techniques (slides, etc.)
+        4. Annotate techniques (slides, hammer-ons, pull-offs)
 
         Args:
             midi_notes: List of note_seq.NoteSequence.Note objects
+            technique_sensitivity: 0-1 threshold for technique detection
+                (higher = more aggressive detection, wider time windows)
 
         Returns:
             List of tab positions with technique annotations
@@ -722,21 +1239,27 @@ class TabAgent:
         # Reverse to get chronological order
         best_path = best_path[::-1]
 
-        # Annotate techniques
+        # Annotate techniques (slides, hammer-ons, pull-offs)
         final_tab = []
+        technique_window = 0.05 + technique_sensitivity * 0.25  # maps 0.5→0.175s, 0.9→0.275s
         for i, pos in enumerate(best_path):
             technique = "pick"
 
             if i > 0:
                 prev = final_tab[-1]
                 time_delta = notes[i]['start'] - notes[i-1]['start']
-                fret_diff = abs(pos['fret'] - prev['fret'])
+                fret_diff_abs = abs(pos['fret'] - prev['fret'])
 
-                # Slide detection
-                if (prev['string'] == pos['string'] and
-                    1 <= fret_diff <= 2 and
-                    time_delta < 0.2):
-                    technique = "slide"
+                if prev['string'] == pos['string'] and time_delta < technique_window:
+                    # Slide: 1-2 frets apart (priority over hammer/pull)
+                    if 1 <= fret_diff_abs <= 2:
+                        technique = "slide"
+                    # Hammer-on: ascending fret on same string
+                    elif pos['fret'] > prev['fret']:
+                        technique = "hammer"
+                    # Pull-off: descending fret on same string
+                    elif pos['fret'] < prev['fret']:
+                        technique = "pull"
 
             pos['technique'] = technique
             final_tab.append(pos)

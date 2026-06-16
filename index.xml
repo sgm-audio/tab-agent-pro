@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<index name="Tab Agent Pro" version="1.0"
+       xmlns="http://www.cockos.com/reapack/schema/1.0">
+  <category name="Transcription">
+    <description>Audio-to-tablature transcription tools powered by AI.</description>
+  </category>
+  
+  <!-- Tab Agent — main transcription script -->
+  <reaper name="Tab Agent" type="script">
+    <metadata>
+      <owner>Scott Mills</owner>
+      <description>
+        AI-powered audio-to-tablature transcription. 
+        Uses Demucs stem separation, Basic Pitch / YourMT3+ transcription, 
+        and dynamic-programming fingering optimization. 
+        Detects slides, hammer-ons, and pull-offs automatically.
+      </description>
+      <links>
+        <link rel="website" href="https://github.com/scottmills306/tab-agent-pro">Repository</link>
+        <link rel="documentation" href="https://github.com/scottmills306/tab-agent-pro/blob/main/README.md">Documentation</link>
+      </links>
+      <donation>https://github.com/sponsors/scottmills306</donation>
+    </metadata>
+  
+    <version name="1.0.0" author="Scott Mills" type="main">
+      <source file="reaper/TabAgent.lua">TabAgent.lua</source>
+      <changelog><![CDATA[
+        Initial release: Basic Pitch + YourMT3+ transcription, Demucs stem separation,
+        technique detection (slides/hammer-ons/pull-offs), MIDI/tab/JSON export.
+      ]]></changelog>
+    </version>
+  </reaper>
+  
+  <!-- Tab Agent Settings — configuration UI -->
+  <reaper name="Tab Agent Settings" type="script">
+    <metadata>
+      <owner>Scott Mills</owner>
+      <description>
+        Configure Tab Agent Pro settings: tuning presets, instrument selection, 
+        onset thresholds, and export format preferences.
+      </description>
+    </metadata>
+  
+    <version name="1.0.0" author="Scott Mills" type="main">
+      <source file="reaper/Settings.lua">Settings.lua</source>
+      <changelog><![CDATA[
+        Initial release: 8 preset profiles, instrument selection, 
+        onset/frame threshold controls, export format options.
+      ]]></changelog>
+    </version>
+  </reaper>
+</index>

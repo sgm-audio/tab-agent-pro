@@ -10,6 +10,12 @@ if sys.platform == "win32":
     import codecs
     sys.stdout = codecs.getwriter("utf-8")(sys.stdout.detach())
 
+# Technique detection constants
+TECHNIQUE_SLIDE = "slide"
+TECHNIQUE_HAMMER = "hammer"
+TECHNIQUE_PULL = "pull"
+TECHNIQUE_PICK = "pick"
+
 def load_user_memory():
     """Load user memory and extract preferences."""
     # In Docker: /app/user_memory
@@ -63,14 +69,14 @@ def export_tab_to_txt(tab_data, output_path, instrument="Guitar"):
     for pos in tab_data:
         string_idx = pos['string']
         fret = pos['fret']
-        technique = pos.get('technique', 'pick')
+        technique = pos.get('technique', TECHNIQUE_PICK)
 
         # Format fret number with technique marker
-        if technique == "slide":
+        if technique == TECHNIQUE_SLIDE:
             fret_str = f"{fret}s"
-        elif technique == "hammer":
+        elif technique == TECHNIQUE_HAMMER:
             fret_str = f"{fret}h"
-        elif technique == "pull":
+        elif technique == TECHNIQUE_PULL:
             fret_str = f"{fret}p"
         else:
             fret_str = str(fret)

@@ -1,135 +1,80 @@
 ---
-title: Tab Agent - AI Tablature Transcription (MVP)
+title: Tab Agent - AI Tablature Transcription
 emoji: 🎸
 colorFrom: blue
 colorTo: purple
 sdk: docker
-app_file: DOCKERFILE.dockerfile
+app_file: Dockerfile
 license: mit
 ---
 
-# 🎸 Tab Agent - AI Tablature Transcription (MVP)
+# 🎸 Tab Agent
 
-**Production-ready AI-powered audio-to-tablature transcription for guitar and bass using Basic Pitch.**
+Upload audio (guitar/bass). Get tablature, MIDI, and JSON back.
 
-Upload an audio file and get accurate, playable tablature with technique detection and optimal fingering!
-
-## ⏱️ Processing Times
-
-Audio transcription runs on CPU (free tier). Expect:
-- **30-second clip:** ~15 seconds
-- **3-minute song:** ~90 seconds
-- **Full-length track:** 2-4 minutes
-
-Processing is slower than GPU-accelerated services but completely free. Grab a coffee while it works. ☕
-
-## 🚀 Try It Now
-
-**Live on HuggingFace Spaces:** [scottymills-tab-agent-pro.hf.space](https://scottymills-tab-agent-pro.hf.space)
-
-Upload an audio file, select Guitar or Bass, and get tablature in seconds.
-
-## ✨ Features
-
-- 🤖 **Basic Pitch AI Model** - Spotify's proven production-ready transcription model
-- ⚡ **Zero GPU Acceleration** - Faster processing with Hugging Face Zero GPU
-- 🎵 **Multi-Stage Pipeline** - Demucs stem separation → spatial audio processing → AI transcription → dynamic programming
-- 🎸 **Multi-Track Support** - Separate transcriptions for lead guitar, rhythm guitars (L/R), and bass
-- 📝 **Multiple Export Formats** - MIDI, ASCII tablature, JSON
-- 🎯 **Optimal Fingering** - Viterbi algorithm finds most playable fingering patterns
-- ✨ **Technique Detection** - Automatically detects slides, hammer-ons, pull-offs
-- 🎯 **Suno-Aware** - Enhanced processing for AI-generated audio (Suno, Udio)
-
-## 🚀 How to Use
-
-1. **Upload** an audio file (WAV, MP3, FLAC, etc.)
-2. **Select** instrument type (Guitar or Bass)
-3. **Choose** export formats (MIDI, Tab, JSON)
-4. **Click** "Transcribe to Tablature"
-5. **Download** the ZIP file with all outputs!
-
-## 📊 Processing Times
-
-| Duration | Estimated Time (Zero GPU) |
-|----------|---------------------------|
-| 30 sec   | ~1-2 minutes              |
-| 60 sec   | ~2-3 minutes              |
-| 3 min    | ~6-8 minutes              |
-
-**Powered by:** Zero GPU for faster processing on HF Spaces
-
-## 🎯 Best Results Tips
-
-- ✅ Use high-quality audio (WAV/FLAC preferred)
-- ✅ Clean recordings work better than live/noisy audio
-- ✅ Isolated guitar/bass tracks give best accuracy
-- ✅ Shorter clips (< 60 seconds) process faster
-- ✅ **Suno AI audio supported** - automatic artifact detection and cleanup
-- ❌ Avoid heavily distorted or compressed audio
-
-## 🏗️ How It Works
-
-### Processing Pipeline
-
-1. **Quality Analysis** - Detects AI-generated artifacts (Suno, Udio) and applies preprocessing
-2. **Stem Separation (Demucs)** - Isolates guitar/bass from full mix
-3. **Spatial Processing** - Separates lead and rhythm guitars using mid-side technique
-4. **AI Transcription (Basic Pitch)** - Converts audio to MIDI notes with proven accuracy
-5. **Post-Processing** - Removes octave errors and spurious notes common in AI audio
-6. **Tablature Generation** - Dynamic programming finds optimal fingering
-7. **Technique Detection** - Identifies slides, hammer-ons, pull-offs
-
-### Why Basic Pitch for MVP?
-
-| Feature | Basic Pitch | Notes |
-|---------|-------------|-------|
-| Reliability | ✅ Production-ready | Used by Spotify, proven at scale |
-| Dependencies | ✅ Lightweight | TensorFlow-based, easy deployment |
-| Guitar Accuracy | ✅ Good (70-85%) | Solid baseline for clean audio |
-| Suno Support | ✅ Enhanced | Custom post-processing for AI audio |
-
-## 📦 Install Locally
-
-Want faster processing or GPU acceleration? Install Tab Agent locally:
+## Quick Start
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/Tab-Agent.git
-cd Tab-Agent
-pip install -r requirements_working.txt
+git clone https://github.com/scottmills306/tab-agent-pro.git
+cd tab-agent-pro
+pip install -r requirements.txt
 python main.py input/your_song.wav
 ```
 
-### Reaper Integration (ReaPack)
+Or with Docker:
 
-Install directly in Reaper DAW:
+```bash
+docker build -t tab-agent .
+docker run -v $(pwd)/input:/app/input tab-agent python main.py input/your_song.wav
+```
+
+Or use the web UI on [HuggingFace Spaces](https://scottymills-tab-agent-pro.hf.space).
+
+## What It Does
+
+1. **Quality Analysis** — Detects AI audio artifacts (Suno/Udio), adjusts thresholds
+2. **Stem Separation** — Demucs isolates guitar/bass from the mix
+3. **Spatial Processing** — Mid-side splits lead and rhythm guitars
+4. **Transcription** — YourMT3+ (if available) or Basic Pitch → MIDI notes
+5. **Tablature** — Dynamic programming assigns notes to strings/frets
+6. **Technique Detection** — Slides, hammer-ons, pull-offs
+7. **Export** — MIDI, ASCII tab, JSON
+
+## Features
+
+- Two transcription engines: YourMT3+ (primary) → Basic Pitch (fallback)
+- Demucs stem separation
+- Suno/Udio artifact detection and cleanup
+- Multi-track: lead guitar, rhythm L/R, bass
+- Technique detection: slides, hammer-ons, pull-offs
+- MIDI / ASCII tab / JSON export
+- ReaPack scripts for Reaper DAW integration
+- HF Spaces Zero GPU support (if enabled on your Space)
+
+## Reaper Integration
 
 1. Extensions → ReaPack → Import repositories
-2. Add URL: `https://raw.githubusercontent.com/YOUR_USERNAME/Tab-Agent/main/index.xml`
-3. Browse packages → Install "Tab Agent"
-4. Select audio → Run script!
+2. Add: `https://raw.githubusercontent.com/scottmills306/tab-agent-pro/main/index.xml`
+3. Install "Tab Agent" and "Tab Agent Settings"
+4. Select audio → Run script
 
-## 🔗 Links
+## Project Structure
 
-- **GitHub**: [Tab-Agent Repository](https://github.com/YOUR_USERNAME/Tab-Agent)
-- **Documentation**: [Full Guide](https://github.com/YOUR_USERNAME/Tab-Agent/blob/main/README.md)
-- **Basic Pitch**: [Spotify Research](https://github.com/spotify/basic-pitch)
+```
+├── agents.py              # Splitter, Ear, Tab agents
+├── app.py                 # Gradio web UI
+├── main.py                # CLI pipeline
+├── suno_postprocessor.py  # AI audio artifact detection
+├── init_memory.py         # Preset profiles (tunings, thresholds)
+├── monitoring.py          # Structured logging + health checks
+├── index.xml              # ReaPack package index
+├── reaper/                # ReaPack Lua scripts
+├── tests/                 # Unit tests (37 passing)
+├── examples/              # Demo audio files
+├── input/                 # Place audio files here
+└── output/                # Generated tablature lands here
+```
 
-## 📄 License
+## License
 
-MIT License - Free for personal and commercial use
-
-## 🙏 Acknowledgments
-
-- **Spotify Research** - For Basic Pitch transcription model
-- **Meta AI** - For Demucs source separation
-- **Hugging Face** - For Zero GPU hosting and infrastructure
-
----
-
-<div align="center">
-
-**Made with ❤️ and 🤖 AI**
-
-[⭐ Star on GitHub](https://github.com/YOUR_USERNAME/Tab-Agent) • [📚 Documentation](https://github.com/YOUR_USERNAME/Tab-Agent/blob/main/README.md) • [📦 Reaper Plugin](https://github.com/YOUR_USERNAME/Tab-Agent#reaper-integration)
-
-</div>
+MIT

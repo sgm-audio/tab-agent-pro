@@ -1,5 +1,5 @@
-# 1. Base Image: Python 3.12 Slim (Lightweight, No GPU drivers)
-FROM python:3.11-slim
+# 1. Base Image: Python 3.10 Slim (Lightweight, No GPU drivers)
+FROM python:3.10-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
@@ -24,6 +24,9 @@ RUN python -m pip install --upgrade pip
 # We do this BEFORE requirements.txt to prevent pip from grabbing heavy GPU versions
 # PyTorch is used by Demucs, TensorFlow is used by Basic Pitch
 RUN pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# torchcodec needed for torchaudio.save on newer torchaudio versions
+RUN pip install torchcodec --index-url https://download.pytorch.org/whl/cpu || true
 
 # 5. Install Project Dependencies
 COPY requirements.txt .
