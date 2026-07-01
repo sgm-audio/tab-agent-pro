@@ -381,15 +381,13 @@ AI-powered transcription for guitar and bass using **Basic Pitch** (Spotify's pr
     return demo
 
 
-# Main entry point
-if __name__ == "__main__":
-    import uvicorn
+def create_app():
+    """Create FastAPI app with health endpoints and Gradio UI mounted."""
     from fastapi import FastAPI
 
     demo = create_ui()
     demo.queue()
 
-    # Create a parent FastAPI app that mounts Gradio + health endpoints
     parent_app = FastAPI()
 
     @parent_app.get("/health")
@@ -402,9 +400,13 @@ if __name__ == "__main__":
 
         return default_metrics.summary()
 
-    # Mount Gradio under the parent app
     parent_app = gr.mount_gradio_app(parent_app, demo, path="/")
+    return parent_app
 
-    # Security: bind to 127.0.0.1 by default.
-    # Override with HOST env var for Docker/production, e.g. HOST=0.0.0.0
-    uvicorn.run(parent_app, host=os.getenv("HOST", "127.0.0.1"), port=7860)
+
+# Main entry point
+if __name__ == "__main__":
+    import os
+    import uvicorn
+
+    uvicorn.run(create_app(), host=os.getenv("HOST", "127.0.0.1"), port=7860)

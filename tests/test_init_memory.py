@@ -1,4 +1,6 @@
 import json
+import os
+import sys
 
 import pytest
 
@@ -82,3 +84,142 @@ def test_profile_tunings_are_valid_midi():
 def test_all_profiles_have_unique_names():
     names = [p["name"] for p in PROFILES.values()]
     assert len(names) == len(set(names)), "Duplicate profile names found"
+
+
+# ── save_profile: existing preferences merge ──────────────────────────────
+
+
+def test_save_profile_merges_existing_preferences(tmp_path):
+    pre_existing = {"user_name": "TestUser", "theme": "dark"}
+    pre_path = tmp_path / "user_preferences.json"
+    pre_path.write_text(json.dumps(pre_existing))
+
+    save_profile("classical", memory_dir=str(tmp_path))
+
+    data = json.loads(pre_path.read_text())
+    assert data["user_name"] == "TestUser"
+    assert data["theme"] == "dark"
+    assert data["config"]["active_profile"] == "classical"
+
+
+# ── save_profile: Docker path ─────────────────────────────────────────────
+
+
+def test_save_profile_docker_resolution(tmp_path, monkeypatch):
+    """save_profile works with Docker memory_dir (mocked)."""
+    mock_dir = str(tmp_path)
+    monkeypatch.setattr("init_memory.get_memory_dir", lambda: mock_dir)
+    save_profile("rock_drop_d")
+    assert (
+        json.loads(tmp_path.joinpath("user_preferences.json").read_text())["config"][
+            "active_profile"
+        ]
+        == "rock_drop_d"
+    )
+
+
+# ── get_memory_dir: Docker path ────────────────────────────────────────────
+
+
+def test_get_memory_dir_docker(monkeypatch):
+    orig_exists = os.path.exists
+    monkeypatch.setattr(os.path, "exists", lambda p: p == "/app")
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert get_memory_dir() == "/app/user_memory"
+    monkeypatch.setattr(os.path, "exists", orig_exists)
+
+
+def test_get_memory_dir_local(monkeypatch):
+    orig_exists = os.path.exists
+    monkeypatch.setattr(os.path, "exists", lambda p: False)
+    assert get_memory_dir() == "./user_memory"
+    monkeypatch.setattr(os.path, "exists", orig_exists)
+
+
+# ── interactive_select ─────────────────────────────────────────────────────
+
+
+def test_interactive_select_valid_input(monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda _="": "1")
+    from init_memory import interactive_select
+
+    assert interactive_select() == "rock_standard"
+
+
+def test_interactive_select_out_of_range_retry(monkeypatch):
+    """Out-of-range number prints error and retries, then valid input succeeds."""
+    inputs = iter(["99", "0", "-1", "1"])
+    monkeypatch.setattr("builtins.input", lambda _="": next(inputs))
+    from init_memory import interactive_select
+
+    assert interactive_select() == "rock_standard"
+
+
+def test_interactive_select_invalid_input_exits(monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda _="": "abc")
+    with pytest.raises(SystemExit):
+        from init_memory import interactive_select
+
+        interactive_select()
+
+
+def test_interactive_select_keyboard_interrupt_exits(monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda _="": (_ for _ in ()).throw(KeyboardInterrupt()))
+    with pytest.raises(SystemExit):
+        from init_memory import interactive_select
+
+        interactive_select()
+
+
+# ── main ───────────────────────────────────────────────────────────────────
+
+
+def test_main_list_flag(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["init_memory.py", "--list"])
+    from init_memory import main
+
+    main()
+    captured = capsys.readouterr()
+    assert "Available Profiles" in captured.out
+    assert "rock_standard" in captured.out
+
+
+def test_main_profile_valid(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(sys, "argv", ["init_memory.py", "--profile", "bass_4_string"])
+    monkeypatch.setattr("init_memory.get_memory_dir", lambda: str(tmp_path))
+    from init_memory import main
+
+    main()
+    captured = capsys.readouterr()
+    assert "4-String Bass" in captured.out
+    assert "saved" in captured.out
+
+
+def test_main_profile_invalid(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["init_memory.py", "--profile", "nonexistent"])
+    with pytest.raises(SystemExit):
+        from init_memory import main
+
+        main()
+    captured = capsys.readouterr()
+    assert "Unknown profile" in captured.out
+
+
+def test_main_interactive_fallback(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(sys, "argv", ["init_memory.py"])
+    monkeypatch.setattr("builtins.input", lambda _="": "3")
+    monkeypatch.setattr("init_memory.get_memory_dir", lambda: str(tmp_path))
+    from init_memory import main
+
+    main()
+    captured = capsys.readouterr()
+    assert "Classical" in captured.out
+    assert "saved" in captured.out
+
+
+def test_main_module_run(monkeypatch):
+    """Cover the `if __name__ == '__main__'` block via runpy."""
+    import runpy
+
+    monkeypatch.setattr(sys, "argv", ["init_memory.py", "--list"])
+    runpy.run_module("init_memory", run_name="__main__")

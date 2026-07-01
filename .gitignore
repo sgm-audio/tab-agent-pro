@@ -73,6 +73,7 @@ separated_stems/
 temp/
 tmp/
 *.cache
+.coverage
 
 # Model files (large files)
 models/
