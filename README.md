@@ -8,6 +8,12 @@ app_file: Dockerfile
 license: mit
 ---
 
+[![CI](https://github.com/scottmills306/tab-agent-pro/actions/workflows/ci.yml/badge.svg)](https://github.com/scottmills306/tab-agent-pro/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+
 # 🎸 Tab Agent
 
 Upload audio (guitar/bass). Get tablature, MIDI, and JSON back.
@@ -69,7 +75,7 @@ Or use the web UI on [HuggingFace Spaces](https://scottymills-tab-agent-pro.hf.s
 ├── monitoring.py          # Structured logging + health checks
 ├── index.xml              # ReaPack package index
 ├── reaper/                # ReaPack Lua scripts
-├── tests/                 # Unit tests (37 passing)
+├── tests/                 # Unit tests (60+ passing)
 ├── examples/              # Demo audio files
 ├── input/                 # Place audio files here
 └── output/                # Generated tablature lands here

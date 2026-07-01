@@ -14,11 +14,10 @@ The harmonic peak filter prevents pure tones (test signals, sine sweeps)
 from being falsely flagged regardless of aggressiveness.
 """
 
-import numpy as np
 import librosa
-import soundfile as sf
-from typing import Tuple, List
 import note_seq
+import numpy as np
+import soundfile as sf
 
 
 class SunoArtifactDetector:
@@ -31,6 +30,7 @@ class SunoArtifactDetector:
     Args:
         aggressiveness: 0.0-1.0 detection sensitivity
             0.0 = conservative, 0.5 = balanced (default), 1.0 = aggressive
+
     """
 
     def __init__(self, aggressiveness: float = 0.5):
@@ -41,12 +41,13 @@ class SunoArtifactDetector:
         self._combo_flatness = 0.015 + ((1.0 - self.aggressiveness) * 0.005)  # 0.015-0.020
         self._combo_hf = 0.25 - (self.aggressiveness * 0.10)  # 0.15-0.25
 
-    def analyze(self, audio_path: str) -> Tuple[bool, dict]:
+    def analyze(self, audio_path: str) -> tuple[bool, dict]:
         """
         Analyze audio for AI generation artifacts.
 
         Returns:
             (is_ai_generated, metrics_dict)
+
         """
         print(f"🔍 Analyzing: {audio_path} (aggressiveness={self.aggressiveness:.1f})")
 
@@ -54,7 +55,6 @@ class SunoArtifactDetector:
 
         # Compute spectrogram
         S = np.abs(librosa.stft(y))
-        S_db = librosa.amplitude_to_db(S, ref=np.max)
         freqs = librosa.fft_frequencies(sr=sr)
 
         metrics = {}
@@ -64,51 +64,55 @@ class SunoArtifactDetector:
         hf_mask = freqs > 8000
         hf_energy = np.mean(S[hf_mask])
         total_energy = np.mean(S)
-        metrics['hf_ratio'] = hf_energy / (total_energy + 1e-10)
+        metrics["hf_ratio"] = hf_energy / (total_energy + 1e-10)
 
         # 2. Spectral flatness (naturalness measure)
         # Lower flatness = more AI-like (less natural variation)
         spectral_flatness = librosa.feature.spectral_flatness(y=y)
-        metrics['spectral_flatness'] = np.mean(spectral_flatness)
+        metrics["spectral_flatness"] = np.mean(spectral_flatness)
 
         # 3. Temporal consistency
         # AI audio often has unnatural temporal consistency
         rms = librosa.feature.rms(y=y)[0]
-        metrics['rms_variance'] = np.var(rms)
+        metrics["rms_variance"] = np.var(rms)
 
         # 4. Zero-crossing rate
         # AI audio sometimes has unusual zero-crossing patterns
         zcr = librosa.feature.zero_crossing_rate(y)[0]
-        metrics['zcr_mean'] = np.mean(zcr)
+        metrics["zcr_mean"] = np.mean(zcr)
 
         # 5. Harmonic peak density — distinguishes pure tones from complex audio
         #   - Pure sine waves: 1-2 prominent peaks → NOT AI audio
         #   - Real instruments / AI audio: many peaks across the spectrum
         #   Counteracts the spectral_flatness false-positive on pure tones.
         from scipy.signal import find_peaks
+
         mean_spectrum = np.mean(S, axis=1)  # Average over time
         prominence = np.max(mean_spectrum) * 0.02
         peaks, _ = find_peaks(mean_spectrum, prominence=prominence)
         peak_count = len(peaks)
-        metrics['harmonic_peak_count'] = int(peak_count)
+        metrics["harmonic_peak_count"] = int(peak_count)
 
         is_pure_tone = peak_count <= 3  # 1-3 prominent peaks = test tone / sine
         if is_pure_tone:
-            metrics['spectral_flatness'] = 0.5  # Override so flatness rule won't trigger
+            metrics["spectral_flatness"] = 0.5  # Override so flatness rule won't trigger
 
         # Decision heuristics (tuned on Suno v3/v4 + Udio, configurable aggressiveness)
         is_suno = (
-            metrics['hf_ratio'] > self._hf_ratio_threshold or
-            (not is_pure_tone and metrics['spectral_flatness'] < self._flatness_threshold) or
-            (metrics['hf_ratio'] > self._combo_hf and metrics['spectral_flatness'] < self._combo_flatness)
+            metrics["hf_ratio"] > self._hf_ratio_threshold
+            or (not is_pure_tone and metrics["spectral_flatness"] < self._flatness_threshold)
+            or (
+                metrics["hf_ratio"] > self._combo_hf
+                and metrics["spectral_flatness"] < self._combo_flatness
+            )
         )
 
         if is_suno:
-            print(f"   🤖 AI-Generated Audio Detected")
+            print("   🤖 AI-Generated Audio Detected")
             print(f"      High-freq ratio: {metrics['hf_ratio']:.3f} (>0.35 = Suno)")
             print(f"      Spectral flatness: {metrics['spectral_flatness']:.3f} (<0.008 = AI)")
         else:
-            print(f"   🎸 Natural Recording Detected")
+            print("   🎸 Natural Recording Detected")
 
         return is_suno, metrics
 
@@ -131,6 +135,7 @@ class SunoAudioPreprocessor:
 
         Returns:
             Path to processed audio
+
         """
         print(f"🧹 Preprocessing: {audio_path}")
 
@@ -151,18 +156,18 @@ class SunoAudioPreprocessor:
 
         return output_path
 
-    def _highpass_filter(self, y: np.ndarray, sr: int, cutoff: int = 40) -> np.ndarray:
+    def _highpass_filter(self, y: np.ndarray, sr: float, cutoff: int = 40) -> np.ndarray:
         """Apply high-pass filter to remove low-frequency rumble."""
         from scipy.signal import butter, filtfilt
 
         nyquist = sr / 2
         normal_cutoff = cutoff / nyquist
-        b, a = butter(4, normal_cutoff, btype='high', analog=False)
+        b, a = butter(4, normal_cutoff, btype="high", analog=False)
         y_filtered = filtfilt(b, a, y)
 
         return y_filtered
 
-    def _reduce_hf_artifacts(self, y: np.ndarray, sr: int) -> np.ndarray:
+    def _reduce_hf_artifacts(self, y: np.ndarray, sr: float) -> np.ndarray:
         """
         Reduce high-frequency metallic artifacts (8-16kHz).
 
@@ -188,7 +193,7 @@ class SunoAudioPreprocessor:
 
         return y_processed
 
-    def _spectral_gate(self, y: np.ndarray, sr: int, threshold_db: float = -40) -> np.ndarray:
+    def _spectral_gate(self, y: np.ndarray, sr: float, threshold_db: float = -40) -> np.ndarray:
         """
         Apply spectral gating to reduce noise floor.
 
@@ -220,10 +225,10 @@ class SunoNotePostprocessor:
 
     def process(
         self,
-        notes: List[note_seq.NoteSequence.Note],
+        notes: list[note_seq.NoteSequence.Note],
         is_suno: bool,
-        metrics: dict
-    ) -> List[note_seq.NoteSequence.Note]:
+        metrics: dict,
+    ) -> list[note_seq.NoteSequence.Note]:
         """
         Apply post-processing to fix Suno-specific transcription errors.
 
@@ -234,6 +239,7 @@ class SunoNotePostprocessor:
 
         Returns:
             Cleaned notes
+
         """
         if not is_suno:
             return notes  # No processing needed for clean audio
@@ -250,8 +256,8 @@ class SunoNotePostprocessor:
 
     def _remove_octave_errors(
         self,
-        notes: List[note_seq.NoteSequence.Note]
-    ) -> List[note_seq.NoteSequence.Note]:
+        notes: list[note_seq.NoteSequence.Note],
+    ) -> list[note_seq.NoteSequence.Note]:
         """
         Remove octave doubling errors (common in Suno transcriptions).
 
@@ -283,9 +289,9 @@ class SunoNotePostprocessor:
 
     def _remove_spurious_high_notes(
         self,
-        notes: List[note_seq.NoteSequence.Note],
-        threshold_pitch: int = 84  # High E (12th fret, high E string)
-    ) -> List[note_seq.NoteSequence.Note]:
+        notes: list[note_seq.NoteSequence.Note],
+        threshold_pitch: int = 84,  # High E (12th fret, high E string)
+    ) -> list[note_seq.NoteSequence.Note]:
         """
         Remove spurious ultra-high notes caused by HF artifacts.
 
@@ -304,9 +310,9 @@ class SunoNotePostprocessor:
 
     def _smooth_timing(
         self,
-        notes: List[note_seq.NoteSequence.Note],
-        quantize_ms: float = 50
-    ) -> List[note_seq.NoteSequence.Note]:
+        notes: list[note_seq.NoteSequence.Note],
+        quantize_ms: float = 50,
+    ) -> list[note_seq.NoteSequence.Note]:
         """
         Quantize timing to remove jitter from AI artifacts.
 
@@ -317,21 +323,20 @@ class SunoNotePostprocessor:
         smoothed = []
 
         for note in notes:
-            smoothed.append(note_seq.NoteSequence.Note(
-                pitch=note.pitch,
-                start_time=round(note.start_time / quantize_sec) * quantize_sec,
-                end_time=round(note.end_time / quantize_sec) * quantize_sec,
-                velocity=note.velocity,
-            ))
+            smoothed.append(
+                note_seq.NoteSequence.Note(
+                    pitch=note.pitch,
+                    start_time=round(note.start_time / quantize_sec) * quantize_sec,
+                    end_time=round(note.end_time / quantize_sec) * quantize_sec,
+                    velocity=note.velocity,
+                ),
+            )
 
         return smoothed
 
 
 # Convenience function for integration with main pipeline
-def process_suno_audio(
-    audio_path: str,
-    output_path: str = None
-) -> Tuple[str, bool, dict]:
+def process_suno_audio(audio_path: str, output_path: str | None = None) -> tuple[str, bool, dict]:
     """
     Detect and preprocess Suno audio in one call.
 
@@ -341,6 +346,7 @@ def process_suno_audio(
 
     Returns:
         (processed_audio_path, is_suno, metrics)
+
     """
     detector = SunoArtifactDetector()
     is_suno, metrics = detector.analyze(audio_path)
@@ -349,10 +355,10 @@ def process_suno_audio(
         preprocessor = SunoAudioPreprocessor()
         if output_path is None:
             import os
+
             base, ext = os.path.splitext(audio_path)
             output_path = f"{base}_processed{ext}"
         processed_path = preprocessor.process(audio_path, output_path)
         return processed_path, is_suno, metrics
-    else:
-        # No processing needed
-        return audio_path, is_suno, metrics
+    # No processing needed
+    return audio_path, is_suno, metrics

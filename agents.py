@@ -11,23 +11,25 @@ Improvements from Basic Pitch:
 """
 
 import os
-import sys
 import subprocess
-import numpy as np
+import sys
+
 import librosa
-import soundfile as sf
 import note_seq
+import numpy as np
+import soundfile as sf
 import torch
 from scipy.signal import butter, filtfilt
-from typing import List, Dict, Optional, Tuple
+
+from monitoring import default_metrics as metrics
 
 # Monitoring & health checks
-from monitoring import get_logger, health, default_metrics as metrics
+from monitoring import get_logger, health
 
 # Basic Pitch imports (proven and reliable for MVP)
 try:
     from basic_pitch.inference import predict as basic_pitch_predict
-    from basic_pitch import ICASSP_2022_MODEL_PATH
+
     BASIC_PITCH_AVAILABLE = True
 except ImportError:
     print("⚠️  Basic Pitch not installed")
@@ -37,6 +39,7 @@ except ImportError:
 # Demucs Python API (preferred over subprocess CLI)
 try:
     import demucs.api as demucs_api
+
     DEMUCS_API_AVAILABLE = True
 except ImportError:
     DEMUCS_API_AVAILABLE = False
@@ -49,13 +52,15 @@ YMT3_AVAILABLE = False
 # HuggingFace Hub for checkpoint downloads (with resume)
 try:
     from huggingface_hub import snapshot_download
+
     HF_HUB_AVAILABLE = True
 except ImportError:
     HF_HUB_AVAILABLE = False
 
 # torchaudio for Demucs API export
 try:
-    import torchaudio
+    import torchaudio  # noqa: F401
+
     TORCHAUDIO_AVAILABLE = True
 except ImportError:
     TORCHAUDIO_AVAILABLE = False
@@ -64,6 +69,7 @@ except ImportError:
 # ============================================================================
 # STAGE 1-3: THE SPLITTER
 # ============================================================================
+
 
 class SplitterAgent:
     """
@@ -96,7 +102,7 @@ class SplitterAgent:
                     health.set_component("demucs", "loaded")
                     return result
                 except Exception as e:
-                    self.log.warn("demucs_api_failed", file=file, error=str(e))
+                    self.log.warning("demucs_api_failed", file=file, error=str(e))
                     print(f"⚠️  Demucs API failed: {e}")
                     print("   Trying CLI fallback...")
                     health.set_component("demucs", "degraded (API failed)")
@@ -108,8 +114,8 @@ class SplitterAgent:
                 health.set_component("demucs", "loaded (CLI)")
                 return result
         except Exception as e:
-            self.log.warn("demucs_all_failed", file=file, error=str(e))
-            print(f"⚠️  Stem separation unavailable — using raw audio")
+            self.log.warning("demucs_all_failed", file=file, error=str(e))
+            print("⚠️  Stem separation unavailable — using raw audio")
             health.set_component("demucs", "unavailable")
             return self._raw_audio_fallback(audio_path, file)
 
@@ -119,6 +125,7 @@ class SplitterAgent:
         base_path = os.path.join(self.output_dir, "htdemucs", song_name)
         os.makedirs(base_path, exist_ok=True)
         import shutil
+
         other_path = os.path.join(base_path, "other.wav")
         bass_path = os.path.join(base_path, "bass.wav")
         shutil.copy2(audio_path, other_path)
@@ -161,15 +168,15 @@ class SplitterAgent:
 
     def _separate_with_subprocess(self, audio_path, song_name):
         """Fallback: Demucs via CLI subprocess."""
-        cmd = [
-            "demucs",
-            "-n", "htdemucs",
-            "-o", self.output_dir,
-            audio_path
-        ]
+        cmd = ["demucs", "-n", "htdemucs", "-o", self.output_dir, audio_path]
 
         try:
-            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            subprocess.run(
+                cmd,
+                check=True,
+                capture_output=True,
+                text=True,
+            )  # nosec B603 — hardcoded cmd, no user input
             print("✅ Stem separation complete (CLI)")
         except subprocess.CalledProcessError as e:
             print(f"❌ Demucs failed: {e}")
@@ -191,7 +198,7 @@ class SplitterAgent:
         - Mid (center): Lead guitar (typically center-panned)
         - Side (L/R): Rhythm guitars (typically panned left/right)
         """
-        print(f"🎸 [Stage 2] Processing spatial audio for guitars")
+        print("🎸 [Stage 2] Processing spatial audio for guitars")
 
         y, sr = librosa.load(guitar_stem_path, mono=False, sr=None)
 
@@ -217,13 +224,9 @@ class SplitterAgent:
         sf.write(rhythm_l_path, rhythm_l, sr)
         sf.write(rhythm_r_path, rhythm_r, sr)
 
-        print(f"✅ Guitar processing complete")
+        print("✅ Guitar processing complete")
 
-        return {
-            "lead": lead_path,
-            "left": rhythm_l_path,
-            "right": rhythm_r_path
-        }
+        return {"lead": lead_path, "left": rhythm_l_path, "right": rhythm_r_path}
 
     def process_bass(self, bass_stem_path):
         """
@@ -234,7 +237,7 @@ class SplitterAgent:
         - Reduce high frequencies (fret noise, harmonics)
         - Optional: Future upgrade to butterworth filters
         """
-        print(f"🎸 [Stage 3] Processing bass mechanics")
+        print("🎸 [Stage 3] Processing bass mechanics")
 
         y, sr = librosa.load(bass_stem_path, mono=False, sr=None)
 
@@ -246,11 +249,11 @@ class SplitterAgent:
         # Butterworth lowpass filter: preserve fundamentals, reduce fret noise/harmonics
         nyquist = sr / 2
         normal_cutoff = 200 / nyquist  # 200 Hz cutoff for bass fundamentals
-        b, a = butter(4, normal_cutoff, btype='low', analog=False)
+        b, a = butter(4, normal_cutoff, btype="low", analog=False)
         y_low = filtfilt(b, a, y_mono)
 
         # Isolate high-frequency content (fret noise, harmonics) and reduce
-        b_high, a_high = butter(4, normal_cutoff, btype='high', analog=False)
+        b_high, a_high = butter(4, normal_cutoff, btype="high", analog=False)
         y_high = filtfilt(b_high, a_high, y_mono)
 
         # Reconstruct: full low + reduced high (0.5 = halve harmonic content)
@@ -259,13 +262,14 @@ class SplitterAgent:
         path = f"{self.output_dir}/processed_bass_clean.wav"
         sf.write(path, y_processed, sr)
 
-        print(f"✅ Bass processing complete")
+        print("✅ Bass processing complete")
         return path
 
 
 # ============================================================================
 # STAGE 4: THE EAR (MODERNIZED WITH YOURMT3+)
 # ============================================================================
+
 
 class EarAgent:
     """
@@ -287,7 +291,7 @@ class EarAgent:
 
     def __init__(
         self,
-        model_id: str = "mimbres/YourMT3-cpu",
+        model_id: str = "mimbres/YourMT3",
         device: str = "auto",
         prefer_yourmt3: bool = True,
     ):
@@ -295,14 +299,22 @@ class EarAgent:
         Initialize transcription model(s).
 
         Args:
-            model_id: HuggingFace checkpoint ID ("mimbres/YourMT3-cpu")
+            model_id: HuggingFace checkpoint ID ("mimbres/YourMT3")
             device: Compute device ("cpu", "cuda", "mps", or "auto")
             prefer_yourmt3: Attempt YourMT3+ load. Set False to skip to Basic Pitch.
+
+        Note:
+            "mimbres/YourMT3-cpu" is a Gradio Space (not a model repo) and
+            returns HTTP 401 if used as a model_id. The actual model
+            checkpoints are at "mimbres/YourMT3".
+            If the download fails, you can manually download from:
+            https://huggingface.co/mimbres/YourMT3/tree/main
+
         """
         if device == "auto":
             if torch.cuda.is_available():
                 self.device = "cuda"
-            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
                 self.device = "mps"
             else:
                 self.device = "cpu"
@@ -314,7 +326,7 @@ class EarAgent:
         self.model = None
         self.processor = None
 
-        print(f"🧠 [Stage 4] Initializing transcription model(s)")
+        print("🧠 [Stage 4] Initializing transcription model(s)")
         print(f"   Device: {self.device}")
 
         # Attempt YourMT3+ load (with resume + graceful fallback)
@@ -367,6 +379,7 @@ class EarAgent:
             print(f"   Downloading checkpoint from {model_id} (resume enabled)...")
             checkpoint_dir = snapshot_download(
                 repo_id=model_id,
+                revision="main",
                 resume_download=True,
                 local_files_only=False,
                 max_workers=4,
@@ -374,14 +387,28 @@ class EarAgent:
             print(f"   Checkpoint cached at: {checkpoint_dir}")
             return checkpoint_dir
         except Exception as e:
+            http_401 = "401" in str(e) or "Authorization" in str(e)
             print(f"   ⚠️  Checkpoint download failed: {e}")
-            print(f"      Check internet connection or model availability at:")
-            print(f"      https://huggingface.co/{model_id}")
+            print(f"      Expected model repo: https://huggingface.co/{model_id}")
+            if http_401:
+                print()
+                print("      NOTE: 'mimbres/YourMT3-cpu' is a Gradio Space, not a model repo.")
+                print("      The actual model checkpoints are at 'mimbres/YourMT3'.")
+                print("      If you see 401 from mimbres/YourMT3, the repo may require")
+                print("      authentication. Try logging in with:")
+                print("        huggingface-cli login")
+            print()
+            print("      Manual download: https://huggingface.co/mimbres/YourMT3/tree/main")
+            print("      Then place the checkpoint(s) in your cache dir and re-run.")
             return None
 
     def _clone_yourmt3_codebase(self):
         """
-        Clone or update the YourMT3 codebase from GitHub with resume support.
+        Clone or update the YourMT3 codebase from HuggingFace Space with resume support.
+
+        The actual model code lives under amt/src/ in the HF Space
+        mimbres/YourMT3-cpu (the GitHub repo only has README/LICENSE).
+        We point sys.path to amt/src/ so imports like "model.ymt3" resolve.
 
         Clones to ~/.cache/tab_agent/yourmt3 on first run.
         On subsequent runs, runs git fetch + reset to update.
@@ -391,42 +418,79 @@ class EarAgent:
 
             if os.path.exists(os.path.join(self.YOURMT3_CACHE, ".git")):
                 print("   Updating YourMT3 codebase (git fetch)...")
-                result = subprocess.run(
-                    ["git", "-C", self.YOURMT3_CACHE, "fetch", "--depth", "1", "origin", "main"],
-                    capture_output=True, text=True, timeout=60,
+                result = subprocess.run(  # nosec B603 B607 — hardcoded git cmd
+                    [
+                        "git",
+                        "-C",
+                        self.YOURMT3_CACHE,
+                        "fetch",
+                        "--depth",
+                        "1",
+                        "origin",
+                        "main",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
                 )
                 if result.returncode == 0:
-                    subprocess.run(
-                        ["git", "-C", self.YOURMT3_CACHE, "reset", "--hard", "FETCH_HEAD"],
-                        capture_output=True, text=True, timeout=30,
+                    subprocess.run(  # nosec B603 B607 — hardcoded git cmd
+                        [
+                            "git",
+                            "-C",
+                            self.YOURMT3_CACHE,
+                            "reset",
+                            "--hard",
+                            "FETCH_HEAD",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
                     )
                 else:
                     print(f"   git fetch failed, using cached version: {result.stderr.strip()}")
             else:
-                print("   Cloning YourMT3 codebase from GitHub...")
-                result = subprocess.run(
-                    ["git", "clone", "--depth", "1",
-                     "https://github.com/mimbres/YourMT3.git",
-                     self.YOURMT3_CACHE],
-                    capture_output=True, text=True, timeout=120,
+                print("   Cloning YourMT3 codebase from HF Space...")
+                result = subprocess.run(  # nosec B603 B607 — hardcoded git cmd
+                    [
+                        "git",
+                        "clone",
+                        "--depth",
+                        "1",
+                        "https://huggingface.co/spaces/mimbres/YourMT3-cpu",
+                        self.YOURMT3_CACHE,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
                 )
                 if result.returncode != 0:
                     print(f"   ⚠️  Clone failed: {result.stderr.strip()}")
+                    print(
+                        "      The codebase is at https://huggingface.co/spaces/mimbres/YourMT3-cpu",
+                    )
+                    print(
+                        "      (GitHub repo mimbres/YourMT3 only has README — code lives in the HF Space)",
+                    )
                     return None
 
-            # Verify essential files exist
-            essentials = ["model/ymt3.py", "model/init_train.py", "utils/task_manager.py"]
-            missing = [f for f in essentials
-                       if not os.path.exists(os.path.join(self.YOURMT3_CACHE, f))]
+            # Code is under amt/src/ in the Space repo
+            code_root = os.path.join(self.YOURMT3_CACHE, "amt", "src")
+            essentials = [
+                "model/ymt3.py",
+                "model/init_train.py",
+                "utils/task_manager.py",
+            ]
+            missing = [f for f in essentials if not os.path.exists(os.path.join(code_root, f))]
             if missing:
                 print(f"   ⚠️  Missing files in cloned repo: {missing}")
                 return None
 
-            if self.YOURMT3_CACHE not in sys.path:
-                sys.path.insert(0, self.YOURMT3_CACHE)
+            if code_root not in sys.path:
+                sys.path.insert(0, code_root)
 
-            print(f"   Codebase cached at: {self.YOURMT3_CACHE}")
-            return self.YOURMT3_CACHE
+            print(f"   Codebase cached at: {code_root}")
+            return code_root
 
         except subprocess.TimeoutExpired:
             print("   ⚠️  Git operation timed out — check network")
@@ -452,24 +516,32 @@ class EarAgent:
         self._ymt3_audio_cfg = {}
 
         try:
-            from model.ymt3 import YourMT3
             from model.init_train import initialize_trainer, update_config
+            from model.ymt3 import YourMT3
             from utils.task_manager import TaskManager
         except ImportError as e:
-            log.warn("yourmt3_import_failed", error=str(e), code_dir=code_dir)
+            log.warning("yourmt3_import_failed", error=str(e), code_dir=code_dir)
             print(f"   ⚠️  Cannot import YourMT3 modules: {e}")
             print(f"      Codebase at: {code_dir}")
             health.set_component("yourmt3", "error: import failed")
             return
 
         try:
+            import config.config as _ymt3_config
             import torch
+
+            # Patch save_dir so initialize_trainer finds checkpoints on disk.
+            # The snapshot was downloaded to checkpoint_dir, and checkpoints
+            # live at checkpoint_dir/logs/2024/{exp_id}/checkpoints/{ckpt}.
+            # Default config has save_dir="amt/logs" — override to the real path.
+            save_dir = os.path.join(checkpoint_dir, "logs")
+            _ymt3_config.shared_cfg["WANDB"]["save_dir"] = save_dir
 
             # Build minimal args for initialize_trainer
             args = self._build_yourmt3_args(checkpoint_dir)
 
-            _, _, dir_info, shared_cfg = initialize_trainer(args, stage='test')
-            shared_cfg, audio_cfg, model_cfg = update_config(args, shared_cfg, stage='test')
+            _, _, dir_info, shared_cfg = initialize_trainer(args, stage="test")
+            shared_cfg, audio_cfg, model_cfg = update_config(args, shared_cfg, stage="test")
 
             tm = TaskManager(
                 task_name=args.task,
@@ -483,17 +555,21 @@ class EarAgent:
                 shared_cfg=shared_cfg,
                 optimizer=None,
                 task_manager=tm,
-                eval_subtask_key='default',
+                eval_subtask_key="default",
             ).to(self.device)
 
             last_ckpt = dir_info.get("last_ckpt_path")
             if last_ckpt and os.path.exists(last_ckpt):
-                checkpoint = torch.load(last_ckpt, map_location=self.device, weights_only=False)
-                state_dict = checkpoint.get('state_dict', checkpoint)
-                state_dict = {k: v for k, v in state_dict.items() if 'pitchshift' not in k}
+                checkpoint = torch.load(
+                    last_ckpt,
+                    map_location=self.device,
+                    weights_only=False,
+                )  # nosec B614 — YourMT3 checkpoints require full pickle
+                state_dict = checkpoint.get("state_dict", checkpoint)
+                state_dict = {k: v for k, v in state_dict.items() if "pitchshift" not in k}
                 model.load_state_dict(state_dict, strict=False)
             else:
-                log.warn("yourmt3_no_checkpoint", path=str(last_ckpt))
+                log.warning("yourmt3_no_checkpoint", path=str(last_ckpt))
                 print(f"   ⚠️  No checkpoint found at: {last_ckpt}")
                 health.set_component("yourmt3", "error: no checkpoint")
                 return
@@ -506,25 +582,29 @@ class EarAgent:
             # Store utility functions — no runtime imports needed later
             try:
                 from model.utils.audio import slice_padded_array
-                from model.utils.event2note import merge_zipped_note_events_and_ties_to_notes
+                from model.utils.event2note import (
+                    merge_zipped_note_events_and_ties_to_notes,
+                )
                 from model.utils.note2event import mix_notes
+
                 self._ymt3_utils = {
-                    'slice': slice_padded_array,
-                    'merge': merge_zipped_note_events_and_ties_to_notes,
-                    'mix': mix_notes,
+                    "slice": slice_padded_array,
+                    "merge": merge_zipped_note_events_and_ties_to_notes,
+                    "mix": mix_notes,
                 }
                 log.info("yourmt3_loaded", checkpoint=last_ckpt)
                 health.set_component("yourmt3", "loaded")
             except ImportError as e:
-                log.warn("yourmt3_utils_missing", error=str(e))
+                log.warning("yourmt3_utils_missing", error=str(e))
                 health.set_component("yourmt3", "loaded (no utils)")
 
         except Exception as e:
             log.error("yourmt3_load_failed", exc=e)
             print(f"   ⚠️  Model load failed: {e}")
-            print(f"      Falling back to Basic Pitch.")
+            print("      Falling back to Basic Pitch.")
             health.set_component("yourmt3", f"error: {type(e).__name__}")
             import traceback
+
             traceback.print_exc()
             self.model = None
 
@@ -533,65 +613,136 @@ class EarAgent:
         import argparse
 
         parser = argparse.ArgumentParser()
-        parser.add_argument('exp_id', type=str, default='ymt3')
-        parser.add_argument('-p', '--project', type=str, default='ymt3')
-        parser.add_argument('-ac', '--audio-codec', type=str, default=None)
-        parser.add_argument('-hop', '--hop-length', type=int, default=None)
-        parser.add_argument('-nmel', '--n-mels', type=int, default=None)
-        parser.add_argument('-if', '--input-frames', type=int, default=None)
-        parser.add_argument('-sqr', '--sca-use-query-residual', type=lambda x: x.lower() in ('true', '1', 'yes'), default=None)
-        parser.add_argument('-enc', '--encoder-type', type=str, default=None)
-        parser.add_argument('-dec', '--decoder-type', type=str, default=None)
-        parser.add_argument('-preenc', '--pre-encoder-type', type=str, default='default')
-        parser.add_argument('-predec', '--pre-decoder-type', type=str, default='default')
-        parser.add_argument('-cout', '--conv-out-channels', type=int, default=None)
-        parser.add_argument('-tenc', '--task-cond-encoder', type=lambda x: x.lower() in ('true', '1', 'yes'), default=True)
-        parser.add_argument('-tdec', '--task-cond-decoder', type=lambda x: x.lower() in ('true', '1', 'yes'), default=True)
-        parser.add_argument('-df', '--d-feat', type=int, default=None)
-        parser.add_argument('-pt', '--pretrained', type=lambda x: x.lower() in ('true', '1', 'yes'), default=False)
-        parser.add_argument('-b', '--base-name', type=str, default="google/t5-v1_1-small")
-        parser.add_argument('-epe', '--encoder-position-encoding-type', type=str, default='default')
-        parser.add_argument('-dpe', '--decoder-position-encoding-type', type=str, default='default')
-        parser.add_argument('-twe', '--tie-word-embedding', type=lambda x: x.lower() in ('true', '1', 'yes'), default=None)
-        parser.add_argument('-el', '--event-length', type=int, default=None)
-        parser.add_argument('-dl', '--d-latent', type=int, default=None)
-        parser.add_argument('-nl', '--num-latents', type=int, default=None)
-        parser.add_argument('-dpm', '--perceiver-tf-d-model', type=int, default=None)
-        parser.add_argument('-npb', '--num-perceiver-tf-blocks', type=int, default=None)
-        parser.add_argument('-npl', '--num-perceiver-tf-local-transformers-per-block', type=int, default=None)
-        parser.add_argument('-npt', '--num-perceiver-tf-temporal-transformers-per-block', type=int, default=None)
-        parser.add_argument('-atc', '--attention-to-channel', type=lambda x: x.lower() in ('true', '1', 'yes'), default=None)
-        parser.add_argument('-ln', '--layer-norm-type', type=str, default=None)
-        parser.add_argument('-ff', '--ff-layer-type', type=str, default=None)
-        parser.add_argument('-wf', '--ff-widening-factor', type=int, default=None)
-        parser.add_argument('-nmoe', '--moe-num-experts', type=int, default=None)
-        parser.add_argument('-kmoe', '--moe-topk', type=int, default=None)
-        parser.add_argument('-act', '--hidden-act', type=str, default=None)
-        parser.add_argument('-rt', '--rotary-type', type=str, default=None)
-        parser.add_argument('-rk', '--rope-apply-to-keys', type=lambda x: x.lower() in ('true', '1', 'yes'), default=None)
-        parser.add_argument('-rp', '--rope-partial-pe', type=lambda x: x.lower() in ('true', '1', 'yes'), default=None)
-        parser.add_argument('-dff', '--decoder-ff-layer-type', type=str, default=None)
-        parser.add_argument('-dwf', '--decoder-ff-widening-factor', type=int, default=None)
-        parser.add_argument('-tk', '--task', type=str, default='mt3_full_plus')
-        parser.add_argument('-epv', '--eval-program-vocab', type=str, default=None)
-        parser.add_argument('-edv', '--eval-drum-vocab', type=str, default=None)
-        parser.add_argument('-etk', '--eval-subtask-key', type=str, default='default')
-        parser.add_argument('-t', '--onset-tolerance', type=float, default=0.05)
-        parser.add_argument('-os', '--test-octave-shift', type=lambda x: x.lower() in ('true', '1', 'yes'), default=False)
-        parser.add_argument('-w', '--write-model-output', type=lambda x: x.lower() in ('true', '1', 'yes'), default=True)
-        parser.add_argument('-pr', '--precision', type=str, default="bf16-mixed")
-        parser.add_argument('-st', '--strategy', type=str, default='auto')
-        parser.add_argument('-n', '--num-nodes', type=int, default=1)
-        parser.add_argument('-g', '--num-gpus', type=str, default='auto')
-        parser.add_argument('-wb', '--wandb-mode', type=str, default="disabled")
-        parser.add_argument('-debug', '--debug-mode', type=lambda x: x.lower() in ('true', '1', 'yes'), default=False)
-        parser.add_argument('-tps', '--test-pitch-shift', type=int, default=None)
-        parser.add_argument('--epochs', type=int, default=None)
+        parser.add_argument("exp_id", type=str, default="ymt3")
+        parser.add_argument("-p", "--project", type=str, default="ymt3")
+        parser.add_argument("-ac", "--audio-codec", type=str, default=None)
+        parser.add_argument("-hop", "--hop-length", type=int, default=None)
+        parser.add_argument("-nmel", "--n-mels", type=int, default=None)
+        parser.add_argument("-if", "--input-frames", type=int, default=None)
+        parser.add_argument(
+            "-sqr",
+            "--sca-use-query-residual",
+            type=lambda x: x.lower() in ("true", "1", "yes"),
+            default=None,
+        )
+        parser.add_argument("-enc", "--encoder-type", type=str, default=None)
+        parser.add_argument("-dec", "--decoder-type", type=str, default=None)
+        parser.add_argument("-preenc", "--pre-encoder-type", type=str, default="default")
+        parser.add_argument("-predec", "--pre-decoder-type", type=str, default="default")
+        parser.add_argument("-cout", "--conv-out-channels", type=int, default=None)
+        parser.add_argument(
+            "-tenc",
+            "--task-cond-encoder",
+            type=lambda x: x.lower() in ("true", "1", "yes"),
+            default=True,
+        )
+        parser.add_argument(
+            "-tdec",
+            "--task-cond-decoder",
+            type=lambda x: x.lower() in ("true", "1", "yes"),
+            default=True,
+        )
+        parser.add_argument("-df", "--d-feat", type=int, default=None)
+        parser.add_argument(
+            "-pt",
+            "--pretrained",
+            type=lambda x: x.lower() in ("true", "1", "yes"),
+            default=False,
+        )
+        parser.add_argument("-b", "--base-name", type=str, default="google/t5-v1_1-small")
+        parser.add_argument("-epe", "--encoder-position-encoding-type", type=str, default="default")
+        parser.add_argument("-dpe", "--decoder-position-encoding-type", type=str, default="default")
+        parser.add_argument(
+            "-twe",
+            "--tie-word-embedding",
+            type=lambda x: x.lower() in ("true", "1", "yes"),
+            default=None,
+        )
+        parser.add_argument("-el", "--event-length", type=int, default=None)
+        parser.add_argument("-dl", "--d-latent", type=int, default=None)
+        parser.add_argument("-nl", "--num-latents", type=int, default=None)
+        parser.add_argument("-dpm", "--perceiver-tf-d-model", type=int, default=None)
+        parser.add_argument("-npb", "--num-perceiver-tf-blocks", type=int, default=None)
+        parser.add_argument(
+            "-npl",
+            "--num-perceiver-tf-local-transformers-per-block",
+            type=int,
+            default=None,
+        )
+        parser.add_argument(
+            "-npt",
+            "--num-perceiver-tf-temporal-transformers-per-block",
+            type=int,
+            default=None,
+        )
+        parser.add_argument(
+            "-atc",
+            "--attention-to-channel",
+            type=lambda x: x.lower() in ("true", "1", "yes"),
+            default=None,
+        )
+        parser.add_argument("-ln", "--layer-norm-type", type=str, default=None)
+        parser.add_argument("-ff", "--ff-layer-type", type=str, default=None)
+        parser.add_argument("-wf", "--ff-widening-factor", type=int, default=None)
+        parser.add_argument("-nmoe", "--moe-num-experts", type=int, default=None)
+        parser.add_argument("-kmoe", "--moe-topk", type=int, default=None)
+        parser.add_argument("-act", "--hidden-act", type=str, default=None)
+        parser.add_argument("-rt", "--rotary-type", type=str, default=None)
+        parser.add_argument(
+            "-rk",
+            "--rope-apply-to-keys",
+            type=lambda x: x.lower() in ("true", "1", "yes"),
+            default=None,
+        )
+        parser.add_argument(
+            "-rp",
+            "--rope-partial-pe",
+            type=lambda x: x.lower() in ("true", "1", "yes"),
+            default=None,
+        )
+        parser.add_argument("-dff", "--decoder-ff-layer-type", type=str, default=None)
+        parser.add_argument("-dwf", "--decoder-ff-widening-factor", type=int, default=None)
+        parser.add_argument("-tk", "--task", type=str, default="mt3_full_plus")
+        parser.add_argument("-epv", "--eval-program-vocab", type=str, default=None)
+        parser.add_argument("-edv", "--eval-drum-vocab", type=str, default=None)
+        parser.add_argument("-etk", "--eval-subtask-key", type=str, default="default")
+        parser.add_argument("-t", "--onset-tolerance", type=float, default=0.05)
+        parser.add_argument(
+            "-os",
+            "--test-octave-shift",
+            type=lambda x: x.lower() in ("true", "1", "yes"),
+            default=False,
+        )
+        parser.add_argument(
+            "-w",
+            "--write-model-output",
+            type=lambda x: x.lower() in ("true", "1", "yes"),
+            default=True,
+        )
+        parser.add_argument("-pr", "--precision", type=str, default="bf16-mixed")
+        parser.add_argument("-st", "--strategy", type=str, default="auto")
+        parser.add_argument("-n", "--num-nodes", type=int, default=1)
+        parser.add_argument("-g", "--num-gpus", type=str, default="auto")
+        parser.add_argument("-wb", "--wandb-mode", type=str, default="disabled")
+        parser.add_argument(
+            "-debug",
+            "--debug-mode",
+            type=lambda x: x.lower() in ("true", "1", "yes"),
+            default=False,
+        )
+        parser.add_argument("-tps", "--test-pitch-shift", type=int, default=None)
+        parser.add_argument("--epochs", type=int, default=None)
 
-        # Build args list: exp_id is the first positional arg
-        args_list = ['ymt3']
-        # Point initialize_trainer to the checkpoint directory
-        args_list.extend(['--project', 'ymt3'])
+        # Build args list matching the checkpoint layout:
+        #   {save_dir}/2024/{exp_id}/checkpoints/{ckpt}
+        # The "YMT3+" checkpoint uses exp_id@ckpt syntax.
+        exp_id = "notask_all_cross_v6_xk2_amp0811_gm_ext_plus_nops_b72"
+        ckpt_name = "model.ckpt"
+        precision = "16" if torch.cuda.is_available() else "32"
+
+        args_list = [f"{exp_id}@{ckpt_name}"]
+        args_list.extend(["--project", "2024"])
+        args_list.extend(["--precision", precision])
 
         return parser.parse_args(args_list)
 
@@ -601,8 +752,8 @@ class EarAgent:
         target: str = "Guitar",
         onset_threshold: float = 0.5,
         frame_threshold: float = 0.3,
-        min_note_duration: float = 0.05
-    ) -> List[note_seq.NoteSequence.Note]:
+        min_note_duration: float = 0.05,
+    ) -> list[note_seq.NoteSequence.Note]:
         """
         Transcribe audio to MIDI notes with full graceful fallback chain:
 
@@ -621,29 +772,43 @@ class EarAgent:
             with metrics.track_stage("yourmt3_transcription"):
                 try:
                     result = self._transcribe_with_yourmt3(
-                        audio_path, target, onset_threshold,
-                        frame_threshold, min_note_duration
+                        audio_path,
+                        target,
+                        onset_threshold,
+                        frame_threshold,
+                        min_note_duration,
                     )
-                    log.info("transcribe_done", file=file, model="yourmt3",
-                             note_count=len(result))
+                    log.info(
+                        "transcribe_done",
+                        file=file,
+                        model="yourmt3",
+                        note_count=len(result),
+                    )
                     return result
                 except Exception as e:
-                    log.warn("yourmt3_fell_back", file=file, error=str(e))
-                    print(f"   YourMT3+ failed, falling back to Basic Pitch...")
+                    log.warning("yourmt3_fell_back", file=file, error=str(e))
+                    print("   YourMT3+ failed, falling back to Basic Pitch...")
 
         # ── Try Basic Pitch ───────────────────────────────────────────
         if BASIC_PITCH_AVAILABLE:
             with metrics.track_stage("basic_pitch_transcription"):
                 try:
                     result = self._transcribe_with_basic_pitch(
-                        audio_path, target, onset_threshold,
-                        frame_threshold, min_note_duration
+                        audio_path,
+                        target,
+                        onset_threshold,
+                        frame_threshold,
+                        min_note_duration,
                     )
-                    log.info("transcribe_done", file=file, model="basic_pitch",
-                             note_count=len(result))
+                    log.info(
+                        "transcribe_done",
+                        file=file,
+                        model="basic_pitch",
+                        note_count=len(result),
+                    )
                     return result
                 except Exception as e:
-                    log.warn("basic_pitch_failed", file=file, error=str(e))
+                    log.warning("basic_pitch_failed", file=file, error=str(e))
                     print(f"   Basic Pitch failed too: {e}")
 
         # ── Nothing worked: raise error ──────────────────────────────
@@ -651,7 +816,7 @@ class EarAgent:
         health.record_request(success=False, details=f"transcribe: {file}")
         raise RuntimeError(
             f"No transcription models available for {file}. "
-            "Install Basic Pitch (pip install basic-pitch) or ensure YourMT3+ loads correctly."
+            "Install Basic Pitch (pip install basic-pitch) or ensure YourMT3+ loads correctly.",
         )
 
     def _transcribe_with_basic_pitch(
@@ -660,8 +825,8 @@ class EarAgent:
         target: str,
         onset_threshold: float,
         frame_threshold: float,
-        min_note_duration: float
-    ) -> List[note_seq.NoteSequence.Note]:
+        min_note_duration: float,
+    ) -> list[note_seq.NoteSequence.Note]:
         """
         Transcribe using Basic Pitch (Spotify's proven model).
 
@@ -680,7 +845,7 @@ class EarAgent:
                 maximum_frequency=None,
                 multiple_pitch_bends=False,
                 melodia_trick=True,
-                debug_file=None
+                debug_file=None,
             )
 
             notes = self._convert_prettymidi_to_noteseq(midi_data)
@@ -694,6 +859,7 @@ class EarAgent:
             log.error("basic_pitch_error", exc=e, file=os.path.basename(audio_path))
             print(f"❌ Basic Pitch error: {e}")
             import traceback
+
             traceback.print_exc()
             raise
 
@@ -703,8 +869,8 @@ class EarAgent:
         target: str,
         onset_threshold: float,
         frame_threshold: float,
-        min_note_duration: float
-    ) -> List[note_seq.NoteSequence.Note]:
+        min_note_duration: float,
+    ) -> list[note_seq.NoteSequence.Note]:
         """
         Transcribe using YourMT3+ custom PyTorch Lightning model.
 
@@ -716,26 +882,26 @@ class EarAgent:
         model = self.model
         tm = self.processor
 
-        if tm is None or not hasattr(model, 'inference_file'):
-            log.warn("yourmt3_not_ready")
+        if tm is None or not hasattr(model, "inference_file"):
+            log.warning("yourmt3_not_ready")
             raise RuntimeError("Model missing inference_file method")
 
         # Load and resample audio
-        audio, sr = librosa.load(audio_path, sr=model.audio_cfg['sample_rate'], mono=True)
+        audio, sr = librosa.load(audio_path, sr=model.audio_cfg["sample_rate"], mono=True)
         audio = torch.from_numpy(audio).unsqueeze(0)
 
         # Segment audio — use stored utility or inline fallback
-        input_frames = model.audio_cfg['input_frames']
+        input_frames = model.audio_cfg["input_frames"]
         utils = self._ymt3_utils
 
-        if 'slice' in utils:
-            audio_segments = utils['slice'](audio, input_frames, input_frames)
+        if "slice" in utils:
+            audio_segments = utils["slice"](audio, input_frames, input_frames)
         else:
             audio_segments = self._slice_audio_inline(audio, input_frames, input_frames)
 
-        audio_segments = torch.from_numpy(
-            audio_segments.astype('float32')
-        ).to(self.device).unsqueeze(1)
+        audio_segments = (
+            torch.from_numpy(audio_segments.astype("float32")).to(self.device).unsqueeze(1)
+        )
 
         # Inference
         with torch.no_grad():
@@ -744,37 +910,41 @@ class EarAgent:
         # Detokenize
         num_channels = tm.num_decoding_channels
         n_items = audio_segments.shape[0]
-        start_secs = [input_frames * i / model.audio_cfg['sample_rate'] for i in range(n_items)]
+        start_secs = [input_frames * i / model.audio_cfg["sample_rate"] for i in range(n_items)]
 
         pred_notes_in_file = []
         for ch in range(num_channels):
             pred_token_arr_ch = [arr[:, ch, :] for arr in pred_token_arr]
             zipped, _, _ = tm.detokenize_list_batches(
-                pred_token_arr_ch, start_secs, return_events=True
+                pred_token_arr_ch,
+                start_secs,
+                return_events=True,
             )
 
-            if 'merge' in utils:
-                pred_notes_ch, _ = utils['merge'](zipped)
+            if "merge" in utils:
+                pred_notes_ch, _ = utils["merge"](zipped)
             else:
                 pred_notes_ch = self._merge_notes_inline(zipped)
 
             pred_notes_in_file.append(pred_notes_ch)
 
         # Merge across channels
-        if 'mix' in utils:
-            pred_notes = utils['mix'](pred_notes_in_file)
+        if "mix" in utils:
+            pred_notes = utils["mix"](pred_notes_in_file)
         else:
             pred_notes = self._mix_notes_inline(pred_notes_in_file)
 
         # Convert to note_seq format
         notes = []
         for n in pred_notes:
-            notes.append(note_seq.NoteSequence.Note(
-                pitch=n.get('pitch', 60),
-                start_time=float(n.get('start', 0)),
-                end_time=float(n.get('end', n.get('start', 0) + min_note_duration)),
-                velocity=int(n.get('velocity', 80)),
-            ))
+            notes.append(
+                note_seq.NoteSequence.Note(
+                    pitch=n.get("pitch", 60),
+                    start_time=float(n.get("start", 0)),
+                    end_time=float(n.get("end", n.get("start", 0) + min_note_duration)),
+                    velocity=int(n.get("velocity", 80)),
+                ),
+            )
 
         notes = self._filter_by_instrument_range(notes, target)
         log.info("yourmt3_transcribed", note_count=len(notes), target=target)
@@ -791,11 +961,11 @@ class EarAgent:
         segments = []
         start = 0
         while start + frame_size <= total:
-            segments.append(audio_np[start:start + frame_size])
+            segments.append(audio_np[start : start + frame_size])
             start += step_size
         if start < total:
             segment = np.zeros(frame_size, dtype=audio_np.dtype)
-            segment[:total - start] = audio_np[start:]
+            segment[: total - start] = audio_np[start:]
             segments.append(segment)
         return np.array(segments)
 
@@ -804,12 +974,14 @@ class EarAgent:
         """Convert zipped (onset, offset, pitch, velocity, instrument) to note dicts."""
         notes = []
         for onset, offset, pitch, velocity, instrument in zipped_events:
-            notes.append({
-                'pitch': int(pitch),
-                'start': float(onset),
-                'end': float(offset),
-                'velocity': int(velocity),
-            })
+            notes.append(
+                {
+                    "pitch": int(pitch),
+                    "start": float(onset),
+                    "end": float(offset),
+                    "velocity": int(velocity),
+                },
+            )
         return notes
 
     @staticmethod
@@ -819,17 +991,14 @@ class EarAgent:
         mixed = []
         for channel_notes in notes_by_channel:
             for n in channel_notes:
-                key = (round(n.get('start', 0), 3), n.get('pitch', 0))
+                key = (round(n.get("start", 0), 3), n.get("pitch", 0))
                 if key not in seen:
                     seen.add(key)
                     mixed.append(n)
-        mixed.sort(key=lambda n: n.get('start', 0))
+        mixed.sort(key=lambda n: n.get("start", 0))
         return mixed
 
-    def _convert_prettymidi_to_noteseq(
-        self,
-        midi_data
-    ) -> List[note_seq.NoteSequence.Note]:
+    def _convert_prettymidi_to_noteseq(self, midi_data) -> list[note_seq.NoteSequence.Note]:
         """
         Convert pretty_midi (Basic Pitch output) to note_seq format.
 
@@ -838,6 +1007,7 @@ class EarAgent:
 
         Returns:
             List of note_seq.NoteSequence.Note objects
+
         """
         notes = []
 
@@ -849,7 +1019,7 @@ class EarAgent:
                     pitch=note.pitch,
                     start_time=note.start,
                     end_time=note.end,
-                    velocity=note.velocity
+                    velocity=note.velocity,
                 )
                 notes.append(ns_note)
 
@@ -861,8 +1031,8 @@ class EarAgent:
     def _convert_to_noteseq(
         self,
         midi_events: str,
-        min_duration: float = 0.05
-    ) -> List[note_seq.NoteSequence.Note]:
+        min_duration: float = 0.05,
+    ) -> list[note_seq.NoteSequence.Note]:
         """
         Convert YourMT3 MIDI token output to note_seq Note objects.
 
@@ -873,50 +1043,59 @@ class EarAgent:
                                 NOTE_OFF 60 TIME_SHIFT 0.25 ...
         2. Key-value format:   pitch:60,start:0.0,end:0.5,velocity:80
         """
-        notes = []
+        notes: list = []
         tokens = midi_events.strip().split()
         if not tokens:
             return notes
 
         # ── Format 1: NOTE_ON / NOTE_OFF token pairs ──────────────
         first_token = tokens[0].upper()
-        if first_token in ("NOTE_ON", "NOTE_OFF", "TIME_SHIFT",
-                           "PITCH", "VELOCITY", "PROGRAM"):
+        if first_token in (
+            "NOTE_ON",
+            "NOTE_OFF",
+            "TIME_SHIFT",
+            "PITCH",
+            "VELOCITY",
+            "PROGRAM",
+        ):
             notes = self._parse_mt3_tokens(tokens, min_duration)
             if notes:
                 return notes
 
         # ── Format 2: key:value pairs (pitch:X,start:Y,...) ──────
         import re
-        pattern = r'pitch:(\d+),start:([\d.]+),end:([\d.]+),velocity:(\d+)'
+
+        pattern = r"pitch:(\d+),start:([\d.]+),end:([\d.]+),velocity:(\d+)"
         matches = re.findall(pattern, midi_events)
         if matches:
             for pitch_str, start_str, end_str, vel_str in matches:
                 end = float(end_str)
                 start = float(start_str)
                 if (end - start) >= min_duration:
-                    notes.append(note_seq.NoteSequence.Note(
-                        pitch=int(pitch_str),
-                        start_time=start,
-                        end_time=end,
-                        velocity=int(vel_str),
-                    ))
+                    notes.append(
+                        note_seq.NoteSequence.Note(
+                            pitch=int(pitch_str),
+                            start_time=start,
+                            end_time=end,
+                            velocity=int(vel_str),
+                        ),
+                    )
             if notes:
                 return sorted(notes, key=lambda n: n.start_time)
 
         # ── No format matched ─────────────────────────────────────
         if not notes:
-            print(f"⚠ Could not parse YourMT3 output format")
+            print("⚠ Could not parse YourMT3 output format")
             print(f"   Raw (first 200 chars): {midi_events[:200]}")
-            print(f"   Install from source or check model hub for format changes.")
+            print("   Install from source or check model hub for format changes.")
 
         return notes
 
     def _parse_mt3_tokens(
         self,
-        tokens: List[str],
-        min_duration: float
-    ) -> List[note_seq.NoteSequence.Note]:
+        tokens: list[str],
+        min_duration: float,
+    ) -> list[note_seq.NoteSequence.Note]:
         """
         Parse NOTE_ON / NOTE_OFF / TIME_SHIFT token sequences.
 
@@ -924,7 +1103,7 @@ class EarAgent:
             NOTE_ON 60 VELOCITY 80 TIME_SHIFT 0.5 NOTE_OFF 60
         """
         notes = []
-        active_notes: Dict[int, Tuple[float, int]] = {}  # pitch -> (start, velocity)
+        active_notes: dict[int, tuple[float, int]] = {}  # pitch -> (start, velocity)
         current_time = 0.0
         i = 0
 
@@ -947,12 +1126,14 @@ class EarAgent:
                         start_time, velocity = active_notes.pop(pitch)
                         dur = current_time - start_time
                         if dur >= min_duration:
-                            notes.append(note_seq.NoteSequence.Note(
-                                pitch=pitch,
-                                start_time=start_time,
-                                end_time=current_time,
-                                velocity=velocity,
-                            ))
+                            notes.append(
+                                note_seq.NoteSequence.Note(
+                                    pitch=pitch,
+                                    start_time=start_time,
+                                    end_time=current_time,
+                                    velocity=velocity,
+                                ),
+                            )
                     i += 2
 
                 elif tok == "TIME_SHIFT" and i + 1 < len(tokens):
@@ -967,20 +1148,22 @@ class EarAgent:
         # Close any still-active notes at end of sequence
         final_time = current_time + (min_duration * 2)
         for pitch, (start_time, velocity) in active_notes.items():
-            notes.append(note_seq.NoteSequence.Note(
-                pitch=pitch,
-                start_time=start_time,
-                end_time=final_time,
-                velocity=velocity,
-            ))
+            notes.append(
+                note_seq.NoteSequence.Note(
+                    pitch=pitch,
+                    start_time=start_time,
+                    end_time=final_time,
+                    velocity=velocity,
+                ),
+            )
 
         return sorted(notes, key=lambda n: n.start_time)
 
     def _filter_by_instrument_range(
         self,
-        notes: List[note_seq.NoteSequence.Note],
-        target: str
-    ) -> List[note_seq.NoteSequence.Note]:
+        notes: list[note_seq.NoteSequence.Note],
+        target: str,
+    ) -> list[note_seq.NoteSequence.Note]:
         """
         Filter notes by valid instrument range.
 
@@ -995,10 +1178,7 @@ class EarAgent:
         else:  # Guitar
             min_pitch, max_pitch = 40, 88  # Standard guitar range
 
-        filtered = [
-            note for note in notes
-            if min_pitch <= note.pitch <= max_pitch
-        ]
+        filtered = [note for note in notes if min_pitch <= note.pitch <= max_pitch]
 
         removed_count = len(notes) - len(filtered)
         if removed_count > 0:
@@ -1008,9 +1188,9 @@ class EarAgent:
 
     def humanize_and_clean(
         self,
-        raw_notes: List[note_seq.NoteSequence.Note],
-        is_bass: bool = False
-    ) -> List[note_seq.NoteSequence.Note]:
+        raw_notes: list[note_seq.NoteSequence.Note],
+        is_bass: bool = False,
+    ) -> list[note_seq.NoteSequence.Note]:
         """
         Clean transcription artifacts.
 
@@ -1020,7 +1200,7 @@ class EarAgent:
         - Duplicate notes at same timestamp
         """
         cleaned = []
-        seen_pitches = {}  # Track pitches by start time
+        seen_pitches: dict = {}  # Track pitches by start time
 
         for note in raw_notes:
             # Filter ultra-short notes
@@ -1046,7 +1226,7 @@ class EarAgent:
 
         return cleaned
 
-    def export_midi(self, notes: List[note_seq.NoteSequence.Note], path: str):
+    def export_midi(self, notes: list[note_seq.NoteSequence.Note], path: str):
         """Export note sequence to MIDI file."""
         if not notes:
             print(f"⚠️  No notes to export to {path}")
@@ -1062,6 +1242,7 @@ class EarAgent:
 # STAGE 5: THE LUTHIER (TABLATURE GENERATION)
 # ============================================================================
 
+
 class TabAgent:
     """
     MIDI-to-tablature conversion using dynamic programming.
@@ -1076,7 +1257,7 @@ class TabAgent:
     No changes needed from original - implementation is already optimal.
     """
 
-    def __init__(self, tuning: List[int], num_frets: int = 24):
+    def __init__(self, tuning: list[int], num_frets: int = 24):
         """
         Initialize tablature generator.
 
@@ -1084,31 +1265,28 @@ class TabAgent:
             tuning: List of MIDI note numbers for open strings
                 Example: [23, 28, 33, 38, 43] for 5-string bass (B-E-A-D-G)
             num_frets: Maximum fret number on instrument
+
         """
         self.tuning = tuning
         self.num_frets = num_frets
         self.num_strings = len(tuning)
 
-    def get_valid_positions(self, midi_note: int) -> List[Dict]:
+    def get_valid_positions(self, midi_note: int) -> list[dict]:
         """
         Find all valid string/fret combinations for a MIDI note.
 
         Returns:
             List of dicts with 'string' and 'fret' keys
+
         """
         positions = []
         for string_idx, open_note in enumerate(self.tuning):
             fret = midi_note - open_note
             if 0 <= fret <= self.num_frets:
-                positions.append({'string': string_idx, 'fret': fret})
+                positions.append({"string": string_idx, "fret": fret})
         return positions
 
-    def calculate_cost(
-        self,
-        prev: Optional[Dict],
-        curr: Dict,
-        time_delta: float = 1.0
-    ) -> float:
+    def calculate_cost(self, prev: dict | None, curr: dict, time_delta: float = 1.0) -> float:
         """
         Calculate transition cost between two positions.
 
@@ -1125,12 +1303,13 @@ class TabAgent:
 
         Returns:
             Cost value (lower is better)
+
         """
         if prev is None:
             return 0.0
 
-        fret_distance = abs(curr['fret'] - prev['fret'])
-        string_distance = abs(curr['string'] - prev['string'])
+        fret_distance = abs(curr["fret"] - prev["fret"])
+        string_distance = abs(curr["string"] - prev["string"])
 
         # Base costs (tunable weights)
         cost = (fret_distance * 1.5) + (string_distance * 2.0)
@@ -1148,16 +1327,16 @@ class TabAgent:
         # (Low strings on bass have better tone for low notes)
         if self.num_strings == 5:
             # Low B and E strings (indices 0-1)
-            if curr['string'] < 2 and 0 < curr['fret'] < 5:
+            if curr["string"] < 2 and 0 < curr["fret"] < 5:
                 cost += 1.0  # Slight penalty for low frets on low strings
 
         return cost
 
     def generate_tab(
         self,
-        midi_notes: List[note_seq.NoteSequence.Note],
-        technique_sensitivity: float = 0.7
-    ) -> List[Dict]:
+        midi_notes: list[note_seq.NoteSequence.Note],
+        technique_sensitivity: float = 0.7,
+    ) -> list[dict]:
         """
         Generate optimal tablature using dynamic programming.
 
@@ -1174,24 +1353,20 @@ class TabAgent:
 
         Returns:
             List of tab positions with technique annotations
+
         """
         if not midi_notes:
             return []
 
         # Convert to simplified representation
-        notes = [
-            {'pitch': n.pitch, 'start': n.start_time}
-            for n in midi_notes
-        ]
+        notes = [{"pitch": n.pitch, "start": n.start_time} for n in midi_notes]
 
         # Get valid positions for each note
-        layers = [self.get_valid_positions(n['pitch']) for n in notes]
+        layers = [self.get_valid_positions(n["pitch"]) for n in notes]
 
         # Check for unplayable notes
         if not all(layers):
-            unplayable = [
-                i for i, layer in enumerate(layers) if not layer
-            ]
+            unplayable = [i for i, layer in enumerate(layers) if not layer]
             print(f"⚠️  Warning: Notes at indices {unplayable} are unplayable")
             return []
 
@@ -1202,20 +1377,22 @@ class TabAgent:
         # Forward pass: compute costs
         for i in range(1, len(layers)):
             curr_layer = layers[i]
-            prev_layer = layers[i-1]
-            time_delta = notes[i]['start'] - notes[i-1]['start']
+            prev_layer = layers[i - 1]
+            time_delta = notes[i]["start"] - notes[i - 1]["start"]
 
             curr_costs = []
             backpointers = []
 
             for curr_pos in curr_layer:
                 # Find minimum cost transition
-                min_cost = float('inf')
+                min_cost = float("inf")
                 best_prev_idx = -1
 
                 for prev_idx, prev_pos in enumerate(prev_layer):
                     cost = prev_costs[prev_idx] + self.calculate_cost(
-                        prev_pos, curr_pos, time_delta
+                        prev_pos,
+                        curr_pos,
+                        time_delta,
                     )
                     if cost < min_cost:
                         min_cost = cost
@@ -1240,28 +1417,29 @@ class TabAgent:
         best_path = best_path[::-1]
 
         # Annotate techniques (slides, hammer-ons, pull-offs)
-        final_tab = []
+        final_tab: list = []
         technique_window = 0.05 + technique_sensitivity * 0.25  # maps 0.5→0.175s, 0.9→0.275s
         for i, pos in enumerate(best_path):
             technique = "pick"
 
             if i > 0:
                 prev = final_tab[-1]
-                time_delta = notes[i]['start'] - notes[i-1]['start']
-                fret_diff_abs = abs(pos['fret'] - prev['fret'])
+                time_delta = notes[i]["start"] - notes[i - 1]["start"]
+                fret_diff_abs = abs(pos["fret"] - prev["fret"])
 
-                if prev['string'] == pos['string'] and time_delta < technique_window:
+                if prev["string"] == pos["string"] and time_delta < technique_window:
                     # Slide: 1-2 frets apart (priority over hammer/pull)
                     if 1 <= fret_diff_abs <= 2:
                         technique = "slide"
                     # Hammer-on: ascending fret on same string
-                    elif pos['fret'] > prev['fret']:
+                    elif pos["fret"] > prev["fret"]:
                         technique = "hammer"
                     # Pull-off: descending fret on same string
-                    elif pos['fret'] < prev['fret']:
+                    elif pos["fret"] < prev["fret"]:
                         technique = "pull"
 
-            pos['technique'] = technique
+            pos["technique"] = technique
+            pos["start_time"] = notes[i]["start"]
             final_tab.append(pos)
 
         return final_tab

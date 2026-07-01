@@ -10,16 +10,15 @@ Usage:
     python validate.py --quick            # skip slow checks
 """
 
+import argparse
 import os
 import sys
-import time
-import argparse
 import traceback
 
 PASS = 0
 FAIL = 0
 SKIP = 0
-RESULTS = []
+RESULTS: list = []
 
 
 def check(name, condition, detail=""):
@@ -33,7 +32,7 @@ def check(name, condition, detail=""):
 
 
 def check_skip(name, condition, detail=""):
-    global SKIP
+    global PASS, SKIP
     if condition:
         RESULTS.append(f"  ⏭️  {name} — {detail}")
         SKIP += 1
@@ -46,7 +45,7 @@ def main():
     global PASS, FAIL, SKIP
     parser = argparse.ArgumentParser()
     parser.add_argument("--quick", action="store_true", help="skip slow checks")
-    args = parser.parse_args()
+    parser.parse_args()
 
     root = os.path.dirname(os.path.abspath(__file__))
     os.chdir(root)
@@ -59,13 +58,28 @@ def main():
     print("\n--- File Existence ---\n")
 
     required_files = [
-        "agents.py", "app.py", "main.py", "Dockerfile", "requirements.txt",
-        "suno_postprocessor.py", "init_memory.py", "monitoring.py",
-        "README.md", "run.sh", "index.xml",
-        "reaper/TabAgent.lua", "reaper/Settings.lua",
-        "tests/__init__.py", "tests/test_ear.py", "tests/test_splitter.py",
-        "tests/test_suno.py", "tests/test_tab.py", "tests/test_benchmark.py",
-        "test_pipeline.py", "examples/guitar_solo.wav", "examples/bass_groove.wav",
+        "agents.py",
+        "app.py",
+        "main.py",
+        "Dockerfile",
+        "requirements.txt",
+        "suno_postprocessor.py",
+        "init_memory.py",
+        "monitoring.py",
+        "README.md",
+        "run.sh",
+        "index.xml",
+        "reaper/TabAgent.lua",
+        "reaper/Settings.lua",
+        "tests/__init__.py",
+        "tests/test_ear.py",
+        "tests/test_splitter.py",
+        "tests/test_suno.py",
+        "tests/test_tab.py",
+        "tests/test_benchmark.py",
+        "test_pipeline.py",
+        "examples/guitar_solo.wav",
+        "examples/bass_groove.wav",
     ]
     for f in required_files:
         check(f"File exists: {f}", os.path.exists(f))
@@ -77,22 +91,37 @@ def main():
     # ── 2. NO STUBS / TODOS ────────────────────────────────────────────
     print("\n--- No Stubs or TODOs ---\n")
 
-    for f in ["agents.py", "app.py", "main.py", "suno_postprocessor.py", "monitoring.py", "init_memory.py"]:
+    for f in [
+        "agents.py",
+        "app.py",
+        "main.py",
+        "suno_postprocessor.py",
+        "monitoring.py",
+        "init_memory.py",
+    ]:
         if not os.path.exists(f):
             continue
         with open(f) as fh:
             content = fh.read()
         check(f"No NotImplementedError in {f}", "NotImplementedError" not in content)
-        check(f"No TODO/FIXME/XXX/HACK in {f}",
-              not any(x in content for x in ["TODO", "FIXME", " XXX ", " HACK "]))
+        check(
+            f"No TODO/FIXME/XXX/HACK in {f}",
+            not any(x in content for x in ["TODO", "FIXME", " XXX ", " HACK "]),
+        )
 
     # ── 3. PYTHON SYNTAX ───────────────────────────────────────────────
     print("\n--- Python Syntax ---\n")
 
-    for f in ["agents.py", "app.py", "main.py", "suno_postprocessor.py",
-              "monitoring.py", "init_memory.py"]:
+    for f in [
+        "agents.py",
+        "app.py",
+        "main.py",
+        "suno_postprocessor.py",
+        "monitoring.py",
+        "init_memory.py",
+    ]:
         try:
-            compile(open(f).read(), f, 'exec')
+            compile(open(f).read(), f, "exec")
             check(f"Syntax OK: {f}", True)
         except SyntaxError as e:
             check(f"Syntax OK: {f}", False, str(e))
@@ -101,40 +130,61 @@ def main():
     print("\n--- Import Resolution ---\n")
 
     try:
-        import numpy; check("numpy", True)
-    except Exception: pass
+        check("numpy", True)
+    except Exception:
+        pass
     try:
-        import librosa; check("librosa", True)
-    except Exception: pass
+        check("librosa", True)
+    except Exception:
+        pass
     try:
-        import soundfile; check("soundfile", True)
-    except Exception: pass
+        check("soundfile", True)
+    except Exception:
+        pass
     try:
-        import scipy; check("scipy", True)
-    except Exception: pass
+        check("scipy", True)
+    except Exception:
+        pass
     try:
-        import torch; check("torch", True)
-    except Exception: pass
+        check("torch", True)
+    except Exception:
+        pass
     try:
-        import note_seq; check("note_seq", True)
-    except Exception: pass
+        import note_seq
+
+        check("note_seq", True)
+    except Exception:
+        pass
 
     # Project imports
     try:
-        from agents import SplitterAgent, EarAgent, TabAgent
+        from agents import EarAgent, SplitterAgent, TabAgent
+
         check("agents.py imports", True)
     except Exception as e:
         check("agents.py imports", False, str(e))
 
     try:
-        from suno_postprocessor import (SunoArtifactDetector, SunoAudioPreprocessor,
-                                         SunoNotePostprocessor, process_suno_audio)
+        from suno_postprocessor import (
+            SunoArtifactDetector,
+            SunoAudioPreprocessor,
+            SunoNotePostprocessor,
+        )
+
         check("suno_postprocessor.py imports", True)
     except Exception as e:
         check("suno_postprocessor.py imports", False, str(e))
 
     try:
-        from main import export_tab_to_txt, export_tab_to_json, TECHNIQUE_SLIDE, TECHNIQUE_HAMMER, TECHNIQUE_PULL, TECHNIQUE_PICK
+        from main import (
+            TECHNIQUE_HAMMER,
+            TECHNIQUE_PICK,
+            TECHNIQUE_PULL,
+            TECHNIQUE_SLIDE,
+            export_tab_to_json,
+            export_tab_to_txt,
+        )
+
         check("main.py imports + technique constants", True)
         assert TECHNIQUE_SLIDE == "slide"
         assert TECHNIQUE_HAMMER == "hammer"
@@ -144,20 +194,23 @@ def main():
         check("main.py imports + technique constants", False, str(e))
 
     try:
-        from monitoring import get_logger, health, default_metrics
         check("monitoring.py imports", True)
     except Exception as e:
         check("monitoring.py imports", False, str(e))
 
     try:
-        from app import create_ui
         check("app.py imports (gradio)", True)
     except Exception as e:
         # Gradio may not be installed in dev env
-        check_skip("app.py imports (gradio)", "gradio not installed" in str(e).lower() or "no module" in str(e).lower(), str(e))
+        check_skip(
+            "app.py imports (gradio)",
+            "gradio not installed" in str(e).lower() or "no module" in str(e).lower(),
+            str(e),
+        )
 
     try:
         import init_memory
+
         check("init_memory.py imports", True)
         check("init_memory has 8 profiles", len(init_memory.PROFILES) == 8)
     except Exception as e:
@@ -187,6 +240,7 @@ def main():
     # Suno note postprocessor
     try:
         import note_seq
+
         post = SunoNotePostprocessor()
         notes = [
             note_seq.NoteSequence.Note(pitch=60, start_time=0.0, end_time=0.5, velocity=80),
@@ -194,8 +248,10 @@ def main():
         ]
         cleaned = post.process(notes, is_suno=True, metrics={"hf_ratio": 0.4})
         check("SunoNotePostprocessor removes octave errors", len(cleaned) < len(notes))
-        check("SunoNotePostprocessor does NOT mutate input",
-              notes[0].pitch == 60 and notes[1].pitch == 72)
+        check(
+            "SunoNotePostprocessor does NOT mutate input",
+            notes[0].pitch == 60 and notes[1].pitch == 72,
+        )
     except Exception as e:
         check("SunoNotePostprocessor.process()", False, str(e))
 
@@ -203,9 +259,18 @@ def main():
     try:
         splitter = SplitterAgent(output_dir="/tmp/validated_stems")
         result = splitter.process_guitars("examples/guitar_solo.wav")
-        check("Splitter.process_guitars() returns lead path", os.path.exists(result["lead"]))
-        check("Splitter.process_guitars() returns left path", os.path.exists(result["left"]))
-        check("Splitter.process_guitars() returns right path", os.path.exists(result["right"]))
+        check(
+            "Splitter.process_guitars() returns lead path",
+            os.path.exists(result["lead"]),
+        )
+        check(
+            "Splitter.process_guitars() returns left path",
+            os.path.exists(result["left"]),
+        )
+        check(
+            "Splitter.process_guitars() returns right path",
+            os.path.exists(result["right"]),
+        )
         bass_out = splitter.process_bass("examples/bass_groove.wav")
         check("Splitter.process_bass() returns path", os.path.exists(bass_out))
     except Exception as e:
@@ -215,6 +280,7 @@ def main():
     # TabAgent tablature generation
     try:
         import note_seq
+
         agent = TabAgent(tuning=[40, 45, 50, 55, 59, 64], num_frets=24)
         notes = [
             note_seq.NoteSequence.Note(pitch=40, start_time=0.0, end_time=0.5, velocity=80),
@@ -223,8 +289,10 @@ def main():
         tab = agent.generate_tab(notes)
         check("TabAgent.generate_tab() returns list", isinstance(tab, list))
         check("TabAgent.generate_tab() has entries", len(tab) == 2)
-        check("TabAgent entries have string, fret, technique",
-              all("string" in e and "fret" in e and "technique" in e for e in tab))
+        check(
+            "TabAgent entries have string, fret, technique",
+            all("string" in e and "fret" in e and "technique" in e for e in tab),
+        )
 
         # Technique detection
         fast_notes = [
@@ -233,8 +301,10 @@ def main():
         ]
         fast_tab = agent.generate_tab(fast_notes, technique_sensitivity=0.9)
         techniques = [e["technique"] for e in fast_tab]
-        check("Technique detection finds slides/hammer/pull",
-              any(t in ("slide", "hammer", "pull") for t in techniques))
+        check(
+            "Technique detection finds slides/hammer/pull",
+            any(t in ("slide", "hammer", "pull") for t in techniques),
+        )
     except Exception as e:
         check("TabAgent tablature generation", False, str(e))
 
@@ -248,15 +318,22 @@ def main():
         check("export_tab_to_txt() creates file", os.path.exists("/tmp/validated_tab.tab"))
         with open("/tmp/validated_tab.tab") as f:
             content = f.read()
-        check("ASCII tab contains technique markers", "3s" in content or "slide" in content)
+        check(
+            "ASCII tab contains technique markers",
+            "3s" in content or "slide" in content,
+        )
     except Exception as e:
         check("export_tab_to_txt()", False, str(e))
 
     # JSON export
     try:
         export_tab_to_json(tab_data, "/tmp/validated_tab.json", "Test Guitar")
-        check("export_tab_to_json() creates file", os.path.exists("/tmp/validated_tab.json"))
+        check(
+            "export_tab_to_json() creates file",
+            os.path.exists("/tmp/validated_tab.json"),
+        )
         import json
+
         with open("/tmp/validated_tab.json") as f:
             data = json.load(f)
         check("JSON has instrument field", "instrument" in data)
@@ -282,11 +359,15 @@ def main():
     # Init memory
     try:
         import init_memory
+
         path = init_memory.save_profile("rock_standard", memory_dir="/tmp/validated_memory")
         check("init_memory.save_profile() creates file", os.path.exists(path))
         with open(path) as f:
             data = json.load(f)
-        check("init_memory config has tuning", "config" in data and "guitar_tuning" in data["config"])
+        check(
+            "init_memory config has tuning",
+            "config" in data and "guitar_tuning" in data["config"],
+        )
     except Exception as e:
         check("init_memory.save_profile()", False, str(e))
 
@@ -299,14 +380,17 @@ def main():
                 content = fh.read()
             # Basic structural checks
             check(f"{f} has --[[ header", content.strip().startswith("--[["))
-            check(f"{f} has reaper API calls",
-                  "reaper." in content and "function" in content)
-            check(f"{f} has balanced curly braces",
-                  content.count("{") == content.count("}"))
+            check(
+                f"{f} has reaper API calls",
+                "reaper." in content and "function" in content,
+            )
+            check(
+                f"{f} has balanced curly braces",
+                content.count("{") == content.count("}"),
+            )
             # Pipeline script needs os.execute; settings script doesn't
             if f == "reaper/TabAgent.lua":
-                check(f"{f} uses os.execute for pipeline",
-                      "os.execute(" in content)
+                check(f"{f} uses os.execute for pipeline", "os.execute(" in content)
         else:
             check(f"File exists: {f}", False)
 
@@ -325,11 +409,15 @@ def main():
     print("\n--- Git State ---\n")
 
     import subprocess
-    result = subprocess.run(["git", "status", "--porcelain"],
-                           capture_output=True, text=True, timeout=10)
-    modified = [l.strip() for l in result.stdout.strip().split("\n") if l.strip()]
-    untracked = [l for l in modified if l.startswith("??")]
-    check(f"No merge conflicts", all("UU" not in l for l in modified))
+
+    result = subprocess.run(
+        ["git", "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    modified = [line.strip() for line in result.stdout.strip().split("\n") if line.strip()]
+    check("No merge conflicts", all("UU" not in line for line in modified))
 
     # ── 9. DOCKER BUILD ────────────────────────────────────────────────
     print("\n--- Docker Build ---\n")
@@ -338,7 +426,9 @@ def main():
     try:
         result = subprocess.run(
             ["podman", "build", "-t", "tab-agent-pro:validate", "."],
-            capture_output=True, text=True, timeout=300,
+            capture_output=True,
+            text=True,
+            timeout=300,
         )
         docker_ok = result.returncode == 0
         check("Docker build succeeds", docker_ok)

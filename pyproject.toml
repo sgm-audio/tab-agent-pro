@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=64.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tab-agent-pro"
+version = "1.0.0"
+description = "AI-powered guitar/bass tablature transcription"
+requires-python = ">=3.10"
+dependencies = [
+    "gradio>=4.0.0",
+    "spaces>=0.19.0",
+    "basic-pitch>=0.4.0",
+    "onnxruntime>=1.17.0",
+    "numpy>=1.18,<3",
+    "transformers>=4.48.0",
+    "huggingface_hub>=0.20.0",
+    "demucs>=4.0.0",
+    "librosa==0.10.2",
+    "soundfile==0.12.1",
+    "scipy>=1.11.0",
+    "pretty-midi==0.2.10",
+    "note-seq==0.0.5",
+    "IPython>=8.0,<8.30",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.1.0",
+    "black>=23.0.0",
+    "mypy>=1.0.0",
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "bandit>=1.7.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["*"]
+exclude = ["tests*", "examples*"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = ["D203", "D212", "D213", "E501", "COM812"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.mypy]
+python_version = "3.10"
+strict_optional = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=. --cov-report=term-missing -v"
+
+[tool.isort]
+profile = "black"
+line_length = 100

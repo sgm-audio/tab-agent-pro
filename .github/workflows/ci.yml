@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.10"
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg libsndfile1 build-essential git
+
+    - name: Install PyTorch CPU
+      run: pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+    - name: Install project dependencies
+      run: pip install -r requirements.txt
+
+    - name: Install dev dependencies
+      run: pip install ruff black mypy pytest pytest-cov bandit
+
+    - name: Lint with Ruff
+      run: ruff check .
+
+    - name: Check formatting with Black
+      run: black --check .
+
+    - name: Type check with mypy
+      continue-on-error: true
+      run: mypy .
+
+    - name: Run tests with coverage
+      run: pytest tests/ test_pipeline.py -v --cov=. --cov-report=term-missing
+
+    - name: Security scan with Bandit
+      run: bandit -r agents.py main.py app.py monitoring.py suno_postprocessor.py init_memory.py

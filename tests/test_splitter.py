@@ -3,14 +3,16 @@ Tab Agent Pro — Unit Tests: SplitterAgent
 Tests for Demucs stem separation and spatial audio processing.
 """
 
-import unittest
 import os
-import tempfile
-import numpy as np
-import soundfile as sf
 
 # Add parent directory to path for imports
 import sys
+import tempfile
+import unittest
+
+import numpy as np
+import soundfile as sf
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agents import SplitterAgent
@@ -25,6 +27,7 @@ class TestSplitterAgent(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_output_dir_created(self):

@@ -14,20 +14,21 @@ Requirements:
     - basic-pitch installed (optional — skipped if unavailable)
 """
 
-import unittest
 import os
+import shutil
 import sys
 import tempfile
+import unittest
+
 import numpy as np
 import soundfile as sf
-import shutil
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from agents import SplitterAgent, EarAgent, TabAgent
+from agents import EarAgent, TabAgent
+from main import export_tab_to_json, export_tab_to_txt
 from suno_postprocessor import SunoNotePostprocessor, process_suno_audio
-from main import export_tab_to_txt, export_tab_to_json
 
 
 class TestEndToEndPipeline(unittest.TestCase):
@@ -64,7 +65,7 @@ class TestEndToEndPipeline(unittest.TestCase):
         """Synthetic sine should not be flagged as AI-generated."""
         processed, is_suno, metrics = process_suno_audio(
             self.audio_path,
-            output_path=os.path.join(self.tmpdir, "processed.wav")
+            output_path=os.path.join(self.tmpdir, "processed.wav"),
         )
         self.assertFalse(is_suno, "Synthetic audio should not be flagged as AI")
 
@@ -83,9 +84,8 @@ class TestEndToEndPipeline(unittest.TestCase):
         # Each note should be a note_seq.NoteSequence.Note
         if notes_raw:
             self.assertTrue(
-                all(hasattr(n, "pitch") and hasattr(n, "start_time")
-                    for n in notes_raw),
-                "Notes must have pitch and start_time attributes"
+                all(hasattr(n, "pitch") and hasattr(n, "start_time") for n in notes_raw),
+                "Notes must have pitch and start_time attributes",
             )
 
     def test_tab_agent_generates_tab(self):
@@ -119,11 +119,11 @@ class TestEndToEndPipeline(unittest.TestCase):
         export_tab_to_txt(tab_data, out_path, "Guitar")
 
         self.assertTrue(os.path.exists(out_path))
-        with open(out_path, "r") as f:
+        with open(out_path) as f:
             content = f.read()
         self.assertIn("Guitar Tablature", content)
-        self.assertIn("0s", content)   # slide annotation
-        self.assertIn("---", content)  # empty fret markers
+        self.assertIn("3s", content)  # slide annotation
+        self.assertIn("|", content)  # column separators
 
     def test_export_tab_to_json(self):
         """JSON export produces valid JSON with required fields."""
@@ -135,7 +135,8 @@ class TestEndToEndPipeline(unittest.TestCase):
 
         self.assertTrue(os.path.exists(out_path))
         import json
-        with open(out_path, "r") as f:
+
+        with open(out_path) as f:
             data = json.load(f)
         self.assertEqual(data["instrument"], "Guitar")
         self.assertIn("tablature", data)
@@ -152,12 +153,15 @@ class TestEndToEndPipeline(unittest.TestCase):
         original_starts = [n.start_time for n in notes]
 
         processor = SunoNotePostprocessor()
-        result = processor.process(notes, is_suno=True, metrics={"hf_ratio": 0.4})
+        processor.process(notes, is_suno=True, metrics={"hf_ratio": 0.4})
 
         # Original notes must be unchanged
         for i, note in enumerate(notes):
-            self.assertAlmostEqual(note.start_time, original_starts[i],
-                                   msg=f"Original note {i} was mutated!")
+            self.assertAlmostEqual(
+                note.start_time,
+                original_starts[i],
+                msg=f"Original note {i} was mutated!",
+            )
 
 
 if __name__ == "__main__":

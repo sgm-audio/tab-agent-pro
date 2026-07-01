@@ -9,13 +9,14 @@ Usage:
     python tests/test_benchmark.py                          # quick smoke test
 """
 
-import time
 import os
 import sys
 import tempfile
+import time
+import unittest
+
 import numpy as np
 import soundfile as sf
-import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -37,7 +38,8 @@ def generate_sine_sweep(duration_sec, sr=22050):
 
 # Check if Basic Pitch is available — benchmark requires it
 try:
-    import basic_pitch
+    import basic_pitch  # noqa: F401
+
     HAS_BASIC_PITCH = True
 except ImportError:
     HAS_BASIC_PITCH = False
@@ -58,9 +60,10 @@ class TestBenchmark(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        if not HAS_BASIC_PITCH or not hasattr(cls, 'tmpdir'):
+        if not HAS_BASIC_PITCH or not hasattr(cls, "tmpdir"):
             return
         import shutil
+
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
         if cls.results:
             print("\n" + "=" * 60)

@@ -22,7 +22,7 @@ PROFILES = {
     "rock_standard": {
         "name": "Rock Guitar (Standard Tuning)",
         "description": "Standard EADGBE tuning for rock/metal, moderate processing",
-        "tuning": [40, 45, 50, 55, 59, 64],   # E2-A2-D3-G3-B3-E4
+        "tuning": [40, 45, 50, 55, 59, 64],  # E2-A2-D3-G3-B3-E4
         "num_strings": 6,
         "num_frets": 24,
         "onset_threshold": 0.5,
@@ -34,7 +34,7 @@ PROFILES = {
     "rock_drop_d": {
         "name": "Rock Guitar (Drop D)",
         "description": "Drop D tuning (DADGBE) for heavy rock/metal",
-        "tuning": [38, 45, 50, 55, 59, 64],   # D2-A2-D3-G3-B3-E4
+        "tuning": [38, 45, 50, 55, 59, 64],  # D2-A2-D3-G3-B3-E4
         "num_strings": 6,
         "num_frets": 24,
         "onset_threshold": 0.5,
@@ -58,7 +58,7 @@ PROFILES = {
     "bass_5_string": {
         "name": "5-String Bass (B-E-A-D-G)",
         "description": "Standard 5-string bass tuning, low-string preference",
-        "tuning": [23, 28, 33, 38, 43],        # B0-E1-A1-D2-G2
+        "tuning": [23, 28, 33, 38, 43],  # B0-E1-A1-D2-G2
         "num_strings": 5,
         "num_frets": 24,
         "onset_threshold": 0.55,
@@ -70,7 +70,7 @@ PROFILES = {
     "bass_4_string": {
         "name": "4-String Bass (E-A-D-G)",
         "description": "Standard 4-string bass tuning, low-string preference",
-        "tuning": [28, 33, 38, 43],            # E1-A1-D2-G2
+        "tuning": [28, 33, 38, 43],  # E1-A1-D2-G2
         "num_strings": 4,
         "num_frets": 24,
         "onset_threshold": 0.55,
@@ -125,7 +125,7 @@ def get_memory_dir() -> str:
     return "./user_memory"
 
 
-def save_profile(profile_key: str, memory_dir: str = None) -> str:
+def save_profile(profile_key: str, memory_dir: str | None = None) -> str:
     """Save a preset profile to user_preferences.json."""
     if memory_dir is None:
         memory_dir = get_memory_dir()
@@ -134,10 +134,14 @@ def save_profile(profile_key: str, memory_dir: str = None) -> str:
     profile = PROFILES[profile_key]
     # Map profile keys to the config format expected by main.py
     config = {
-        "bass_tuning": profile["tuning"] if profile["prefer_low_strings"] else [23, 28, 33, 38, 43],
-        "guitar_tuning": profile["tuning"] if not profile["prefer_low_strings"] else [40, 45, 50, 55, 59, 64],
-        "bass_num_strings": profile["num_strings"] if profile["prefer_low_strings"] else 5,
-        "guitar_num_strings": profile["num_strings"] if not profile["prefer_low_strings"] else 6,
+        "bass_tuning": (
+            profile["tuning"] if profile["prefer_low_strings"] else [23, 28, 33, 38, 43]
+        ),
+        "guitar_tuning": (
+            profile["tuning"] if not profile["prefer_low_strings"] else [40, 45, 50, 55, 59, 64]
+        ),
+        "bass_num_strings": (profile["num_strings"] if profile["prefer_low_strings"] else 5),
+        "guitar_num_strings": (profile["num_strings"] if not profile["prefer_low_strings"] else 6),
         "num_frets": profile["num_frets"],
         "onset_threshold": profile["onset_threshold"],
         "frame_threshold": profile["frame_threshold"],
@@ -152,7 +156,7 @@ def save_profile(profile_key: str, memory_dir: str = None) -> str:
     # Load existing preferences if any
     preferences = {}
     if os.path.exists(preferences_path):
-        with open(preferences_path, "r") as f:
+        with open(preferences_path) as f:
             preferences = json.load(f)
 
     preferences["config"] = config
@@ -171,8 +175,10 @@ def list_profiles():
         label = "🎸" if not prof["prefer_low_strings"] else "🎵"
         print(f"  {label} {key:22s} | {prof['name']}")
         print(f"    {'':22s} | {prof['description']}")
-        print(f"    {'':22s} | {strings}, onset={prof['onset_threshold']}, "
-              f"suno={'aggressive' if prof['suno_aggressive_mode'] else 'light'}")
+        print(
+            f"    {'':22s} | {strings}, onset={prof['onset_threshold']}, "
+            f"suno={'aggressive' if prof['suno_aggressive_mode'] else 'light'}",
+        )
         print()
 
 
@@ -191,8 +197,10 @@ def interactive_select() -> str:
         label = "🎸" if not prof["prefer_low_strings"] else "🎵"
         print(f"  [{idx}] {label} {prof['name']}")
         print(f"      {prof['description']}")
-        print(f"      {strings}, onset={prof['onset_threshold']}, "
-              f"suno={'aggressive' if prof['suno_aggressive_mode'] else 'light'}")
+        print(
+            f"      {strings}, onset={prof['onset_threshold']}, "
+            f"suno={'aggressive' if prof['suno_aggressive_mode'] else 'light'}",
+        )
         print()
 
     while True:
@@ -222,7 +230,7 @@ def main():
                 profile_key = candidate
             else:
                 print(f"❌ Unknown profile: {candidate}")
-                print(f"   Use --list to see available profiles")
+                print("   Use --list to see available profiles")
                 sys.exit(1)
 
     if profile_key is None:
@@ -233,7 +241,7 @@ def main():
 
     print(f"\n✅ Profile '{prof['name']}' saved!")
     print(f"   Config written to: {memory_path}")
-    print(f"   Ready — run 'python main.py <audio_file>' to transcribe.\n")
+    print("   Ready — run 'python main.py <audio_file>' to transcribe.\n")
 
 
 if __name__ == "__main__":

@@ -7,31 +7,30 @@ Optimized for Zero GPU deployment with Basic Pitch model.
 """
 
 import os
-import sys
-import time
 import tempfile
+import time
 import zipfile
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
+
 import gradio as gr
-import numpy as np
-import json
 
 # Health checks & structured logging
-from monitoring import health, get_logger
+from monitoring import health
 
 # Zero GPU support for faster processing
 try:
     import spaces
+
     GPU_AVAILABLE = True
 except ImportError:
     GPU_AVAILABLE = False
     print("⚠️  Running without Zero GPU support")
 
 # Import Tab Agent modules
-from agents import SplitterAgent, EarAgent, TabAgent
-from main import export_tab_to_txt, export_tab_to_json
-from suno_postprocessor import process_suno_audio, SunoNotePostprocessor
+from agents import EarAgent, SplitterAgent, TabAgent
+from main import export_tab_to_json, export_tab_to_txt
+from suno_postprocessor import SunoNotePostprocessor, process_suno_audio
 
 # Configuration
 TEMP_DIR = tempfile.gettempdir()
@@ -45,6 +44,7 @@ BASS_TUNING = [23, 28, 33, 38, 43]  # B0-E1-A1-D2-G2
 
 # Apply Zero GPU decorator if available
 if GPU_AVAILABLE:
+
     @spaces.GPU
     def process_audio(
         audio_file,
@@ -52,7 +52,7 @@ if GPU_AVAILABLE:
         include_midi=True,
         include_tab=True,
         include_json=True,
-        progress=gr.Progress()
+        progress=gr.Progress(),
     ):
         """
         Process audio file and generate tablature.
@@ -67,21 +67,37 @@ if GPU_AVAILABLE:
 
         Returns:
             Tuple of (status_message, output_files_zip)
+
         """
-        return _process_audio_impl(audio_file, instrument_type, include_midi,
-                                   include_tab, include_json, progress)
+        return _process_audio_impl(
+            audio_file,
+            instrument_type,
+            include_midi,
+            include_tab,
+            include_json,
+            progress,
+        )
+
 else:
+
     def process_audio(
         audio_file,
         instrument_type="Guitar",
         include_midi=True,
         include_tab=True,
         include_json=True,
-        progress=gr.Progress()
+        progress=gr.Progress(),
     ):
         """Process audio file and generate tablature (CPU-only)."""
-        return _process_audio_impl(audio_file, instrument_type, include_midi,
-                                   include_tab, include_json, progress)
+        return _process_audio_impl(
+            audio_file,
+            instrument_type,
+            include_midi,
+            include_tab,
+            include_json,
+            progress,
+        )
+
 
 def _process_audio_impl(
     audio_file,
@@ -89,7 +105,7 @@ def _process_audio_impl(
     include_midi,
     include_tab,
     include_json,
-    progress
+    progress,
 ):
     """
     Internal implementation of audio processing.
@@ -116,7 +132,7 @@ def _process_audio_impl(
         progress(0.15, desc="🔍 Analyzing audio quality...")
         processed_audio, is_suno, suno_metrics = process_suno_audio(
             str(audio_path),
-            output_path=str(session_dir / f"{song_name}_processed.wav")
+            output_path=str(session_dir / f"{song_name}_processed.wav"),
         )
 
         # Adjust thresholds for AI-generated audio
@@ -138,14 +154,14 @@ def _process_audio_impl(
 
         progress(0.3, desc="🎸 Processing guitar stems...")
         if instrument_type == "Guitar":
-            guitar_stems = splitter.process_guitars(stems['guitar'])
+            guitar_stems = splitter.process_guitars(stems["guitar"])
             processed_stems = {
-                "lead": guitar_stems['lead'],
-                "rhythm_l": guitar_stems['left'],
-                "rhythm_r": guitar_stems['right']
+                "lead": guitar_stems["lead"],
+                "rhythm_l": guitar_stems["left"],
+                "rhythm_r": guitar_stems["right"],
             }
         else:  # Bass
-            bass_clean = splitter.process_bass(stems['bass'])
+            bass_clean = splitter.process_bass(stems["bass"])
             processed_stems = {"bass": bass_clean}
 
         # Stage 4: Transcription
@@ -153,8 +169,10 @@ def _process_audio_impl(
 
         results = {}
         for stem_name, stem_path in processed_stems.items():
-            progress(0.5 + (0.3 / len(processed_stems)),
-                    desc=f"🎸 Transcribing {stem_name}...")
+            progress(
+                0.5 + (0.3 / len(processed_stems)),
+                desc=f"🎸 Transcribing {stem_name}...",
+            )
 
             # Transcribe
             notes_raw = ear.transcribe_stem(
@@ -163,10 +181,7 @@ def _process_audio_impl(
                 onset_threshold=onset_threshold,
                 frame_threshold=frame_threshold,
             )
-            notes_clean = ear.humanize_and_clean(
-                notes_raw,
-                is_bass=(instrument_type == "Bass")
-            )
+            notes_clean = ear.humanize_and_clean(notes_raw, is_bass=(instrument_type == "Bass"))
             # Apply Suno post-processing if needed
             notes_clean = suno_postprocessor.process(notes_clean, is_suno, suno_metrics)
 
@@ -194,7 +209,7 @@ def _process_audio_impl(
                 export_tab_to_txt(
                     tab_data,
                     str(tab_path),
-                    instrument=f"{instrument_type} - {stem_name}"
+                    instrument=f"{instrument_type} - {stem_name}",
                 )
 
             if include_json:
@@ -202,14 +217,14 @@ def _process_audio_impl(
                 export_tab_to_json(
                     tab_data,
                     str(json_path),
-                    instrument=f"{instrument_type} - {stem_name}"
+                    instrument=f"{instrument_type} - {stem_name}",
                 )
 
         # Create ZIP archive
         progress(0.9, desc="📦 Creating download package...")
         zip_path = session_dir / f"{song_name}_tablature.zip"
 
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
             for file in session_dir.rglob("*"):
                 if file.is_file() and file != zip_path:
                     arcname = file.relative_to(session_dir)
@@ -227,11 +242,15 @@ def _process_audio_impl(
 - **Instrument**: {instrument_type}
 - **Files Generated**: {file_count}
 - **Processing Time**: {elapsed:.1f}s
-- **Formats**: {', '.join([
-    'MIDI' if include_midi else '',
-    'Tab' if include_tab else '',
-    'JSON' if include_json else ''
-]).strip(', ')}
+- **Formats**: {
+            ", ".join(
+                [
+                    "MIDI" if include_midi else "",
+                    "Tab" if include_tab else "",
+                    "JSON" if include_json else "",
+                ]
+            ).strip(", ")
+        }
 
 📥 **Download the ZIP file below to get all outputs!**
         """
@@ -240,18 +259,17 @@ def _process_audio_impl(
 
     except Exception as e:
         import traceback
-        error_msg = f"❌ **Error during processing:**\n\n```\n{str(e)}\n\n{traceback.format_exc()}\n```"
+
+        error_msg = (
+            f"❌ **Error during processing:**\n\n```\n{e!s}\n\n{traceback.format_exc()}\n```"
+        )
         return error_msg, None
 
 
 # Create Gradio interface
 def create_ui():
     """Create Gradio UI interface."""
-
-    with gr.Blocks(
-        title="Tab Agent - AI Tablature Transcription",
-        theme=gr.themes.Soft()
-    ) as demo:
+    with gr.Blocks(title="Tab Agent - AI Tablature Transcription", theme=gr.themes.Soft()) as demo:
         gr.Markdown("""
 # 🎸 Tab Agent - AI Tablature Transcription (MVP)
 
@@ -282,7 +300,7 @@ AI-powered transcription for guitar and bass using **Basic Pitch** (Spotify's pr
                 instrument_type = gr.Radio(
                     label="Instrument Type",
                     choices=["Guitar", "Bass"],
-                    value="Guitar"
+                    value="Guitar",
                 )
 
                 gr.Markdown("### Export Options")
@@ -295,7 +313,7 @@ AI-powered transcription for guitar and bass using **Basic Pitch** (Spotify's pr
                 transcribe_btn = gr.Button(
                     "🎸 Transcribe to Tablature",
                     variant="primary",
-                    size="lg"
+                    size="lg",
                 )
 
             with gr.Column(scale=1):
@@ -303,13 +321,10 @@ AI-powered transcription for guitar and bass using **Basic Pitch** (Spotify's pr
 
                 status_output = gr.Markdown(
                     value="Upload an audio file and click 'Transcribe' to begin.",
-                    label="Status"
+                    label="Status",
                 )
 
-                download_output = gr.File(
-                    label="Download Results (ZIP)",
-                    interactive=False
-                )
+                download_output = gr.File(label="Download Results (ZIP)", interactive=False)
 
         # Examples
         gr.Markdown("### Example Audio Files")
@@ -359,14 +374,8 @@ AI-powered transcription for guitar and bass using **Basic Pitch** (Spotify's pr
         # Connect event handlers
         transcribe_btn.click(
             fn=process_audio,
-            inputs=[
-                audio_input,
-                instrument_type,
-                export_midi,
-                export_tab,
-                export_json
-            ],
-            outputs=[status_output, download_output]
+            inputs=[audio_input, instrument_type, export_midi, export_tab, export_json],
+            outputs=[status_output, download_output],
         )
 
     return demo
@@ -376,8 +385,6 @@ AI-powered transcription for guitar and bass using **Basic Pitch** (Spotify's pr
 if __name__ == "__main__":
     import uvicorn
     from fastapi import FastAPI
-    from fastapi.middleware.wsgi import WSGIMiddleware
-    import threading
 
     demo = create_ui()
     demo.queue()
@@ -392,9 +399,12 @@ if __name__ == "__main__":
     @parent_app.get("/health/metrics")
     async def metrics_endpoint():
         from monitoring import default_metrics
+
         return default_metrics.summary()
 
     # Mount Gradio under the parent app
     parent_app = gr.mount_gradio_app(parent_app, demo, path="/")
 
-    uvicorn.run(parent_app, host="0.0.0.0", port=7860)
+    # Security: bind to 127.0.0.1 by default.
+    # Override with HOST env var for Docker/production, e.g. HOST=0.0.0.0
+    uvicorn.run(parent_app, host=os.getenv("HOST", "127.0.0.1"), port=7860)

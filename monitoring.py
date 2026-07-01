@@ -22,17 +22,15 @@ Usage:
 """
 
 import json
-import time
 import sys
-import os
-import functools
+import time
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional, List, Callable
-
+from typing import Any
 
 # ============================================================================
 # Structured Logger
 # ============================================================================
+
 
 class PipelineLogger:
     """Structured JSON logger for pipeline events."""
@@ -58,7 +56,10 @@ class PipelineLogger:
     def warn(self, event: str, **kwargs):
         self._emit("WARN", event, **kwargs)
 
-    def error(self, event: str, exc: Optional[Exception] = None, **kwargs):
+    def warning(self, event: str, **kwargs):
+        self._emit("WARN", event, **kwargs)
+
+    def error(self, event: str, exc: Exception | None = None, **kwargs):
         data = kwargs
         if exc:
             data["error_type"] = type(exc).__name__
@@ -77,6 +78,7 @@ def get_logger(module: str = "TabAgent") -> PipelineLogger:
 # Health Tracker
 # ============================================================================
 
+
 class HealthTracker:
     """
     Tracks service health for /health endpoint.
@@ -90,11 +92,11 @@ class HealthTracker:
 
     def __init__(self):
         self._status = self.STATUS_STARTING
-        self._last_error: Optional[str] = None
-        self._last_success: Optional[str] = None
+        self._last_error: str | None = None
+        self._last_success: str | None = None
         self._total_requests = 0
         self._total_errors = 0
-        self._component_status: Dict[str, str] = {
+        self._component_status: dict[str, str] = {
             "demucs": "unknown",
             "basic_pitch": "unknown",
             "yourmt3": "unknown",
@@ -116,11 +118,9 @@ class HealthTracker:
             self._total_errors += 1
             self._last_error = details
 
-    def as_dict(self) -> Dict[str, Any]:
+    def as_dict(self) -> dict[str, Any]:
         error_rate = (
-            float(self._total_errors) / self._total_requests
-            if self._total_requests > 0
-            else 0.0
+            float(self._total_errors) / self._total_requests if self._total_requests > 0 else 0.0
         )
         return {
             "status": self._status,
@@ -147,14 +147,15 @@ health.set_status(HealthTracker.STATUS_UP)
 # Pipeline Metrics
 # ============================================================================
 
+
 class PipelineMetrics:
     """Tracks per-stage timing and success/failure counts."""
 
-    def __init__(self, logger: Optional[PipelineLogger] = None):
+    def __init__(self, logger: PipelineLogger | None = None):
         self.log = logger or get_logger("metrics")
-        self.stage_times: Dict[str, list] = {}
-        self.stage_counts: Dict[str, int] = {}
-        self.stage_errors: Dict[str, int] = {}
+        self.stage_times: dict[str, list] = {}
+        self.stage_counts: dict[str, int] = {}
+        self.stage_errors: dict[str, int] = {}
 
     def track_stage(self, stage_name: str):
         """Context manager that times a pipeline stage and logs metrics."""
@@ -180,15 +181,17 @@ class PipelineMetrics:
             error_rate=round(error_rate, 4),
         )
 
-    def summary(self) -> Dict[str, Any]:
+    def summary(self) -> dict[str, Any]:
         return {
             name: {
                 "count": self.stage_counts.get(name, 0),
                 "total_s": round(sum(times), 3),
                 "avg_s": round(sum(times) / len(times), 3) if times else 0,
-                "error_rate": round(
-                    self.stage_errors.get(name, 0) / self.stage_counts[name], 4
-                ) if self.stage_counts.get(name, 0) > 0 else 0,
+                "error_rate": (
+                    round(self.stage_errors.get(name, 0) / self.stage_counts[name], 4)
+                    if self.stage_counts.get(name, 0) > 0
+                    else 0
+                ),
             }
             for name, times in self.stage_times.items()
         }

@@ -3,13 +3,14 @@ Tab Agent Pro — Unit Tests: Suno Postprocessor
 Tests for Suno artifact detection, audio preprocessing, and note cleaning.
 """
 
-import unittest
 import os
 import sys
 import tempfile
+import unittest
+
+import note_seq
 import numpy as np
 import soundfile as sf
-import note_seq
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -17,13 +18,15 @@ from suno_postprocessor import (
     SunoArtifactDetector,
     SunoAudioPreprocessor,
     SunoNotePostprocessor,
-    process_suno_audio,
 )
 
 
 def make_note(pitch, start, end=0.5, velocity=80):
     return note_seq.NoteSequence.Note(
-        pitch=pitch, start_time=start, end_time=end, velocity=velocity
+        pitch=pitch,
+        start_time=start,
+        end_time=end,
+        velocity=velocity,
     )
 
 
@@ -36,6 +39,7 @@ class TestSunoArtifactDetector(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _write_wav(self, filename, signal, sr=22050):
@@ -44,7 +48,7 @@ class TestSunoArtifactDetector(unittest.TestCase):
         return path
 
     def test_analyze_returns_bool_and_dict(self):
-        """analyze returns (is_suno: bool, metrics: dict)."""
+        """Analyze returns (is_suno: bool, metrics: dict)."""
         # Simple sine wave (should NOT be detected as AI)
         sr = 22050
         t = np.linspace(0, 2, sr * 2, endpoint=False)
@@ -75,6 +79,7 @@ class TestSunoAudioPreprocessor(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _write_wav(self, filename, signal, sr=22050):
@@ -83,7 +88,7 @@ class TestSunoAudioPreprocessor(unittest.TestCase):
         return path
 
     def test_process_returns_path(self):
-        """process returns the output file path."""
+        """Process returns the output file path."""
         sr = 22050
         signal = np.random.randn(sr).astype(np.float32)
         in_path = self._write_wav("input.wav", signal)
@@ -135,9 +140,7 @@ class TestSunoNotePostprocessor(unittest.TestCase):
             make_note(92, 0.3),
             make_note(64, 0.4),
         ]
-        result = self.postprocessor._remove_spurious_high_notes(
-            notes, threshold_pitch=84
-        )
+        result = self.postprocessor._remove_spurious_high_notes(notes, threshold_pitch=84)
         self.assertEqual(len(result), 2)  # only the two normal notes remain
 
     def test_smooth_timing_does_not_mutate_input(self):
@@ -154,14 +157,19 @@ class TestSunoNotePostprocessor(unittest.TestCase):
         # Input notes must be unchanged
         for i, note in enumerate(notes):
             self.assertEqual(note.pitch, original_pitches[i])
-            self.assertAlmostEqual(note.start_time, original_starts[i],
-                                   msg=f"Input note {i} was mutated!")
+            self.assertAlmostEqual(
+                note.start_time,
+                original_starts[i],
+                msg=f"Input note {i} was mutated!",
+            )
 
         # Output notes have quantized timing
         for note in result:
             self.assertAlmostEqual(
-                note.start_time % 0.05, 0.0, places=5,
-                msg=f"start_time {note.start_time} not quantized to 50ms"
+                note.start_time % 0.05,
+                0.0,
+                places=5,
+                msg=f"start_time {note.start_time} not quantized to 50ms",
             )
 
 
