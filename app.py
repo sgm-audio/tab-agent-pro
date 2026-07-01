@@ -269,113 +269,111 @@ def _process_audio_impl(
 # Create Gradio interface
 def create_ui():
     """Create Gradio UI interface."""
-    with gr.Blocks(title="Tab Agent - AI Tablature Transcription", theme=gr.themes.Soft()) as demo:
-        gr.Markdown("""
-# 🎸 Tab Agent - AI Tablature Transcription (MVP)
+    css = """
+    .tab-agent-header h1 { font-size: 2.2rem; margin-bottom: 0; }
+    .tab-agent-header p { color: #666; margin-top: 0.25rem; }
+    .tab-agent-footer { text-align: center; color: #999; font-size: 0.85rem; padding-top: 1rem; border-top: 1px solid #e5e7eb; margin-top: 1.5rem; }
+    .status-box { min-height: 120px; }
+    """
+    with gr.Blocks(
+        title="Tab Agent — AI Tablature Transcription",
+        theme=gr.themes.Soft(),
+        css=css,
+    ) as demo:
+        gr.HTML(
+            """
+            <div class="tab-agent-header">
+                <h1>🎸 Tab Agent</h1>
+                <p>Upload guitar or bass audio. Get tablature, MIDI, and JSON back.</p>
+            </div>
+            """
+        )
 
-AI-powered transcription for guitar and bass using **Basic Pitch** (Spotify's proven model).
-
-## Features
-- 🎵 **Multi-stage pipeline**: Demucs stem separation + spatial processing
-- 🤖 **Basic Pitch AI**: Production-ready transcription model (Spotify)
-- 🎸 **Multi-track support**: Lead guitar, rhythm guitars (L/R), bass
-- 📝 **Multiple formats**: MIDI, ASCII tablature, JSON
-- 🎯 **Optimal fingering**: Dynamic programming for playable tabs
-- ✨ **Technique detection**: Slides, hammer-ons, pull-offs
-- ⚡ **Zero GPU**: Faster processing with Hugging Face Zero GPU
-
----
-        """)
-
-        with gr.Row():
-            with gr.Column(scale=1):
-                gr.Markdown("### Upload Audio")
-
+        with gr.Row(equal_height=False):
+            with gr.Column(scale=2, min_width=320):
+                gr.Markdown("### 1. Upload Audio")
                 audio_input = gr.Audio(
-                    label="Audio File",
+                    label="",
                     type="filepath",
                     sources=["upload"],
                 )
 
+                gr.Markdown("### 2. Configure")
                 instrument_type = gr.Radio(
-                    label="Instrument Type",
+                    label="Instrument",
                     choices=["Guitar", "Bass"],
                     value="Guitar",
                 )
 
-                gr.Markdown("### Export Options")
-
                 with gr.Group():
-                    export_midi = gr.Checkbox(label="MIDI Files", value=True)
-                    export_tab = gr.Checkbox(label="ASCII Tablature", value=True)
-                    export_json = gr.Checkbox(label="JSON Data", value=True)
+                    gr.Markdown("**Export formats**")
+                    with gr.Row():
+                        export_midi = gr.Checkbox(label="MIDI", value=True)
+                        export_tab = gr.Checkbox(label="Tablature", value=True)
+                        export_json = gr.Checkbox(label="JSON", value=True)
 
                 transcribe_btn = gr.Button(
-                    "🎸 Transcribe to Tablature",
+                    "Transcribe",
                     variant="primary",
                     size="lg",
                 )
 
-            with gr.Column(scale=1):
-                gr.Markdown("### Results")
-
-                status_output = gr.Markdown(
-                    value="Upload an audio file and click 'Transcribe' to begin.",
-                    label="Status",
+                gr.Examples(
+                    examples=[
+                        ["examples/guitar_solo.wav", "Guitar"],
+                        ["examples/bass_groove.wav", "Bass"],
+                    ],
+                    inputs=[audio_input, instrument_type],
+                    label="Try these samples",
                 )
 
-                download_output = gr.File(label="Download Results (ZIP)", interactive=False)
+            with gr.Column(scale=3, min_width=420):
+                gr.Markdown("### Results")
+                status_output = gr.Markdown(
+                    value="Upload audio and click **Transcribe** to begin.",
+                    elem_classes="status-box",
+                )
+                download_output = gr.File(
+                    label="Download ZIP",
+                    interactive=False,
+                    visible=False,
+                )
 
-        # Examples
-        gr.Markdown("### Example Audio Files")
-        gr.Examples(
-            examples=[
-                ["examples/guitar_solo.wav", "Guitar"],
-                ["examples/bass_groove.wav", "Bass"],
-            ],
-            inputs=[audio_input, instrument_type],
+        with gr.Accordion("How it works", open=False):
+            gr.Markdown("""
+            1. **Stem separation** — Demucs isolates guitar/bass from the mix
+            2. **Spatial processing** — Mid-side technique splits lead from rhythm
+            3. **AI transcription** — YourMT3+ or Basic Pitch converts audio → MIDI notes
+            4. **Tablature generation** — Dynamic programming assigns notes to strings/frets
+            5. **Technique detection** — Slides, hammer-ons, pull-offs annotated
+            6. **Export** — MIDI, ASCII tab, JSON in a single ZIP
+            """)
+
+        with gr.Accordion("Links", open=False):
+            gr.Markdown("""
+            - [GitHub](https://github.com/scottmills306/tab-agent-pro)
+            - [ReaPack](https://github.com/scottmills306/tab-agent-pro#reaper-integration)
+            - [Basic Pitch](https://github.com/spotify/basic-pitch)
+            """)
+
+        gr.HTML(
+            """
+            <div class="tab-agent-footer">
+                MIT · <a href="https://github.com/scottmills306/tab-agent-pro">Tab Agent</a> ·
+                Built with <a href="https://github.com/spotify/basic-pitch">Basic Pitch</a> ·
+                Python 3.10+
+            </div>
+            """
         )
 
-        # Information
-        with gr.Accordion("ℹ️ How It Works", open=False):
-            gr.Markdown("""
-### Processing Pipeline
-
-1. **Stem Separation (Demucs)**: Isolates guitar/bass from full mix
-2. **Spatial Processing**: Separates lead and rhythm guitars using mid-side technique
-3. **AI Transcription (Basic Pitch)**: Converts audio to MIDI notes with proven accuracy
-4. **Tablature Generation**: Dynamic programming finds optimal fingering
-5. **Technique Detection**: Identifies slides, hammer-ons, pull-offs
-
-### Output Formats
-
-- **MIDI**: Import into DAWs (Reaper, Ableton, Logic, etc.)
-- **ASCII Tab**: Human-readable tablature for printing
-- **JSON**: Programmatic access for custom applications
-
-### Tips for Best Results
-
-- Use high-quality audio (WAV/FLAC preferred)
-- Isolate guitar/bass tracks if possible
-- Shorter clips (< 60 seconds) process faster
-- Clean recordings work better than live/noisy audio
-            """)
-
-        with gr.Accordion("🔗 Links & Resources", open=False):
-            gr.Markdown("""
-- **GitHub**: [Tab-Agent Repository](https://github.com/scottmills306/tab-agent-pro)
-- **ReaPack**: [Install for Reaper](https://github.com/scottmills306/tab-agent-pro#reaper-integration)
-- **Documentation**: [Full Guide](https://github.com/scottmills306/tab-agent-pro/blob/main/README.md)
-- **Basic Pitch**: [Spotify Research](https://github.com/spotify/basic-pitch)
-
-**License**: MIT | **Python**: 3.10+ | **Model**: Basic Pitch | **Acceleration**: Zero GPU
-            """)
-
-        # Connect event handlers
         transcribe_btn.click(
-            fn=process_audio,
+            fn=_process_audio_impl,
             inputs=[audio_input, instrument_type, export_midi, export_tab, export_json],
             outputs=[status_output, download_output],
+        ).then(
+            fn=lambda path: gr.update(visible=path is not None),
+            inputs=[download_output],
+            outputs=[download_output],
         )
 
     return demo
