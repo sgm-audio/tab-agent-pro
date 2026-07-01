@@ -6,7 +6,10 @@ This is the web UI for the Tab Agent transcription system.
 Optimized for Zero GPU deployment with Basic Pitch model.
 """
 
+import atexit
 import os
+import shutil
+import signal
 import tempfile
 import time
 import zipfile
@@ -40,6 +43,10 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 # Default tunings
 GUITAR_TUNING = [40, 45, 50, 55, 59, 64]  # E2-A2-D3-G3-B3-E4
 BASS_TUNING = [23, 28, 33, 38, 43]  # B0-E1-A1-D2-G2
+
+MAX_FILE_SIZE_MB = 50
+MAX_DURATION_SEC = 300  # 5 minutes
+ALLOWED_EXTENSIONS = {'.wav', '.mp3', '.flac', '.ogg', '.m4a', '.aiff'}
 
 
 # Apply Zero GPU decorator if available
@@ -99,6 +106,26 @@ else:
         )
 
 
+def _validate_audio(audio_path: Path) -> str | None:
+    """Validate audio file. Returns error message or None."""
+    if not audio_path.exists():
+        return "File not found"
+    ext = audio_path.suffix.lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        return f"Unsupported format: {ext}. Use: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
+    size_mb = audio_path.stat().st_size / (1024 * 1024)
+    if size_mb > MAX_FILE_SIZE_MB:
+        return f"File too large: {size_mb:.1f}MB (max {MAX_FILE_SIZE_MB}MB)"
+    try:
+        import librosa
+        duration = librosa.get_duration(path=str(audio_path))
+        if duration > MAX_DURATION_SEC:
+            return f"Audio too long: {duration:.0f}s (max {MAX_DURATION_SEC}s)"
+    except Exception as e:
+        return f"Cannot read audio: {e}"
+    return None
+
+
 def _process_audio_impl(
     audio_file,
     instrument_type,
@@ -110,8 +137,16 @@ def _process_audio_impl(
     """
     Internal implementation of audio processing.
     """
+    cleanup_stale_sessions()
+
     if audio_file is None:
         return "❌ Please upload an audio file", None
+
+    # Validate
+    audio_path = Path(audio_file)
+    error = _validate_audio(audio_path)
+    if error:
+        return f"❌ {error}", None
 
     try:
         # Create unique output directory
@@ -258,11 +293,10 @@ def _process_audio_impl(
         return status_msg, str(zip_path)
 
     except Exception as e:
-        import traceback
+        from monitoring import get_logger
 
-        error_msg = (
-            f"❌ **Error during processing:**\n\n```\n{e!s}\n\n{traceback.format_exc()}\n```"
-        )
+        get_logger("app").error("transcription_failed", exc=e)
+        error_msg = f"❌ **Transcription failed:** {e}"
         return error_msg, None
 
 
@@ -400,6 +434,40 @@ def create_app():
 
     parent_app = gr.mount_gradio_app(parent_app, demo, path="/")
     return parent_app
+
+
+def cleanup_temp_dirs():
+    """Remove temporary output directories on shutdown."""
+    if OUTPUT_DIR.exists():
+        shutil.rmtree(OUTPUT_DIR, ignore_errors=True)
+
+
+def handle_signal(sig, frame):
+    """Handle shutdown signals gracefully."""
+    import sys
+    print(f"\nReceived signal {sig}, shutting down...")
+    cleanup_temp_dirs()
+    sys.exit(0)
+
+
+signal.signal(signal.SIGTERM, handle_signal)
+signal.signal(signal.SIGINT, handle_signal)
+atexit.register(cleanup_temp_dirs)
+
+
+def cleanup_stale_sessions(max_age_hours: int = 1):
+    """Remove session directories older than max_age_hours."""
+    if not OUTPUT_DIR.exists():
+        return
+    now = datetime.now()
+    for d in OUTPUT_DIR.iterdir():
+        if d.is_dir():
+            try:
+                age = now - datetime.fromtimestamp(d.stat().st_mtime)
+                if age.total_seconds() > max_age_hours * 3600:
+                    shutil.rmtree(d, ignore_errors=True)
+            except Exception:
+                pass
 
 
 # Main entry point

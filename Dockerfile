@@ -1,39 +1,59 @@
-# 1. Base Image: Python 3.10 Slim (Lightweight, No GPU drivers)
-FROM python:3.10-slim
+# Stage 1: Build deps — compilers, git, Python wheels
+FROM python:3.12-slim AS builder
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV PYTHONUNBUFFERED=1
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
 WORKDIR /app
 
-# 2. System Dependencies
-# ffmpeg: Required for Demucs & Librosa audio processing
-# libsndfile1: Required for soundfile library
-# build-essential: Required for compiling some Python extensions
-# git: Required for installing YourMT3 from GitHub
-RUN apt-get update && apt-get install -y \
-    ffmpeg \
-    libsndfile1 \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     git \
+    libsndfile1 \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# 3. Python Setup
-RUN python -m pip install --upgrade pip
+RUN python -m venv /venv
+ENV PATH="/venv/bin:$PATH"
 
-# 4. Install Deep Learning Frameworks (CPU Versions)
-# We do this BEFORE requirements.txt to prevent pip from grabbing heavy GPU versions
-# PyTorch is used by Demucs, TensorFlow is used by Basic Pitch
-RUN pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+RUN pip install --upgrade pip
 
-# torchcodec needed for torchaudio.save on newer torchaudio versions
+RUN pip install torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu
 RUN pip install torchcodec --index-url https://download.pytorch.org/whl/cpu || true
 
-# 5. Install Project Dependencies
 COPY requirements.txt .
-RUN pip install -r requirements.txt
+# ponytail: basic-pitch declares tensorflow dep but uses ONNX on Linux
+RUN pip install --no-deps basic-pitch>=0.4.0 && \
+    grep -v '^basic-pitch' requirements.txt > /tmp/req-nobp.txt && \
+    pip install -r /tmp/req-nobp.txt
 
-# 7. Copy Codebase
+# Stage 2: Runtime — lean, no build toolchain
+FROM python:3.12-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libsndfile1 \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /venv /venv
+ENV PATH="/venv/bin:$PATH"
+
+RUN groupadd -r tabagent && useradd -r -g tabagent -d /app -s /sbin/nologin tabagent \
+    && chown -R tabagent:tabagent /app
+
 COPY . .
 
-# 8. Default Command
+USER tabagent
+
+EXPOSE 7860
+
+HEALTHCHECK --interval=30s --timeout=3s CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:7860/health')"
+
 CMD ["python", "app.py"]
