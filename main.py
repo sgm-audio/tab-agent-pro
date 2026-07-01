@@ -163,21 +163,34 @@ Examples:
         """,
     )
     parser.add_argument("audio", nargs="?", help="Path to audio file (WAV/MP3/FLAC)")
-    parser.add_argument("--instrument", "-i", choices=["Guitar", "Bass"], default="Guitar",
-                        help="Instrument type (default: Guitar)")
-    parser.add_argument("--onset", type=float, default=0.5,
-                        help="Onset detection threshold (default: 0.5)")
-    parser.add_argument("--frame", type=float, default=0.3,
-                        help="Frame activation threshold (default: 0.3)")
+    parser.add_argument(
+        "--instrument",
+        "-i",
+        choices=["Guitar", "Bass"],
+        default="Guitar",
+        help="Instrument type (default: Guitar)",
+    )
+    parser.add_argument(
+        "--onset", type=float, default=0.5, help="Onset detection threshold (default: 0.5)"
+    )
+    parser.add_argument(
+        "--frame", type=float, default=0.3, help="Frame activation threshold (default: 0.3)"
+    )
     parser.add_argument("--no-midi", action="store_true", help="Skip MIDI export")
     parser.add_argument("--no-tab", action="store_true", help="Skip ASCII tab export")
     parser.add_argument("--no-json", action="store_true", help="Skip JSON export")
-    parser.add_argument("--device", choices=["auto", "cpu", "cuda", "mps"], default="auto",
-                        help="Compute device (default: auto)")
-    parser.add_argument("--profile", type=str, default=None,
-                        help="Preset profile name (see init_memory.py --list)")
-    parser.add_argument("--output-dir", "-o", type=str, default=None,
-                        help="Output directory (default: ./output)")
+    parser.add_argument(
+        "--device",
+        choices=["auto", "cpu", "cuda", "mps"],
+        default="auto",
+        help="Compute device (default: auto)",
+    )
+    parser.add_argument(
+        "--profile", type=str, default=None, help="Preset profile name (see init_memory.py --list)"
+    )
+    parser.add_argument(
+        "--output-dir", "-o", type=str, default=None, help="Output directory (default: ./output)"
+    )
     parser.add_argument("--version", action="version", version="Tab Agent 1.0.0")
     return parser.parse_args()
 
@@ -369,7 +382,9 @@ def main():
     print("\n🎸 Generating Bass Tab...")
     bass_tab = bass_agent.generate_tab(bass_notes)
     if not args.no_tab:
-        export_tab_to_txt(bass_tab, os.path.join(output_dir, f"{song_name}_bass.tab"), "5-String Bass")
+        export_tab_to_txt(
+            bass_tab, os.path.join(output_dir, f"{song_name}_bass.tab"), "5-String Bass"
+        )
     if not args.no_json:
         export_tab_to_json(
             bass_tab,

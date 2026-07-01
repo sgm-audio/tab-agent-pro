@@ -81,8 +81,10 @@ def test_process_audio_impl_error():
     app = _import_app()
 
     mock_progress = MagicMock()
-    with patch("app.process_suno_audio", side_effect=ValueError("boom")), \
-         patch("app._validate_audio", return_value=None):
+    with (
+        patch("app.process_suno_audio", side_effect=ValueError("boom")),
+        patch("app._validate_audio", return_value=None),
+    ):
         msg, zip_path = app._process_audio_impl(
             "dummy.wav", "Guitar", True, True, True, mock_progress
         )
@@ -176,8 +178,10 @@ def test_process_audio_impl_zip_with_files():
         (session_dir / "test_output.mid").write_text("fake midi")
 
         mock_progress = MagicMock()
-        with patch("app.process_suno_audio", return_value=("/tmp/test.wav", False, {})), \
-             patch("app._validate_audio", return_value=None):
+        with (
+            patch("app.process_suno_audio", return_value=("/tmp/test.wav", False, {})),
+            patch("app._validate_audio", return_value=None),
+        ):
             with patch("app.SplitterAgent") as sc:
                 sc.return_value.separate_stems.return_value = {"guitar": "/tmp/g.wav"}
                 sc.return_value.process_guitars.return_value = _make_mock_stems()

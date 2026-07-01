@@ -46,7 +46,7 @@ BASS_TUNING = [23, 28, 33, 38, 43]  # B0-E1-A1-D2-G2
 
 MAX_FILE_SIZE_MB = 50
 MAX_DURATION_SEC = 300  # 5 minutes
-ALLOWED_EXTENSIONS = {'.wav', '.mp3', '.flac', '.ogg', '.m4a', '.aiff'}
+ALLOWED_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aiff"}
 
 
 # Apply Zero GPU decorator if available
@@ -118,6 +118,7 @@ def _validate_audio(audio_path: Path) -> str | None:
         return f"File too large: {size_mb:.1f}MB (max {MAX_FILE_SIZE_MB}MB)"
     try:
         import librosa
+
         duration = librosa.get_duration(path=str(audio_path))
         if duration > MAX_DURATION_SEC:
             return f"Audio too long: {duration:.0f}s (max {MAX_DURATION_SEC}s)"
@@ -314,14 +315,12 @@ def create_ui():
         theme=gr.themes.Soft(),
         css=css,
     ) as demo:
-        gr.HTML(
-            """
+        gr.HTML("""
             <div class="tab-agent-header">
                 <h1>🎸 Tab Agent</h1>
                 <p>Upload guitar or bass audio. Get tablature, MIDI, and JSON back.</p>
             </div>
-            """
-        )
+            """)
 
         with gr.Row(equal_height=False):
             with gr.Column(scale=2, min_width=320):
@@ -390,15 +389,13 @@ def create_ui():
             - [Basic Pitch](https://github.com/spotify/basic-pitch)
             """)
 
-        gr.HTML(
-            """
+        gr.HTML("""
             <div class="tab-agent-footer">
                 MIT · <a href="https://github.com/scottmills306/tab-agent-pro">Tab Agent</a> ·
                 Built with <a href="https://github.com/spotify/basic-pitch">Basic Pitch</a> ·
                 Python 3.10+
             </div>
-            """
-        )
+            """)
 
         transcribe_btn.click(
             fn=_process_audio_impl,
@@ -445,6 +442,7 @@ def cleanup_temp_dirs():
 def handle_signal(sig, frame):
     """Handle shutdown signals gracefully."""
     import sys
+
     print(f"\nReceived signal {sig}, shutting down...")
     cleanup_temp_dirs()
     sys.exit(0)
