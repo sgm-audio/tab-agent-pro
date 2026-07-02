@@ -9,12 +9,8 @@ license: mit
 ---
 
 [![CI](https://github.com/scottmills306/tab-agent-pro/actions/workflows/ci.yml/badge.svg)](https://github.com/scottmills306/tab-agent-pro/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-194%20passing-brightgreen)](https://github.com/scottmills306/tab-agent-pro)
-[![Coverage](https://img.shields.io/badge/coverage-84%25-brightgreen)](https://github.com/scottmills306/tab-agent-pro)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Code style: black](https://img.shields.io/badge/code%20style-black-000000)](https://github.com/psf/black)
-[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 # 🎸 Tab Agent
 
@@ -70,7 +66,7 @@ graph LR
 | **Quality Analysis** | SunoDetector | Detects AI-generated audio artifacts, adjusts thresholds |
 | **Stem Separation** | Demucs | Isolates guitar/bass from the mix |
 | **Spatial Processing** | Mid-Side | Splits lead and rhythm guitars |
-| **Transcription** | YourMT3+ / Basic Pitch | Converts audio → MIDI notes |
+| **Transcription** | Basic Pitch | Converts audio → MIDI notes |
 | **Tablature** | DP Viterbi | Assigns notes to strings/frets optimally |
 | **Technique Detection** | Heuristic | Slides, hammer-ons, pull-offs |
 | **Export** | — | MIDI, ASCII tab, JSON |
@@ -79,11 +75,11 @@ graph LR
 
 ## Features
 
-- **Two transcription engines** — YourMT3+ (primary, ~2.7GB model) with automatic fallback to Basic Pitch (lightweight, ONNX)
+- **Basic Pitch transcription** — Spotify's lightweight ONNX model, no GPU required
 - **Full-mix processing** — Demucs separates guitar/bass even from complete songs
 - **Multi-track output** — Lead guitar, rhythm L/R, bass in separate files
 - **Column-aligned tablature** — Chords grouped vertically, easy to read
-- **AI audio support** — Automatic detection and cleanup for Suno/Udio generated audio
+- **AI audio support** — Automatic detection and cleanup for Suno/Udio AI-generated audio
 - **Technique detection** — Slides (`s`), hammer-ons (`h`), pull-offs (`p`) annotated in output
 - **REAPER integration** — Run transcription directly from the DAW via ReaPack
 - **Zero GPU acceleration** — HuggingFace Spaces optimization for faster CPU inference
@@ -144,17 +140,6 @@ Legend: s=slide, h=hammer-on, p=pull-off
 
 ---
 
-## Quality
-
-| Metric | Value |
-|--------|-------|
-| Tests | 194 passing |
-| Branch coverage | 84% |
-| Type errors | 0 (mypy strict) |
-| Security issues | 0 HIGH/CRITICAL |
-| Lint errors | 0 (ruff) |
-| Formatting | black |
-
 ---
 
 ## License
@@ -164,5 +149,5 @@ MIT — use it, modify it, share it.
 ---
 
 *Built with [Basic Pitch](https://github.com/spotify/basic-pitch) by Spotify Research,
-[YourMT3](https://huggingface.co/mimbres/YourMT3), [Demucs](https://github.com/facebookresearch/demucs) by Meta,
+[Demucs](https://github.com/facebookresearch/demucs) by Meta,
 and [Gradio](https://gradio.app).*

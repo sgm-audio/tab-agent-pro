@@ -33,7 +33,7 @@ class SunoArtifactDetector:
 
     """
 
-    def __init__(self, aggressiveness: float = 0.5):
+    def __init__(self, aggressiveness: float = 0.5) -> None:
         self.sample_rate = 22050
         self.aggressiveness = float(np.clip(aggressiveness, 0.0, 1.0))
         self._hf_ratio_threshold = 0.35 - (self.aggressiveness * 0.15)  # 0.20-0.35
@@ -49,8 +49,6 @@ class SunoArtifactDetector:
             (is_ai_generated, metrics_dict)
 
         """
-        print(f"🔍 Analyzing: {audio_path} (aggressiveness={self.aggressiveness:.1f})")
-
         y, sr = librosa.load(audio_path, sr=self.sample_rate, mono=True, duration=30)
 
         # Compute spectrogram
@@ -108,21 +106,17 @@ class SunoArtifactDetector:
         )
 
         if is_suno:
-            print("   🤖 AI-Generated Audio Detected")
-            print(f"      High-freq ratio: {metrics['hf_ratio']:.3f} (>0.35 = Suno)")
-            print(f"      Spectral flatness: {metrics['spectral_flatness']:.3f} (<0.008 = AI)")
+            pass
         else:
-            print("   🎸 Natural Recording Detected")
+            pass
 
         return is_suno, metrics
 
 
 class SunoAudioPreprocessor:
-    """
-    Pre-process audio to reduce Suno artifacts before transcription.
-    """
+    """Pre-process audio to reduce Suno artifacts before transcription."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.sample_rate = 22050
 
     def process(self, audio_path: str, output_path: str) -> str:
@@ -137,8 +131,6 @@ class SunoAudioPreprocessor:
             Path to processed audio
 
         """
-        print(f"🧹 Preprocessing: {audio_path}")
-
         y, sr = librosa.load(audio_path, sr=self.sample_rate, mono=True)
 
         # 1. High-pass filter (remove ultra-low rumble common in AI audio)
@@ -152,7 +144,6 @@ class SunoAudioPreprocessor:
 
         # Save processed audio
         sf.write(output_path, y, sr)
-        print(f"   ✅ Saved: {output_path}")
 
         return output_path
 
@@ -163,9 +154,7 @@ class SunoAudioPreprocessor:
         nyquist = sr / 2
         normal_cutoff = cutoff / nyquist
         b, a = butter(4, normal_cutoff, btype="high", analog=False)
-        y_filtered = filtfilt(b, a, y)
-
-        return y_filtered
+        return filtfilt(b, a, y)
 
     def _reduce_hf_artifacts(self, y: np.ndarray, sr: float) -> np.ndarray:
         """
@@ -189,9 +178,7 @@ class SunoAudioPreprocessor:
 
         # Reconstruct
         D_processed = mag * phase
-        y_processed = librosa.istft(D_processed)
-
-        return y_processed
+        return librosa.istft(D_processed)
 
     def _spectral_gate(self, y: np.ndarray, sr: float, threshold_db: float = -40) -> np.ndarray:
         """
@@ -213,15 +200,11 @@ class SunoAudioPreprocessor:
 
         # Reconstruct
         D_gated = mag_gated * phase
-        y_gated = librosa.istft(D_gated)
-
-        return y_gated
+        return librosa.istft(D_gated)
 
 
 class SunoNotePostprocessor:
-    """
-    Post-process transcribed notes to fix common Suno errors.
-    """
+    """Post-process transcribed notes to fix common Suno errors."""
 
     def process(
         self,
@@ -244,15 +227,9 @@ class SunoNotePostprocessor:
         if not is_suno:
             return notes  # No processing needed for clean audio
 
-        print(f"🧹 Post-processing {len(notes)} notes for Suno artifacts...")
-
         notes = self._remove_octave_errors(notes)
         notes = self._remove_spurious_high_notes(notes)
-        notes = self._smooth_timing(notes)
-
-        print(f"   ✅ Cleaned to {len(notes)} notes")
-
-        return notes
+        return self._smooth_timing(notes)
 
     def _remove_octave_errors(
         self,
@@ -303,7 +280,6 @@ class SunoNotePostprocessor:
 
         # If >30% of notes are suspiciously high, likely artifacts
         if high_ratio > 0.3:
-            print(f"   Removing {len(high_notes)} spurious high notes")
             return [n for n in notes if n.pitch <= threshold_pitch]
 
         return notes

@@ -1,6 +1,6 @@
 """
 Tab Agent - Hugging Face Gradio Interface (MVP)
-AI-powered guitar/bass tablature transcription using Basic Pitch
+AI-powered guitar/bass tablature transcription using Basic Pitch.
 
 This is the web UI for the Tab Agent transcription system.
 Optimized for Zero GPU deployment with Basic Pitch model.
@@ -18,7 +18,6 @@ from pathlib import Path
 
 import gradio as gr
 
-# Health checks & structured logging
 from monitoring import health
 
 # Zero GPU support for faster processing
@@ -28,7 +27,6 @@ try:
     GPU_AVAILABLE = True
 except ImportError:
     GPU_AVAILABLE = False
-    print("⚠️  Running without Zero GPU support")
 
 # Import Tab Agent modules
 from agents import EarAgent, SplitterAgent, TabAgent
@@ -135,9 +133,7 @@ def _process_audio_impl(
     include_json,
     progress,
 ):
-    """
-    Internal implementation of audio processing.
-    """
+    """Internal implementation of audio processing."""
     cleanup_stale_sessions()
 
     if audio_file is None:
@@ -376,7 +372,7 @@ def create_ui():
             gr.Markdown("""
             1. **Stem separation** — Demucs isolates guitar/bass from the mix
             2. **Spatial processing** — Mid-side technique splits lead from rhythm
-            3. **AI transcription** — YourMT3+ or Basic Pitch converts audio → MIDI notes
+            3. **AI transcription** — Basic Pitch converts audio → MIDI notes
             4. **Tablature generation** — Dynamic programming assigns notes to strings/frets
             5. **Technique detection** — Slides, hammer-ons, pull-offs annotated
             6. **Export** — MIDI, ASCII tab, JSON in a single ZIP
@@ -429,21 +425,19 @@ def create_app():
 
         return default_metrics.summary()
 
-    parent_app = gr.mount_gradio_app(parent_app, demo, path="/")
-    return parent_app
+    return gr.mount_gradio_app(parent_app, demo, path="/")
 
 
-def cleanup_temp_dirs():
+def cleanup_temp_dirs() -> None:
     """Remove temporary output directories on shutdown."""
     if OUTPUT_DIR.exists():
         shutil.rmtree(OUTPUT_DIR, ignore_errors=True)
 
 
-def handle_signal(sig, frame):
+def handle_signal(sig, frame) -> None:
     """Handle shutdown signals gracefully."""
     import sys
 
-    print(f"\nReceived signal {sig}, shutting down...")
     cleanup_temp_dirs()
     sys.exit(0)
 
@@ -453,7 +447,7 @@ signal.signal(signal.SIGINT, handle_signal)
 atexit.register(cleanup_temp_dirs)
 
 
-def cleanup_stale_sessions(max_age_hours: int = 1):
+def cleanup_stale_sessions(max_age_hours: int = 1) -> None:
     """Remove session directories older than max_age_hours."""
     if not OUTPUT_DIR.exists():
         return
@@ -470,7 +464,6 @@ def cleanup_stale_sessions(max_age_hours: int = 1):
 
 # Main entry point
 if __name__ == "__main__":
-    import os
     import uvicorn
 
     uvicorn.run(create_app(), host=os.getenv("HOST", "127.0.0.1"), port=7860)

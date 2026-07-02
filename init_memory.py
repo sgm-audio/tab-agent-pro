@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Tab Agent - Memory Initialization with Preset Profiles
+Tab Agent - Memory Initialization with Preset Profiles.
 
 Run this script to select a preset profile and save it to user memory.
 Profiles configure tuning, thresholds, and processing behaviour for the
@@ -167,41 +167,42 @@ def save_profile(profile_key: str, memory_dir: str | None = None) -> str:
     return preferences_path
 
 
-def list_profiles():
+def list_profiles() -> None:
     """Print available profiles to stdout."""
-    print("\nAvailable Profiles:\n")
+    print("\nAvailable Profiles:\n")  # noqa: T201 — CLI output
     for key, prof in PROFILES.items():
         strings = f"{prof['num_strings']}-string"
         label = "🎸" if not prof["prefer_low_strings"] else "🎵"
-        print(f"  {label} {key:22s} | {prof['name']}")
-        print(f"    {'':22s} | {prof['description']}")
-        print(
+        print(f"  {label} {key:22s} | {prof['name']}")  # noqa: T201
+        print(f"    {'':22s} | {prof['description']}")  # noqa: T201
+        print(  # noqa: T201
             f"    {'':22s} | {strings}, onset={prof['onset_threshold']}, "
             f"suno={'aggressive' if prof['suno_aggressive_mode'] else 'light'}",
         )
-        print()
+        print()  # noqa: T201
 
 
 def interactive_select() -> str:
     """Prompt the user to select a profile interactively."""
-    print("""
+    print(  # noqa: T201
+        """
 ╔══════════════════════════════════════════════════════════════╗
 ║          🎸 Tab Agent - Profile Initialization              ║
 ╚══════════════════════════════════════════════════════════════╝
-""")
-
+"""
+    )
     keys = list(PROFILES.keys())
     for idx, key in enumerate(keys, 1):
         prof = PROFILES[key]
         strings = f"{prof['num_strings']}-string"
         label = "🎸" if not prof["prefer_low_strings"] else "🎵"
-        print(f"  [{idx}] {label} {prof['name']}")
-        print(f"      {prof['description']}")
-        print(
+        print(f"  [{idx}] {label} {prof['name']}")  # noqa: T201
+        print(f"      {prof['description']}")  # noqa: T201
+        print(  # noqa: T201
             f"      {strings}, onset={prof['onset_threshold']}, "
             f"suno={'aggressive' if prof['suno_aggressive_mode'] else 'light'}",
         )
-        print()
+        print()  # noqa: T201
 
     while True:
         try:
@@ -209,13 +210,11 @@ def interactive_select() -> str:
             idx = int(choice)
             if 1 <= idx <= len(keys):
                 return keys[idx - 1]
-            print(f"  Please enter a number between 1 and {len(keys)}")
         except (ValueError, KeyboardInterrupt):
-            print("\n  Exiting.")
             sys.exit(1)
 
 
-def main():
+def main() -> None:
     if "--list" in sys.argv:
         list_profiles()
         return
@@ -229,8 +228,8 @@ def main():
             if candidate in PROFILES:
                 profile_key = candidate
             else:
-                print(f"❌ Unknown profile: {candidate}")
-                print("   Use --list to see available profiles")
+                print(f"❌ Unknown profile: {candidate}")  # noqa: T201
+                print("   Use --list to see available profiles")  # noqa: T201
                 sys.exit(1)
 
     if profile_key is None:
@@ -239,9 +238,9 @@ def main():
     memory_path = save_profile(profile_key)
     prof = PROFILES[profile_key]
 
-    print(f"\n✅ Profile '{prof['name']}' saved!")
-    print(f"   Config written to: {memory_path}")
-    print("   Ready — run 'python main.py <audio_file>' to transcribe.\n")
+    print(f"\n✅ Profile '{prof['name']}' saved!")  # noqa: T201
+    print(f"   Config written to: {memory_path}")  # noqa: T201
+    print("   Ready — run 'python main.py <audio_file>' to transcribe.\n")  # noqa: T201
 
 
 if __name__ == "__main__":

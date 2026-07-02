@@ -14,13 +14,14 @@ import os
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import note_seq
+import pytest
 
-from agents import SplitterAgent, EarAgent, TabAgent
+from agents import EarAgent, SplitterAgent, TabAgent
 
 GUITAR_TUNING = [40, 45, 50, 55, 59, 64]
 BASS_TUNING = [23, 28, 33, 38, 43]
@@ -45,14 +46,14 @@ def make_note(pitch, start, end=None, velocity=80):
 class TestSplitterAgentSeparateStems(unittest.TestCase):
     """Cover the three paths in separate_stems: API, CLI, raw fallback."""
 
-    def setUp(self):
+    def setUp(self) -> None:
         self.tmpdir = tempfile.mkdtemp()
         self.splitter = SplitterAgent(output_dir=self.tmpdir)
         self.dummy_audio = os.path.join(self.tmpdir, "input.wav")
         with open(self.dummy_audio, "w") as f:
             f.write("FAKE-WAV")
 
-    def tearDown(self):
+    def tearDown(self) -> None:
         import shutil
 
         shutil.rmtree(self.tmpdir, ignore_errors=True)
@@ -67,7 +68,7 @@ class TestSplitterAgentSeparateStems(unittest.TestCase):
     @patch("agents.DEMUCS_API_AVAILABLE", True)
     @patch("agents.health")
     @patch("agents.metrics")
-    def test_separate_stems_api_path(self, mock_metrics, mock_health):
+    def test_separate_stems_api_path(self, mock_metrics, mock_health) -> None:
         """When DEMUCS_API_AVAILABLE and API succeeds, return API result."""
         mock_metrics.track_stage.return_value = self._make_cm()
         expected = {"guitar": "/fake/other.wav", "bass": "/fake/bass.wav"}
@@ -75,14 +76,14 @@ class TestSplitterAgentSeparateStems(unittest.TestCase):
 
         result = self.splitter.separate_stems(self.dummy_audio)
 
-        self.assertEqual(result, expected)
+        assert result == expected
         self.splitter._separate_with_api.assert_called_once()
         mock_health.set_component.assert_called_with("demucs", "loaded")
 
     @patch("agents.DEMUCS_API_AVAILABLE", True)
     @patch("agents.health")
     @patch("agents.metrics")
-    def test_separate_stems_api_fails_cli_succeeds(self, mock_metrics, mock_health):
+    def test_separate_stems_api_fails_cli_succeeds(self, mock_metrics, mock_health) -> None:
         """When API fails but CLI works, return CLI result."""
         mock_metrics.track_stage.return_value = self._make_cm()
         self.splitter._separate_with_api = MagicMock(side_effect=RuntimeError("OOM"))
@@ -91,13 +92,13 @@ class TestSplitterAgentSeparateStems(unittest.TestCase):
 
         result = self.splitter.separate_stems(self.dummy_audio)
 
-        self.assertEqual(result, expected)
+        assert result == expected
         self.splitter._separate_with_subprocess.assert_called_once()
 
     @patch("agents.DEMUCS_API_AVAILABLE", True)
     @patch("agents.health")
     @patch("agents.metrics")
-    def test_separate_stems_api_and_cli_fail_raw_fallback(self, mock_metrics, mock_health):
+    def test_separate_stems_api_and_cli_fail_raw_fallback(self, mock_metrics, mock_health) -> None:
         """When API and CLI fail, return raw audio fallback."""
         mock_metrics.track_stage.return_value = self._make_cm()
         self.splitter._separate_with_api = MagicMock(side_effect=RuntimeError("OOM"))
@@ -108,13 +109,13 @@ class TestSplitterAgentSeparateStems(unittest.TestCase):
 
         result = self.splitter.separate_stems(self.dummy_audio)
 
-        self.assertIn("guitar", result)
-        self.assertIn("bass", result)
+        assert "guitar" in result
+        assert "bass" in result
         self.splitter._raw_audio_fallback.assert_called_once()
 
     @patch("agents.DEMUCS_API_AVAILABLE", False)
     @patch("agents.metrics")
-    def test_separate_stems_no_api_cli_succeeds(self, mock_metrics):
+    def test_separate_stems_no_api_cli_succeeds(self, mock_metrics) -> None:
         """When DEMUCS_API is not available, skip directly to CLI."""
         mock_metrics.track_stage.return_value = self._make_cm()
         expected = {"guitar": "/cli/other.wav", "bass": "/cli/bass.wav"}
@@ -122,42 +123,42 @@ class TestSplitterAgentSeparateStems(unittest.TestCase):
 
         result = self.splitter.separate_stems(self.dummy_audio)
 
-        self.assertEqual(result, expected)
+        assert result == expected
         self.splitter._separate_with_subprocess.assert_called_once()
 
 
 class TestSplitterAgentRawAudioFallback(unittest.TestCase):
     """Test _raw_audio_fallback produces valid paths."""
 
-    def setUp(self):
+    def setUp(self) -> None:
         self.tmpdir = tempfile.mkdtemp()
         self.splitter = SplitterAgent(output_dir=self.tmpdir)
         self.dummy_audio = os.path.join(self.tmpdir, "song.wav")
         with open(self.dummy_audio, "w") as f:
             f.write("FAKE-WAV")
 
-    def tearDown(self):
+    def tearDown(self) -> None:
         import shutil
 
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def test_raw_audio_fallback_creates_files(self):
+    def test_raw_audio_fallback_creates_files(self) -> None:
         """Fallback copies raw audio to both guitar and bass paths."""
         result = self.splitter._raw_audio_fallback(self.dummy_audio, "song")
-        self.assertIn("guitar", result)
-        self.assertIn("bass", result)
-        self.assertTrue(os.path.exists(result["guitar"]))
-        self.assertTrue(os.path.exists(result["bass"]))
+        assert "guitar" in result
+        assert "bass" in result
+        assert os.path.exists(result["guitar"])
+        assert os.path.exists(result["bass"])
 
-    def test_raw_audio_fallback_content_preserved(self):
+    def test_raw_audio_fallback_content_preserved(self) -> None:
         """Fallback preserves original file content."""
         with open(self.dummy_audio, "w") as f:
             f.write("ORIGINAL-DATA")
         result = self.splitter._raw_audio_fallback(self.dummy_audio, "song2")
         with open(result["guitar"]) as f:
-            self.assertEqual(f.read(), "ORIGINAL-DATA")
+            assert f.read() == "ORIGINAL-DATA"
         with open(result["bass"]) as f:
-            self.assertEqual(f.read(), "ORIGINAL-DATA")
+            assert f.read() == "ORIGINAL-DATA"
 
 
 # =========================================================================
@@ -168,16 +169,16 @@ class TestSplitterAgentRawAudioFallback(unittest.TestCase):
 class TestTabAgentCalculateCost(unittest.TestCase):
     """Edge cases for calculate_cost: legato, string skip, 5-string bass."""
 
-    def setUp(self):
+    def setUp(self) -> None:
         self.agent_6 = TabAgent(tuning=GUITAR_TUNING, num_frets=24)
         self.agent_5 = TabAgent(tuning=BASS_TUNING, num_frets=24)
 
-    def test_cost_prev_is_none_returns_zero(self):
+    def test_cost_prev_is_none_returns_zero(self) -> None:
         """When prev is None, cost is 0."""
         cost = self.agent_6.calculate_cost(None, {"string": 0, "fret": 0}, 1.0)
-        self.assertEqual(cost, 0.0)
+        assert cost == 0.0
 
-    def test_cost_legato_encouragement_same_string(self):
+    def test_cost_legato_encouragement_same_string(self) -> None:
         """Fast transition on same string gets cost reduction (legato)."""
         prev = {"string": 2, "fret": 3}
         curr = {"string": 2, "fret": 5}
@@ -186,9 +187,9 @@ class TestTabAgentCalculateCost(unittest.TestCase):
         cost_slow = self.agent_6.calculate_cost(prev, curr, time_delta=1.0)
 
         # Legato cost should be lower than slow transition cost
-        self.assertLess(cost_legato, cost_slow)
+        assert cost_legato < cost_slow
 
-    def test_cost_legato_reduction_value(self):
+    def test_cost_legato_reduction_value(self) -> None:
         """Legato reduction should be exactly 5.0 on same string fast."""
         prev = {"string": 1, "fret": 3}
         curr = {"string": 1, "fret": 5}
@@ -199,7 +200,7 @@ class TestTabAgentCalculateCost(unittest.TestCase):
         expected_base = base_fret + base_string
         self.assertAlmostEqual(cost, expected_base - 5.0)
 
-    def test_cost_string_skip_penalty_on_fast(self):
+    def test_cost_string_skip_penalty_on_fast(self) -> None:
         """Fast transition with string change gets penalty."""
         prev = {"string": 1, "fret": 3}
         curr = {"string": 3, "fret": 5}
@@ -210,7 +211,7 @@ class TestTabAgentCalculateCost(unittest.TestCase):
         expected_base = base_fret + base_string + 5.0
         self.assertAlmostEqual(cost, expected_base)
 
-    def test_cost_string_skip_no_penalty_on_slow(self):
+    def test_cost_string_skip_no_penalty_on_slow(self) -> None:
         """Slow transition with string change does NOT get penalty."""
         prev = {"string": 1, "fret": 3}
         curr = {"string": 3, "fret": 5}
@@ -220,7 +221,7 @@ class TestTabAgentCalculateCost(unittest.TestCase):
         base_string = abs(3 - 1) * 2.0
         self.assertAlmostEqual(cost, base_fret + base_string)
 
-    def test_cost_bass_preference_low_string_low_fret(self):
+    def test_cost_bass_preference_low_string_low_fret(self) -> None:
         """5-string bass: low strings with low frets get extra penalty."""
         prev = {"string": 1, "fret": 3}
         curr = {"string": 0, "fret": 2}  # low string, low fret (0-4 range)
@@ -230,7 +231,7 @@ class TestTabAgentCalculateCost(unittest.TestCase):
         base_string = abs(0 - 1) * 2.0
         self.assertAlmostEqual(cost, base_fret + base_string + 1.0)
 
-    def test_cost_bass_no_preference_for_high_fret(self):
+    def test_cost_bass_no_preference_for_high_fret(self) -> None:
         """5-string bass: low string with high fret (>=5) gets no extra penalty."""
         prev = {"string": 3, "fret": 5}
         curr = {"string": 0, "fret": 7}  # low string but high fret
@@ -240,7 +241,7 @@ class TestTabAgentCalculateCost(unittest.TestCase):
         base_string = abs(0 - 3) * 2.0
         self.assertAlmostEqual(cost, base_fret + base_string)
 
-    def test_cost_bass_high_string_no_penalty(self):
+    def test_cost_bass_high_string_no_penalty(self) -> None:
         """5-string bass: high strings never get the low-fret penalty."""
         prev = {"string": 2, "fret": 2}
         curr = {"string": 4, "fret": 1}  # high string, low fret
@@ -250,7 +251,7 @@ class TestTabAgentCalculateCost(unittest.TestCase):
         base_string = abs(4 - 2) * 2.0
         self.assertAlmostEqual(cost, base_fret + base_string)
 
-    def test_cost_6string_no_bass_preference(self):
+    def test_cost_6string_no_bass_preference(self) -> None:
         """6-string guitar: no bass-specific penalty even on low strings."""
         prev = {"string": 4, "fret": 3}
         curr = {"string": 0, "fret": 2}  # low string, low fret
@@ -269,25 +270,25 @@ class TestTabAgentCalculateCost(unittest.TestCase):
 class TestTabAgentGenerateTabEdgeCases(unittest.TestCase):
     """Edge cases for generate_tab: unplayable notes, technique detection."""
 
-    def setUp(self):
+    def setUp(self) -> None:
         self.agent = TabAgent(tuning=GUITAR_TUNING, num_frets=24)
 
-    def test_unplayable_notes_returns_empty_with_warning(self):
+    def test_unplayable_notes_returns_empty_with_warning(self) -> None:
         """Notes outside the instrument range produce empty result with warning."""
         notes = [make_note(10, 0.0), make_note(20, 0.5)]  # both below E2
         result = self.agent.generate_tab(notes)
-        self.assertEqual(len(result), 0)
+        assert len(result) == 0
 
-    def test_unplayable_interleaved_with_playable(self):
+    def test_unplayable_interleaved_with_playable(self) -> None:
         """If any note is unplayable, entire result is empty."""
         notes = [
             make_note(40, 0.0),  # playable
             make_note(10, 0.5),  # unplayable
         ]
         result = self.agent.generate_tab(notes)
-        self.assertEqual(len(result), 0)
+        assert len(result) == 0
 
-    def test_technique_slide_adjacent_1_fret(self):
+    def test_technique_slide_adjacent_1_fret(self) -> None:
         """1-fret difference on same string fast → slide."""
         notes = [
             make_note(40, 0.0),  # E2 string 0 fret 0
@@ -295,9 +296,9 @@ class TestTabAgentGenerateTabEdgeCases(unittest.TestCase):
         ]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
         if len(result) > 1:
-            self.assertEqual(result[1]["technique"], "slide")
+            assert result[1]["technique"] == "slide"
 
-    def test_technique_hammer_ascending(self):
+    def test_technique_hammer_ascending(self) -> None:
         """Ascending same-string fast → hammer."""
         notes = [
             make_note(40, 0.0),  # E2
@@ -305,9 +306,9 @@ class TestTabAgentGenerateTabEdgeCases(unittest.TestCase):
         ]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
         if len(result) > 1:
-            self.assertIn(result[1]["technique"], ["slide", "hammer"])
+            assert result[1]["technique"] in ["slide", "hammer"]
 
-    def test_technique_pull_descending(self):
+    def test_technique_pull_descending(self) -> None:
         """Descending same-string fast → pull."""
         notes = [
             make_note(55, 0.0),  # G3
@@ -315,9 +316,9 @@ class TestTabAgentGenerateTabEdgeCases(unittest.TestCase):
         ]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
         if len(result) > 1:
-            self.assertIn(result[1]["technique"], ["slide", "hammer", "pull", "pick"])
+            assert result[1]["technique"] in ["slide", "hammer", "pull", "pick"]
 
-    def test_slow_transition_is_pick_not_technique(self):
+    def test_slow_transition_is_pick_not_technique(self) -> None:
         """Slow transition on same string → 'pick' (no technique)."""
         notes = [
             make_note(40, 0.0),
@@ -325,9 +326,9 @@ class TestTabAgentGenerateTabEdgeCases(unittest.TestCase):
         ]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.5)
         if len(result) > 1:
-            self.assertEqual(result[1]["technique"], "pick")
+            assert result[1]["technique"] == "pick"
 
-    def test_technique_window_includes_close_notes(self):
+    def test_technique_window_includes_close_notes(self) -> None:
         """Close notes within window on same string get 'slide'."""
         notes = [
             make_note(40, 0.0),  # E2 — only on string 0
@@ -335,9 +336,9 @@ class TestTabAgentGenerateTabEdgeCases(unittest.TestCase):
         ]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
         if len(result) > 1:
-            self.assertEqual(result[1]["technique"], "slide")
+            assert result[1]["technique"] == "slide"
 
-    def test_technique_window_excludes_distant_notes(self):
+    def test_technique_window_excludes_distant_notes(self) -> None:
         """Distant notes outside window get 'pick'."""
         notes = [
             make_note(40, 0.0),
@@ -345,9 +346,9 @@ class TestTabAgentGenerateTabEdgeCases(unittest.TestCase):
         ]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.3)
         if len(result) > 1:
-            self.assertEqual(result[1]["technique"], "pick")
+            assert result[1]["technique"] == "pick"
 
-    def test_generate_tab_different_string_no_technique(self):
+    def test_generate_tab_different_string_no_technique(self) -> None:
         """Different string fast transition is 'pick' (no technique)."""
         notes = [
             make_note(40, 0.0),
@@ -355,9 +356,9 @@ class TestTabAgentGenerateTabEdgeCases(unittest.TestCase):
         ]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
         if len(result) > 1:
-            self.assertEqual(result[1]["technique"], "pick")
+            assert result[1]["technique"] == "pick"
 
-    def test_5string_bass_tab_produces_valid_output(self):
+    def test_5string_bass_tab_produces_valid_output(self) -> None:
         """5-string bass.generate_tab returns valid tab with techniques."""
         agent = TabAgent(tuning=BASS_TUNING, num_frets=24)
         notes = [
@@ -366,9 +367,9 @@ class TestTabAgentGenerateTabEdgeCases(unittest.TestCase):
             make_note(38, 1.0),
         ]
         result = agent.generate_tab(notes)
-        self.assertEqual(len(result), 3)
+        assert len(result) == 3
         for entry in result:
-            self.assertIn("technique", entry)
+            assert "technique" in entry
 
 
 # =========================================================================
@@ -379,10 +380,10 @@ class TestTabAgentGenerateTabEdgeCases(unittest.TestCase):
 class TestEarAgentHumanizeAndCleanEdgeCases(unittest.TestCase):
     """Edge cases for humanize_and_clean."""
 
-    def setUp(self):
+    def setUp(self) -> None:
         self.ear = EarAgent(model_id="mimbres/YourMT3", device="cpu", prefer_yourmt3=False)
 
-    def test_is_bass_filters_above_67(self):
+    def test_is_bass_filters_above_67(self) -> None:
         """Bass mode removes notes above pitch 67."""
         notes = [
             make_note(60, 0.0),  # valid
@@ -390,10 +391,10 @@ class TestEarAgentHumanizeAndCleanEdgeCases(unittest.TestCase):
             make_note(80, 1.0),  # above bass range
         ]
         result = self.ear.humanize_and_clean(notes, is_bass=True)
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0].pitch, 60)
+        assert len(result) == 1
+        assert result[0].pitch == 60
 
-    def test_duplicate_pitch_removal(self):
+    def test_duplicate_pitch_removal(self) -> None:
         """Same pitch at same time is removed, different pitches kept."""
         notes = [
             make_note(60, 0.0),
@@ -401,26 +402,26 @@ class TestEarAgentHumanizeAndCleanEdgeCases(unittest.TestCase):
             make_note(64, 0.0),  # different pitch, same time — kept
         ]
         result = self.ear.humanize_and_clean(notes)
-        self.assertEqual(len(result), 2)
+        assert len(result) == 2
         pitches = {n.pitch for n in result}
-        self.assertIn(60, pitches)
-        self.assertIn(64, pitches)
+        assert 60 in pitches
+        assert 64 in pitches
 
-    def test_duplicate_pitch_different_time_kept(self):
+    def test_duplicate_pitch_different_time_kept(self) -> None:
         """Same pitch at different times is not a duplicate."""
         notes = [
             make_note(60, 0.0, end=0.4),
             make_note(60, 0.5, end=0.9),  # same pitch, different time
         ]
         result = self.ear.humanize_and_clean(notes)
-        self.assertEqual(len(result), 2)
+        assert len(result) == 2
 
-    def test_empty_input_returns_empty(self):
+    def test_empty_input_returns_empty(self) -> None:
         """Empty input returns empty list."""
         result = self.ear.humanize_and_clean([])
-        self.assertEqual(len(result), 0)
+        assert len(result) == 0
 
-    def test_ultrashort_and_bass_out_of_range(self):
+    def test_ultrashort_and_bass_out_of_range(self) -> None:
         """Combination of ultra-short and bass range filtering."""
         notes = [
             make_note(60, 0.0, end=0.01),  # ultra-short
@@ -428,10 +429,10 @@ class TestEarAgentHumanizeAndCleanEdgeCases(unittest.TestCase):
             make_note(45, 1.0, end=1.5),  # valid
         ]
         result = self.ear.humanize_and_clean(notes, is_bass=True)
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0].pitch, 45)
+        assert len(result) == 1
+        assert result[0].pitch == 45
 
-    def test_non_bass_allows_high_notes(self):
+    def test_non_bass_allows_high_notes(self) -> None:
         """Non-bass mode keeps high notes."""
         notes = [
             make_note(60, 0.0, end=0.4),
@@ -439,7 +440,7 @@ class TestEarAgentHumanizeAndCleanEdgeCases(unittest.TestCase):
             make_note(84, 1.0, end=1.5),  # fine for guitar
         ]
         result = self.ear.humanize_and_clean(notes, is_bass=False)
-        self.assertEqual(len(result), 3)
+        assert len(result) == 3
 
 
 # =========================================================================
@@ -450,51 +451,51 @@ class TestEarAgentHumanizeAndCleanEdgeCases(unittest.TestCase):
 class TestEarAgentFilterByInstrumentRangeEdgeCases(unittest.TestCase):
     """Edge cases for _filter_by_instrument_range."""
 
-    def setUp(self):
+    def setUp(self) -> None:
         self.ear = EarAgent(model_id="mimbres/YourMT3", device="cpu", prefer_yourmt3=False)
 
-    def test_empty_notes_returns_empty(self):
+    def test_empty_notes_returns_empty(self) -> None:
         """Empty input returns empty list."""
         result = self.ear._filter_by_instrument_range([], "Guitar")
-        self.assertEqual(len(result), 0)
+        assert len(result) == 0
 
-    def test_all_notes_in_range_for_guitar(self):
+    def test_all_notes_in_range_for_guitar(self) -> None:
         """All notes within guitar range pass through."""
         notes = [make_note(40, 0.0), make_note(64, 0.5), make_note(88, 1.0)]
         result = self.ear._filter_by_instrument_range(notes, "Guitar")
-        self.assertEqual(len(result), 3)
+        assert len(result) == 3
 
-    def test_bass_range_preserves_edge_low_B0(self):
+    def test_bass_range_preserves_edge_low_B0(self) -> None:
         """Bass range includes low B0 (pitch 23)."""
         notes = [make_note(23, 0.0)]
         result = self.ear._filter_by_instrument_range(notes, "bass")
-        self.assertEqual(len(result), 1)
+        assert len(result) == 1
 
-    def test_bass_range_preserves_edge_high_G4(self):
+    def test_bass_range_preserves_edge_high_G4(self) -> None:
         """Bass range includes high G4 (pitch 67)."""
         notes = [make_note(67, 0.0)]
         result = self.ear._filter_by_instrument_range(notes, "bass")
-        self.assertEqual(len(result), 1)
+        assert len(result) == 1
 
-    def test_bass_removes_below_B0(self):
+    def test_bass_removes_below_B0(self) -> None:
         """Bass range removes notes below B0 (pitch 23)."""
         notes = [make_note(22, 0.0)]  # below B0
         result = self.ear._filter_by_instrument_range(notes, "Bass")
-        self.assertEqual(len(result), 0)
+        assert len(result) == 0
 
-    def test_guitar_removes_below_E2(self):
+    def test_guitar_removes_below_E2(self) -> None:
         """Guitar range removes notes below E2 (pitch 40)."""
         notes = [make_note(39, 0.0)]  # below E2
         result = self.ear._filter_by_instrument_range(notes, "Guitar")
-        self.assertEqual(len(result), 0)
+        assert len(result) == 0
 
-    def test_guitar_removes_above_E6(self):
+    def test_guitar_removes_above_E6(self) -> None:
         """Guitar range removes notes above E6 (pitch 88)."""
         notes = [make_note(89, 0.0)]
         result = self.ear._filter_by_instrument_range(notes, "Guitar")
-        self.assertEqual(len(result), 0)
+        assert len(result) == 0
 
-    def test_mixed_in_and_out_of_range_guitar(self):
+    def test_mixed_in_and_out_of_range_guitar(self) -> None:
         """Mixed valid and invalid notes for guitar."""
         notes = [
             make_note(30, 0.0),  # too low
@@ -502,18 +503,18 @@ class TestEarAgentFilterByInstrumentRangeEdgeCases(unittest.TestCase):
             make_note(95, 1.0),  # too high
         ]
         result = self.ear._filter_by_instrument_range(notes, "Guitar")
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0].pitch, 50)
+        assert len(result) == 1
+        assert result[0].pitch == 50
 
-    def test_case_insensitive_target(self):
+    def test_case_insensitive_target(self) -> None:
         """Target matching is case-insensitive (Bass, bass, BASS all work)."""
         notes = [make_note(60, 0.0), make_note(70, 0.5)]
         result = self.ear._filter_by_instrument_range(notes, "BASS")
-        self.assertEqual(len(result), 1)
+        assert len(result) == 1
         result2 = self.ear._filter_by_instrument_range(notes, "bass")
-        self.assertEqual(len(result2), 1)
+        assert len(result2) == 1
         result3 = self.ear._filter_by_instrument_range(notes, "BaSs")
-        self.assertEqual(len(result3), 1)
+        assert len(result3) == 1
 
 
 # =========================================================================
@@ -524,16 +525,16 @@ class TestEarAgentFilterByInstrumentRangeEdgeCases(unittest.TestCase):
 class TestSplitterAgentSpatialProcessingEdgeCases(unittest.TestCase):
     """Mono input paths for process_guitars and process_bass."""
 
-    def setUp(self):
+    def setUp(self) -> None:
         self.tmpdir = tempfile.mkdtemp()
         self.splitter = SplitterAgent(output_dir=self.tmpdir)
 
-    def tearDown(self):
+    def tearDown(self) -> None:
         import shutil
 
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def test_process_guitars_mono_does_not_crash(self):
+    def test_process_guitars_mono_does_not_crash(self) -> None:
         """Mono file is duplicated to stereo automatically."""
         sr = 44100
         import numpy as np
@@ -544,10 +545,10 @@ class TestSplitterAgentSpatialProcessingEdgeCases(unittest.TestCase):
         sf.write(path, mono, sr)
         result = self.splitter.process_guitars(path)
         for k in ("lead", "left", "right"):
-            self.assertIn(k, result)
-            self.assertTrue(os.path.exists(result[k]))
+            assert k in result
+            assert os.path.exists(result[k])
 
-    def test_process_bass_mono_does_not_crash(self):
+    def test_process_bass_mono_does_not_crash(self) -> None:
         """Mono bass input is processed correctly."""
         sr = 44100
         import numpy as np
@@ -557,7 +558,7 @@ class TestSplitterAgentSpatialProcessingEdgeCases(unittest.TestCase):
         sf = __import__("soundfile")
         sf.write(path, mono, sr)
         result = self.splitter.process_bass(path)
-        self.assertTrue(os.path.exists(result))
+        assert os.path.exists(result)
 
 
 # =========================================================================
@@ -568,34 +569,34 @@ class TestSplitterAgentSpatialProcessingEdgeCases(unittest.TestCase):
 class TestSplitterSeparateWithSubprocess(unittest.TestCase):
     """Test the CLI subprocess path for stem separation."""
 
-    def setUp(self):
+    def setUp(self) -> None:
         self.tmpdir = tempfile.mkdtemp()
         self.splitter = SplitterAgent(output_dir=self.tmpdir)
         self.dummy_audio = os.path.join(self.tmpdir, "song.wav")
         with open(self.dummy_audio, "w") as f:
             f.write("FAKE")
 
-    def tearDown(self):
+    def tearDown(self) -> None:
         import shutil
 
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     @patch("agents.subprocess.run")
-    def test_subprocess_success(self, mock_run):
+    def test_subprocess_success(self, mock_run) -> None:
         """Successful subprocess returns expected stem paths."""
         mock_run.return_value = MagicMock(returncode=0)
         result = self.splitter._separate_with_subprocess(self.dummy_audio, "song")
-        self.assertIn("guitar", result)
-        self.assertIn("bass", result)
+        assert "guitar" in result
+        assert "bass" in result
         mock_run.assert_called_once()
 
     @patch("agents.subprocess.run")
-    def test_subprocess_failure_raises(self, mock_run):
+    def test_subprocess_failure_raises(self, mock_run) -> None:
         """Failed subprocess raises CalledProcessError."""
         from subprocess import CalledProcessError
 
         mock_run.side_effect = CalledProcessError(1, "demucs")
-        with self.assertRaises(CalledProcessError):
+        with pytest.raises(CalledProcessError):
             self.splitter._separate_with_subprocess(self.dummy_audio, "song")
 
 
@@ -607,13 +608,13 @@ class TestSplitterSeparateWithSubprocess(unittest.TestCase):
 class TestEarTranscribeStemBasicPitch(unittest.TestCase):
     """Test the transcribe_stem Basic Pitch path with mocks."""
 
-    def setUp(self):
+    def setUp(self) -> None:
         self.ear = EarAgent(model_id="mimbres/YourMT3", device="cpu", prefer_yourmt3=False)
 
     @patch("agents.BASIC_PITCH_AVAILABLE", True)
     @patch("agents.basic_pitch_predict")
     @patch("agents.metrics")
-    def test_transcribe_stem_basic_pitch_path(self, mock_metrics, mock_bp_predict):
+    def test_transcribe_stem_basic_pitch_path(self, mock_metrics, mock_bp_predict) -> None:
         """transcribe_stem calls Basic Pitch and returns notes."""
         mock_metrics.track_stage.return_value.__enter__.return_value = None
         mock_metrics.track_stage.return_value.__exit__.return_value = False
@@ -629,14 +630,14 @@ class TestEarTranscribeStemBasicPitch(unittest.TestCase):
         mock_bp_predict.return_value = (MagicMock(), pm, MagicMock())
 
         result = self.ear.transcribe_stem("/fake/path.wav", target="Guitar")
-        self.assertEqual(len(result), 2)
-        self.assertEqual(result[0].pitch, 60)
-        self.assertEqual(result[1].pitch, 64)
+        assert len(result) == 2
+        assert result[0].pitch == 60
+        assert result[1].pitch == 64
 
     @patch("agents.BASIC_PITCH_AVAILABLE", True)
     @patch("agents.basic_pitch_predict")
     @patch("agents.metrics")
-    def test_transcribe_stem_basic_pitch_filters_range(self, mock_metrics, mock_bp_predict):
+    def test_transcribe_stem_basic_pitch_filters_range(self, mock_metrics, mock_bp_predict) -> None:
         """Basic Pitch result is filtered by instrument range."""
         mock_metrics.track_stage.return_value.__enter__.return_value = None
         mock_metrics.track_stage.return_value.__exit__.return_value = False
@@ -654,13 +655,13 @@ class TestEarTranscribeStemBasicPitch(unittest.TestCase):
         mock_bp_predict.return_value = (MagicMock(), pm, MagicMock())
 
         result = self.ear.transcribe_stem("/fake/path.wav", target="Guitar")
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0].pitch, 64)
+        assert len(result) == 1
+        assert result[0].pitch == 64
 
     @patch("agents.BASIC_PITCH_AVAILABLE", True)
     @patch("agents.basic_pitch_predict")
     @patch("agents.metrics")
-    def test_transcribe_stem_basic_pitch_bass_target(self, mock_metrics, mock_bp_predict):
+    def test_transcribe_stem_basic_pitch_bass_target(self, mock_metrics, mock_bp_predict) -> None:
         """Bass target uses bass range filter."""
         mock_metrics.track_stage.return_value.__enter__.return_value = None
         mock_metrics.track_stage.return_value.__exit__.return_value = False
@@ -680,8 +681,8 @@ class TestEarTranscribeStemBasicPitch(unittest.TestCase):
         mock_bp_predict.return_value = (MagicMock(), pm, MagicMock())
 
         result = self.ear.transcribe_stem("/fake/path.wav", target="Bass")
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0].pitch, 30)
+        assert len(result) == 1
+        assert result[0].pitch == 30
 
 
 # =========================================================================
@@ -692,21 +693,21 @@ class TestEarTranscribeStemBasicPitch(unittest.TestCase):
 class TestEarExportMidi(unittest.TestCase):
     """Test export_midi edge cases."""
 
-    def setUp(self):
+    def setUp(self) -> None:
         self.ear = EarAgent(model_id="mimbres/YourMT3", device="cpu", prefer_yourmt3=False)
         self.tmpdir = tempfile.mkdtemp()
 
-    def tearDown(self):
+    def tearDown(self) -> None:
         import shutil
 
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def test_export_midi_empty_does_not_crash(self):
+    def test_export_midi_empty_does_not_crash(self) -> None:
         """Empty notes list does not crash."""
         path = os.path.join(self.tmpdir, "empty.mid")
         self.ear.export_midi([], path)
 
-    def test_export_midi_creates_file(self):
+    def test_export_midi_creates_file(self) -> None:
         """Valid notes creates a MIDI file."""
         notes = [
             make_note(60, 0.0, end=0.5),
@@ -714,10 +715,10 @@ class TestEarExportMidi(unittest.TestCase):
         ]
         path = os.path.join(self.tmpdir, "test.mid")
         self.ear.export_midi(notes, path)
-        self.assertTrue(os.path.exists(path))
-        self.assertGreater(os.path.getsize(path), 0)
+        assert os.path.exists(path)
+        assert os.path.getsize(path) > 0
 
-    def test_export_midi_standard_resolution(self):
+    def test_export_midi_standard_resolution(self) -> None:
         """Exported MIDI has standard 480 ticks_per_quarter."""
         notes = [make_note(60, 0.0, end=0.5)]
         path = os.path.join(self.tmpdir, "res.mid")
@@ -725,7 +726,7 @@ class TestEarExportMidi(unittest.TestCase):
         import note_seq
 
         ns = note_seq.midi_file_to_sequence_proto(path)
-        self.assertEqual(ns.ticks_per_quarter, 480)
+        assert ns.ticks_per_quarter == 480
 
 
 # =========================================================================
@@ -736,18 +737,18 @@ class TestEarExportMidi(unittest.TestCase):
 class TestEarConvertPrettyMidi(unittest.TestCase):
     """Test _convert_prettymidi_to_noteseq with various inputs."""
 
-    def setUp(self):
+    def setUp(self) -> None:
         self.ear = EarAgent(model_id="mimbres/YourMT3", device="cpu", prefer_yourmt3=False)
 
-    def test_convert_empty_prettymidi(self):
+    def test_convert_empty_prettymidi(self) -> None:
         """PrettyMIDI with no instruments returns empty."""
         import pretty_midi
 
         pm = pretty_midi.PrettyMIDI()
         result = self.ear._convert_prettymidi_to_noteseq(pm)
-        self.assertEqual(len(result), 0)
+        assert len(result) == 0
 
-    def test_convert_single_instrument(self):
+    def test_convert_single_instrument(self) -> None:
         """Single instrument notes are converted."""
         import pretty_midi
 
@@ -756,10 +757,10 @@ class TestEarConvertPrettyMidi(unittest.TestCase):
         inst.notes.append(pretty_midi.Note(velocity=80, pitch=60, start=0.0, end=0.5))
         pm.instruments.append(inst)
         result = self.ear._convert_prettymidi_to_noteseq(pm)
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0].pitch, 60)
+        assert len(result) == 1
+        assert result[0].pitch == 60
 
-    def test_convert_multiple_instruments(self):
+    def test_convert_multiple_instruments(self) -> None:
         """Notes from all instruments are included."""
         import pretty_midi
 
@@ -769,7 +770,7 @@ class TestEarConvertPrettyMidi(unittest.TestCase):
             inst.notes.append(pretty_midi.Note(velocity=80, pitch=60 + prog, start=0.0, end=0.5))
             pm.instruments.append(inst)
         result = self.ear._convert_prettymidi_to_noteseq(pm)
-        self.assertEqual(len(result), 2)
+        assert len(result) == 2
 
 
 # =========================================================================
@@ -780,53 +781,53 @@ class TestEarConvertPrettyMidi(unittest.TestCase):
 class TestEarParseMt3TokensEdgeCases(unittest.TestCase):
     """Additional edge cases for _parse_mt3_tokens."""
 
-    def setUp(self):
+    def setUp(self) -> None:
         self.ear = EarAgent(model_id="mimbres/YourMT3", device="cpu", prefer_yourmt3=False)
 
-    def test_parse_unknown_token_skipped(self):
+    def test_parse_unknown_token_skipped(self) -> None:
         """Unknown tokens after a valid start are skipped without error."""
         events = "NOTE_ON 60 VELOCITY 80 BOGUS 123 TIME_SHIFT 0.5 NOTE_OFF 60"
         notes = self.ear._convert_to_noteseq(events)
-        self.assertEqual(len(notes), 1)
+        assert len(notes) == 1
 
-    def test_parse_note_off_no_active_note(self):
+    def test_parse_note_off_no_active_note(self) -> None:
         """NOTE_OFF for a pitch with no active note is silently skipped."""
         events = "NOTE_OFF 99 TIME_SHIFT 0.1 NOTE_ON 60 VELOCITY 80 TIME_SHIFT 0.5 NOTE_OFF 60"
         notes = self.ear._convert_to_noteseq(events)
-        self.assertEqual(len(notes), 1)
+        assert len(notes) == 1
 
-    def test_parse_active_notes_closed_at_end(self):
+    def test_parse_active_notes_closed_at_end(self) -> None:
         """Notes still active at end of input are closed."""
         events = "NOTE_ON 60 VELOCITY 80 TIME_SHIFT 1.0"
         notes = self.ear._convert_to_noteseq(events)
-        self.assertEqual(len(notes), 1)
-        self.assertGreater(notes[0].end_time, notes[0].start_time)
+        assert len(notes) == 1
+        assert notes[0].end_time > notes[0].start_time
 
-    def test_parse_invalid_int_skipped(self):
+    def test_parse_invalid_int_skipped(self) -> None:
         """Invalid integer value causes token to be skipped."""
         events = "NOTE_ON sixty TIME_SHIFT 0.5 NOTE_ON 64 VELOCITY 80 TIME_SHIFT 0.5 NOTE_OFF 64"
         notes = self.ear._convert_to_noteseq(events)
-        self.assertEqual(len(notes), 1)
-        self.assertEqual(notes[0].pitch, 64)
+        assert len(notes) == 1
+        assert notes[0].pitch == 64
 
-    def test_parse_time_shift_float_error(self):
+    def test_parse_time_shift_float_error(self) -> None:
         """Invalid float after TIME_SHIFT skips the token."""
         events = "TIME_SHIFT bad NOTE_ON 60 VELOCITY 80 TIME_SHIFT 0.5 NOTE_OFF 60"
         notes = self.ear._convert_to_noteseq(events)
-        self.assertEqual(len(notes), 1)
+        assert len(notes) == 1
 
-    def test_parse_no_velocity_default(self):
+    def test_parse_no_velocity_default(self) -> None:
         """NOTE_ON without VELOCITY defaults to 80."""
         events = "NOTE_ON 60 TIME_SHIFT 0.5 NOTE_OFF 60"
         notes = self.ear._convert_to_noteseq(events)
-        self.assertEqual(len(notes), 1)
-        self.assertEqual(notes[0].velocity, 80)
+        assert len(notes) == 1
+        assert notes[0].velocity == 80
 
-    def test_parse_short_note_filtered(self):
+    def test_parse_short_note_filtered(self) -> None:
         """Notes shorter than min_duration are filtered."""
         events = "NOTE_ON 60 VELOCITY 80 TIME_SHIFT 0.01 NOTE_OFF 60"
         notes = self.ear._convert_to_noteseq(events, min_duration=0.05)
-        self.assertEqual(len(notes), 0)
+        assert len(notes) == 0
 
 
 # =========================================================================
@@ -837,11 +838,11 @@ class TestEarParseMt3TokensEdgeCases(unittest.TestCase):
 class TestSplitterSeparateWithApi(unittest.TestCase):
     """Test the Demucs API path with mocks."""
 
-    def setUp(self):
+    def setUp(self) -> None:
         self.tmpdir = tempfile.mkdtemp()
         self.splitter = SplitterAgent(output_dir=self.tmpdir)
 
-    def tearDown(self):
+    def tearDown(self) -> None:
         import shutil
 
         shutil.rmtree(self.tmpdir, ignore_errors=True)
@@ -856,7 +857,7 @@ class TestSplitterSeparateWithApi(unittest.TestCase):
         return _a.demucs_api
 
     @patch("agents.sf.write")
-    def test_separate_with_api_creates_stems(self, mock_sf_write):
+    def test_separate_with_api_creates_stems(self, mock_sf_write) -> None:
         """API separation creates stem files from returned tensors."""
         import torch
 
@@ -875,12 +876,12 @@ class TestSplitterSeparateWithApi(unittest.TestCase):
                 f.write("FAKE")
             result = self.splitter._separate_with_api(dummy, "input")
 
-        self.assertIn("guitar", result)
-        self.assertIn("bass", result)
-        self.assertTrue(mock_sf_write.called)
+        assert "guitar" in result
+        assert "bass" in result
+        assert mock_sf_write.called
 
     @patch("agents.sf.write")
-    def test_separate_with_api_uses_cuda(self, mock_sf_write):
+    def test_separate_with_api_uses_cuda(self, mock_sf_write) -> None:
         """API uses CUDA device when available."""
         import torch
 
@@ -900,11 +901,11 @@ class TestSplitterSeparateWithApi(unittest.TestCase):
             self.splitter._separate_with_api(dummy, "i")
 
         _, kwargs = api.Separator.call_args
-        self.assertIn("device", kwargs)
-        self.assertEqual(kwargs["device"], "cuda")
+        assert "device" in kwargs
+        assert kwargs["device"] == "cuda"
 
     @patch("agents.sf.write")
-    def test_separate_with_api_mono_tensor(self, mock_sf_write):
+    def test_separate_with_api_mono_tensor(self, mock_sf_write) -> None:
         """1D tensor is unsqueezed before writing."""
         import torch
 
@@ -934,12 +935,12 @@ class TestSplitterSeparateWithApi(unittest.TestCase):
 class TestEarYourMT3TranscribePath(unittest.TestCase):
     """Test the YourMT3 path in transcribe_stem with mocked model."""
 
-    def setUp(self):
+    def setUp(self) -> None:
         self.ear = EarAgent(model_id="mimbres/YourMT3", device="cpu", prefer_yourmt3=False)
 
     @patch("agents.librosa.load")
     @patch("agents.torch.no_grad")
-    def test_transcribe_stem_yourmt3_model_set(self, mock_no_grad, mock_load):
+    def test_transcribe_stem_yourmt3_model_set(self, mock_no_grad, mock_load) -> None:
         """When self.model is set, YourMT3 path is used."""
         import numpy as np
 
@@ -963,7 +964,7 @@ class TestEarYourMT3TranscribePath(unittest.TestCase):
         self.ear._ymt3_utils = {}
 
         result = self.ear.transcribe_stem("/fake/path.wav", target="Guitar", onset_threshold=0.5)
-        self.assertIsInstance(result, list)
+        assert isinstance(result, list)
 
 
 # =========================================================================
@@ -975,7 +976,7 @@ class TestEarAllModelsFailed(unittest.TestCase):
     """Test the path where no transcription models are available."""
 
     @patch("agents.BASIC_PITCH_AVAILABLE", False)
-    def test_transcribe_stem_raises_when_no_models(self):
+    def test_transcribe_stem_raises_when_no_models(self) -> None:
         """When no models available, raises RuntimeError."""
         ear = EarAgent(
             model_id="mimbres/YourMT3",
@@ -983,7 +984,7 @@ class TestEarAllModelsFailed(unittest.TestCase):
             prefer_yourmt3=False,
         )
         ear.model = None  # ensure no YourMT3
-        with self.assertRaises(RuntimeError):
+        with pytest.raises(RuntimeError):
             ear.transcribe_stem("/fake/path.wav")
 
 
@@ -995,7 +996,7 @@ class TestEarAllModelsFailed(unittest.TestCase):
 class TestEarInlineFallbacks(unittest.TestCase):
     """Test _slice_audio_inline, _merge_notes_inline, _mix_notes_inline."""
 
-    def test_slice_audio_inline_exact_multiple(self):
+    def test_slice_audio_inline_exact_multiple(self) -> None:
         """Audio length is exact multiple of frame_size."""
         import numpy as np
 
@@ -1004,10 +1005,10 @@ class TestEarInlineFallbacks(unittest.TestCase):
 
         audio_t = torch.from_numpy(audio)
         segments = EarAgent._slice_audio_inline(audio_t, 8000, 4000)
-        self.assertEqual(segments.shape[0], 4)  # 16000 / 4000 = 4
-        self.assertEqual(segments.shape[1], 8000)
+        assert segments.shape[0] == 4  # 16000 / 4000 = 4
+        assert segments.shape[1] == 8000
 
-    def test_slice_audio_inline_partial_last(self):
+    def test_slice_audio_inline_partial_last(self) -> None:
         """Last partial segment is zero-padded."""
         import numpy as np
         import torch
@@ -1016,37 +1017,37 @@ class TestEarInlineFallbacks(unittest.TestCase):
         audio_t = torch.from_numpy(audio)
         segments = EarAgent._slice_audio_inline(audio_t, 8000, 4000)
         # 10000: segments at 0-8000, 4000-10000 (partial, padded to 8000)
-        self.assertEqual(segments.shape[0], 2)
-        self.assertEqual(segments.shape[1], 8000)
+        assert segments.shape[0] == 2
+        assert segments.shape[1] == 8000
 
-    def test_merge_notes_inline(self):
+    def test_merge_notes_inline(self) -> None:
         """Zipped events are converted to note dicts."""
         zipped = [(0.0, 0.5, 60, 80, 1), (0.5, 1.0, 64, 90, 1)]
         notes = EarAgent._merge_notes_inline(zipped)
-        self.assertEqual(len(notes), 2)
-        self.assertEqual(notes[0]["pitch"], 60)
-        self.assertEqual(notes[0]["start"], 0.0)
-        self.assertEqual(notes[1]["pitch"], 64)
+        assert len(notes) == 2
+        assert notes[0]["pitch"] == 60
+        assert notes[0]["start"] == 0.0
+        assert notes[1]["pitch"] == 64
 
-    def test_mix_notes_inline_deduplicates(self):
+    def test_mix_notes_inline_deduplicates(self) -> None:
         """Same pitch+start across channels is deduplicated."""
         ch1 = [{"pitch": 60, "start": 0.0}]
         ch2 = [{"pitch": 60, "start": 0.0}]  # duplicate
         ch3 = [{"pitch": 64, "start": 0.5}]
         mixed = EarAgent._mix_notes_inline([ch1, ch2, ch3])
-        self.assertEqual(len(mixed), 2)
+        assert len(mixed) == 2
 
-    def test_mix_notes_inline_sorted(self):
+    def test_mix_notes_inline_sorted(self) -> None:
         """Mixed notes are sorted by start time."""
         ch1 = [{"pitch": 64, "start": 0.5}]
         ch2 = [{"pitch": 60, "start": 0.0}]
         mixed = EarAgent._mix_notes_inline([ch1, ch2])
-        self.assertEqual(mixed[0]["pitch"], 60)
+        assert mixed[0]["pitch"] == 60
 
-    def test_mix_notes_inline_empty_channel(self):
+    def test_mix_notes_inline_empty_channel(self) -> None:
         """Empty channel list doesn't crash."""
         mixed = EarAgent._mix_notes_inline([[], []])
-        self.assertEqual(len(mixed), 0)
+        assert len(mixed) == 0
 
 
 # =========================================================================
@@ -1058,54 +1059,54 @@ class TestEarAgentDeviceSelection(unittest.TestCase):
     """Test EarAgent device auto-detection."""
 
     @patch("agents.torch.cuda.is_available", return_value=True)
-    def test_device_auto_selects_cuda(self, mock_cuda):
+    def test_device_auto_selects_cuda(self, mock_cuda) -> None:
         """Auto device selects cuda when available."""
         ear = EarAgent(
             model_id="test",
             device="auto",
             prefer_yourmt3=False,
         )
-        self.assertEqual(ear.device, "cuda")
+        assert ear.device == "cuda"
 
     @patch("agents.torch.cuda.is_available", return_value=False)
     @patch("agents.torch.backends.mps.is_available", return_value=True)
-    def test_device_auto_selects_mps(self, mock_mps, mock_cuda):
+    def test_device_auto_selects_mps(self, mock_mps, mock_cuda) -> None:
         """Auto device selects mps when cuda unavailable."""
         ear = EarAgent(
             model_id="test",
             device="auto",
             prefer_yourmt3=False,
         )
-        self.assertEqual(ear.device, "mps")
+        assert ear.device == "mps"
 
     @patch("agents.torch.cuda.is_available", return_value=False)
     @patch("agents.torch.backends.mps.is_available", return_value=False)
-    def test_device_auto_selects_cpu(self, mock_mps, mock_cuda):
+    def test_device_auto_selects_cpu(self, mock_mps, mock_cuda) -> None:
         """Auto device falls back to cpu."""
         ear = EarAgent(
             model_id="test",
             device="auto",
             prefer_yourmt3=False,
         )
-        self.assertEqual(ear.device, "cpu")
+        assert ear.device == "cpu"
 
-    def test_device_explicit_cpu(self):
+    def test_device_explicit_cpu(self) -> None:
         """Explicit device string is used directly."""
         ear = EarAgent(
             model_id="test",
             device="cpu",
             prefer_yourmt3=False,
         )
-        self.assertEqual(ear.device, "cpu")
+        assert ear.device == "cpu"
 
-    def test_device_explicit_cuda(self):
+    def test_device_explicit_cuda(self) -> None:
         """Explicit cuda string is used directly."""
         ear = EarAgent(
             model_id="test",
             device="cuda",
             prefer_yourmt3=False,
         )
-        self.assertEqual(ear.device, "cuda")
+        assert ear.device == "cuda"
 
 
 # =========================================================================
@@ -1119,7 +1120,7 @@ class TestEarBasicPitchError(unittest.TestCase):
     @patch("agents.BASIC_PITCH_AVAILABLE", True)
     @patch("agents.basic_pitch_predict")
     @patch("agents.metrics")
-    def test_basic_pitch_error_raises(self, mock_metrics, mock_bp_predict):
+    def test_basic_pitch_error_raises(self, mock_metrics, mock_bp_predict) -> None:
         """When Basic Pitch fails, error propagates."""
         mock_metrics.track_stage.return_value.__enter__.return_value = None
         mock_metrics.track_stage.return_value.__exit__.return_value = False
@@ -1133,7 +1134,7 @@ class TestEarBasicPitchError(unittest.TestCase):
 
         mock_bp_predict.side_effect = RuntimeError("BP failed")
 
-        with self.assertRaises(RuntimeError):
+        with pytest.raises(RuntimeError):
             ear.transcribe_stem("/fake/path.wav")
 
 
@@ -1145,7 +1146,7 @@ class TestEarBasicPitchError(unittest.TestCase):
 class TestEarBuildYourmt3Args(unittest.TestCase):
     """Test _build_yourmt3_args produces a valid argparse namespace."""
 
-    def test_build_yourmt3_args_returns_namespace(self):
+    def test_build_yourmt3_args_returns_namespace(self) -> None:
         """Returns an argparse.Namespace with expected attributes."""
         import argparse
 
@@ -1155,10 +1156,10 @@ class TestEarBuildYourmt3Args(unittest.TestCase):
             prefer_yourmt3=False,
         )
         args = ear._build_yourmt3_args("/fake/checkpoint")
-        self.assertIsInstance(args, argparse.Namespace)
-        self.assertTrue(hasattr(args, "exp_id"))
-        self.assertTrue(hasattr(args, "task"))
-        self.assertTrue(hasattr(args, "precision"))
+        assert isinstance(args, argparse.Namespace)
+        assert hasattr(args, "exp_id")
+        assert hasattr(args, "task")
+        assert hasattr(args, "precision")
 
 
 # =========================================================================
@@ -1169,10 +1170,10 @@ class TestEarBuildYourmt3Args(unittest.TestCase):
 class TestTabAgentGenerateTabBacktracking(unittest.TestCase):
     """Cover the backward-pass backtracking in generate_tab."""
 
-    def setUp(self):
+    def setUp(self) -> None:
         self.agent = TabAgent(tuning=[40, 45, 50, 55, 59, 64], num_frets=24)
 
-    def test_backtrack_reconstructs_path(self):
+    def test_backtrack_reconstructs_path(self) -> None:
         """Multiple notes with multiple valid positions each."""
         notes = [
             make_note(40, 0.0),
@@ -1181,18 +1182,18 @@ class TestTabAgentGenerateTabBacktracking(unittest.TestCase):
             make_note(55, 1.5),
         ]
         result = self.agent.generate_tab(notes)
-        self.assertEqual(len(result), 4)
+        assert len(result) == 4
         for entry in result:
-            self.assertIn("fret", entry)
-            self.assertIn("technique", entry)
-            self.assertIn("start_time", entry)
+            assert "fret" in entry
+            assert "technique" in entry
+            assert "start_time" in entry
 
-    def test_all_notes_get_start_time(self):
+    def test_all_notes_get_start_time(self) -> None:
         """Every note gets a start_time annotation."""
         notes = [make_note(40, 0.0), make_note(64, 0.3)]
         result = self.agent.generate_tab(notes)
         for entry in result:
-            self.assertIn("start_time", entry)
+            assert "start_time" in entry
 
 
 # =========================================================================
@@ -1203,12 +1204,13 @@ class TestTabAgentGenerateTabBacktracking(unittest.TestCase):
 class TestEarYourMT3FailureAndBranches(unittest.TestCase):
     """Cover YourMT3 failure handler and internal branch paths."""
 
-    def setUp(self):
+    def setUp(self) -> None:
         self.ear = EarAgent(model_id="mimbres/YourMT3", device="cpu", prefer_yourmt3=False)
 
     @patch("agents.librosa.load")
     @patch("agents.torch.no_grad")
-    def test_yourmt3_failure_falls_to_basic_pitch(self, mock_no_grad, mock_load):
+    @patch("agents.BASIC_PITCH_AVAILABLE", True)
+    def test_yourmt3_failure_falls_to_basic_pitch(self, mock_load, mock_no_grad) -> None:
         """When YourMT3 raises, transcribe_stem falls to Basic Pitch."""
         import numpy as np
 
@@ -1235,11 +1237,11 @@ class TestEarYourMT3FailureAndBranches(unittest.TestCase):
             mock_bp.return_value = (MagicMock(), pm, MagicMock())
 
             result = self.ear.transcribe_stem("/fake/path.wav")
-            self.assertEqual(len(result), 1)
+            assert len(result) == 1
 
     @patch("agents.librosa.load")
     @patch("agents.torch.no_grad")
-    def test_yourmt3_uses_util_slice(self, mock_no_grad, mock_load):
+    def test_yourmt3_uses_util_slice(self, mock_no_grad, mock_load) -> None:
         """_transcribe_with_yourmt3 uses _ymt3_utils slice when available."""
         import numpy as np
 
@@ -1261,7 +1263,7 @@ class TestEarYourMT3FailureAndBranches(unittest.TestCase):
             "input_frames": 4000,
         }
         # Provide all utils to cover "slice", "merge", "mix" branches
-        import numpy as _np
+        import numpy as np
 
         def fake_slice(audio, frame_size, step_size):
             audio_np = audio.squeeze().numpy()
@@ -1272,10 +1274,10 @@ class TestEarYourMT3FailureAndBranches(unittest.TestCase):
                 segments.append(audio_np[start : start + frame_size])
                 start += step_size
             if start < total:
-                seg = _np.zeros(frame_size, dtype=audio_np.dtype)
+                seg = np.zeros(frame_size, dtype=audio_np.dtype)
                 seg[: total - start] = audio_np[start:]
                 segments.append(seg)
-            return _np.array(segments)
+            return np.array(segments)
 
         self.ear._ymt3_utils = {
             "slice": fake_slice,
@@ -1287,10 +1289,11 @@ class TestEarYourMT3FailureAndBranches(unittest.TestCase):
         }
 
         result = self.ear.transcribe_stem("/fake/path.wav")
-        self.assertIsInstance(result, list)
+        assert isinstance(result, list)
 
     @patch("agents.librosa.load")
-    def test_yourmt3_not_ready_raises(self, mock_load):
+    @patch("agents.BASIC_PITCH_AVAILABLE", True)
+    def test_yourmt3_not_ready_raises(self, mock_load) -> None:
         """When tm is None or model lacks inference_file, falls back."""
         import numpy as np
 
@@ -1313,7 +1316,7 @@ class TestEarYourMT3FailureAndBranches(unittest.TestCase):
             mock_bp.return_value = (MagicMock(), pm, MagicMock())
 
             result = self.ear.transcribe_stem("/fake/path.wav")
-            self.assertEqual(len(result), 1)
+            assert len(result) == 1
 
 
 # =========================================================================
@@ -1325,14 +1328,14 @@ class TestEarAgentInitWithoutBasicPitch(unittest.TestCase):
     """Test EarAgent init when Basic Pitch is not available."""
 
     @patch("agents.BASIC_PITCH_AVAILABLE", False)
-    def test_init_warns_when_no_models(self):
+    def test_init_warns_when_no_models(self) -> None:
         """EarAgent init prints warning when no models available."""
         ear = EarAgent(
             model_id="mimbres/YourMT3",
             device="cpu",
             prefer_yourmt3=False,
         )
-        self.assertIsNone(ear.model)
+        assert ear.model is None
 
 
 if __name__ == "__main__":

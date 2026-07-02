@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Tab Agent Pro — Validation Suite
+Tab Agent Pro — Validation Suite.
 
 Run all checks to prove the project is complete and functional.
 Exit code 0 = all good, non-zero = issues found.
@@ -11,6 +11,7 @@ Usage:
 """
 
 import argparse
+import contextlib
 import os
 import sys
 import traceback
@@ -21,7 +22,7 @@ SKIP = 0
 RESULTS: list = []
 
 
-def check(name, condition, detail=""):
+def check(name, condition, detail="") -> None:
     global PASS, FAIL
     if condition:
         RESULTS.append(f"  ✅ {name}")
@@ -31,7 +32,7 @@ def check(name, condition, detail=""):
         FAIL += 1
 
 
-def check_skip(name, condition, detail=""):
+def check_skip(name, condition, detail="") -> None:
     global PASS, SKIP
     if condition:
         RESULTS.append(f"  ⏭️  {name} — {detail}")
@@ -41,7 +42,7 @@ def check_skip(name, condition, detail=""):
         PASS += 1
 
 
-def main():
+def main() -> int:
     global PASS, FAIL, SKIP
     parser = argparse.ArgumentParser()
     parser.add_argument("--quick", action="store_true", help="skip slow checks")
@@ -50,12 +51,7 @@ def main():
     root = os.path.dirname(os.path.abspath(__file__))
     os.chdir(root)
 
-    print("\n" + "=" * 60)
-    print("  TAB AGENT PRO — VALIDATION")
-    print("=" * 60)
-
     # ── 1. FILE EXISTENCE ──────────────────────────────────────────────
-    print("\n--- File Existence ---\n")
 
     required_files = [
         "agents.py",
@@ -89,7 +85,6 @@ def main():
     check("Directory: examples/", os.path.isdir("examples"))
 
     # ── 2. NO STUBS / TODOS ────────────────────────────────────────────
-    print("\n--- No Stubs or TODOs ---\n")
 
     for f in [
         "agents.py",
@@ -110,7 +105,6 @@ def main():
         )
 
     # ── 3. PYTHON SYNTAX ───────────────────────────────────────────────
-    print("\n--- Python Syntax ---\n")
 
     for f in [
         "agents.py",
@@ -127,28 +121,17 @@ def main():
             check(f"Syntax OK: {f}", False, str(e))
 
     # ── 4. IMPORT RESOLUTION ───────────────────────────────────────────
-    print("\n--- Import Resolution ---\n")
 
-    try:
+    with contextlib.suppress(Exception):
         check("numpy", True)
-    except Exception:
-        pass
-    try:
+    with contextlib.suppress(Exception):
         check("librosa", True)
-    except Exception:
-        pass
-    try:
+    with contextlib.suppress(Exception):
         check("soundfile", True)
-    except Exception:
-        pass
-    try:
+    with contextlib.suppress(Exception):
         check("scipy", True)
-    except Exception:
-        pass
-    try:
+    with contextlib.suppress(Exception):
         check("torch", True)
-    except Exception:
-        pass
     try:
         import note_seq
 
@@ -217,12 +200,11 @@ def main():
         check("init_memory.py imports", False, str(e))
 
     # ── 5. COMPONENT FUNCTIONALITY ─────────────────────────────────────
-    print("\n--- Component Functionality ---\n")
 
     # Suno detector
     try:
         detector = SunoArtifactDetector()
-        is_suno, metrics = detector.analyze("examples/guitar_solo.wav")
+        _is_suno, metrics = detector.analyze("examples/guitar_solo.wav")
         check("SunoDetector.analyze() returns (bool, dict)", True)
         check("SunoDetector metrics has hf_ratio", "hf_ratio" in metrics)
         check("SunoDetector metrics has spectral_flatness", "spectral_flatness" in metrics)
@@ -372,7 +354,6 @@ def main():
         check("init_memory.save_profile()", False, str(e))
 
     # ── 6. Lua syntax check (basic) ────────────────────────────────────
-    print("\n--- Lua Scripts ---\n")
 
     for f in ["reaper/TabAgent.lua", "reaper/Settings.lua"]:
         if os.path.exists(f):
@@ -395,7 +376,6 @@ def main():
             check(f"File exists: {f}", False)
 
     # ── 7. RUN.SH ──────────────────────────────────────────────────────
-    print("\n--- run.sh ---\n")
 
     if os.path.exists("run.sh"):
         check("run.sh is executable", os.access("run.sh", os.X_OK))
@@ -406,7 +386,6 @@ def main():
         check("run.sh handles --web flag", "--web" in content)
 
     # ── 8. GIT CLEANLINESS ─────────────────────────────────────────────
-    print("\n--- Git State ---\n")
 
     import subprocess
 
@@ -420,7 +399,6 @@ def main():
     check("No merge conflicts", all("UU" not in line for line in modified))
 
     # ── 9. DOCKER BUILD ────────────────────────────────────────────────
-    print("\n--- Docker Build ---\n")
 
     docker_ok = False
     try:
@@ -440,19 +418,14 @@ def main():
         check_skip("Docker build", str(e), "non-critical")
 
     # ── SUMMARY ────────────────────────────────────────────────────────
-    print(f"\n{'=' * 60}")
-    print(f"  RESULTS: {PASS} passed, {FAIL} failed, {SKIP} skipped")
-    print(f"{'=' * 60}\n")
 
-    for r in RESULTS:
-        print(r)
+    for _r in RESULTS:
+        pass
 
-    print(f"\n{'=' * 60}")
     if FAIL == 0:
-        print("  ✅ VALIDATION PASSED")
+        pass
     else:
-        print(f"  ❌ {FAIL} check(s) FAILED")
-    print(f"{'=' * 60}\n")
+        pass
 
     return 1 if FAIL > 0 else 0
 

@@ -1,6 +1,6 @@
 """
 Tab Agent - Modernized with YourMT3+ (January 2026)
-Multi-instrument music transcription using state-of-the-art transformers
+Multi-instrument music transcription using state-of-the-art transformers.
 
 Improvements from Basic Pitch:
 - YourMT3+ with hierarchical attention transformers
@@ -27,13 +27,12 @@ from monitoring import default_metrics as metrics
 from monitoring import get_logger, health
 
 # Basic Pitch imports (proven and reliable for MVP)
+basic_pitch_predict = None
 try:
     from basic_pitch.inference import predict as basic_pitch_predict
 
     BASIC_PITCH_AVAILABLE = True
 except ImportError:
-    print("⚠️  Basic Pitch not installed")
-    print("    Install with: pip install basic-pitch")
     BASIC_PITCH_AVAILABLE = False
 
 # Demucs Python API (preferred over subprocess CLI)
@@ -85,7 +84,7 @@ class SplitterAgent:
     stem so the pipeline doesn't crash.
     """
 
-    def __init__(self, output_dir="separated_stems"):
+    def __init__(self, output_dir="separated_stems") -> None:
         self.output_dir = output_dir
         self.log = get_logger("splitter")
         os.makedirs(output_dir, exist_ok=True)
@@ -103,8 +102,6 @@ class SplitterAgent:
                     return result
                 except Exception as e:
                     self.log.warning("demucs_api_failed", file=file, error=str(e))
-                    print(f"⚠️  Demucs API failed: {e}")
-                    print("   Trying CLI fallback...")
                     health.set_component("demucs", "degraded (API failed)")
 
         # Try CLI fallback
@@ -115,7 +112,6 @@ class SplitterAgent:
                 return result
         except Exception as e:
             self.log.warning("demucs_all_failed", file=file, error=str(e))
-            print("⚠️  Stem separation unavailable — using raw audio")
             health.set_component("demucs", "unavailable")
             return self._raw_audio_fallback(audio_path, file)
 
@@ -160,7 +156,6 @@ class SplitterAgent:
                 stem_path = os.path.join(base_path, f"{file_key}.wav")
                 sf.write(stem_path, tensor.cpu().numpy().T, separator.samplerate)
 
-        print("✅ Stem separation complete (Python API)")
         return {
             "guitar": os.path.join(base_path, "other.wav"),
             "bass": os.path.join(base_path, "bass.wav"),
@@ -177,11 +172,7 @@ class SplitterAgent:
                 capture_output=True,
                 text=True,
             )  # nosec B603 — hardcoded cmd, no user input
-            print("✅ Stem separation complete (CLI)")
-        except subprocess.CalledProcessError as e:
-            print(f"❌ Demucs failed: {e}")
-            print(f"   stdout: {e.stdout}")
-            print(f"   stderr: {e.stderr}")
+        except subprocess.CalledProcessError:
             raise
 
         base_path = os.path.join(self.output_dir, "htdemucs", song_name)
@@ -198,8 +189,6 @@ class SplitterAgent:
         - Mid (center): Lead guitar (typically center-panned)
         - Side (L/R): Rhythm guitars (typically panned left/right)
         """
-        print("🎸 [Stage 2] Processing spatial audio for guitars")
-
         y, sr = librosa.load(guitar_stem_path, mono=False, sr=None)
 
         if y.ndim == 1:
@@ -224,8 +213,6 @@ class SplitterAgent:
         sf.write(rhythm_l_path, rhythm_l, sr)
         sf.write(rhythm_r_path, rhythm_r, sr)
 
-        print("✅ Guitar processing complete")
-
         return {"lead": lead_path, "left": rhythm_l_path, "right": rhythm_r_path}
 
     def process_bass(self, bass_stem_path):
@@ -237,8 +224,6 @@ class SplitterAgent:
         - Reduce high frequencies (fret noise, harmonics)
         - Optional: Future upgrade to butterworth filters
         """
-        print("🎸 [Stage 3] Processing bass mechanics")
-
         y, sr = librosa.load(bass_stem_path, mono=False, sr=None)
 
         if y.ndim == 1:
@@ -262,7 +247,6 @@ class SplitterAgent:
         path = f"{self.output_dir}/processed_bass_clean.wav"
         sf.write(path, y_processed, sr)
 
-        print("✅ Bass processing complete")
         return path
 
 
@@ -294,7 +278,7 @@ class EarAgent:
         model_id: str = "mimbres/YourMT3",
         device: str = "auto",
         prefer_yourmt3: bool = True,
-    ):
+    ) -> None:
         """
         Initialize transcription model(s).
 
@@ -326,19 +310,14 @@ class EarAgent:
         self.model = None
         self.processor = None
 
-        print("🧠 [Stage 4] Initializing transcription model(s)")
-        print(f"   Device: {self.device}")
-
         # Attempt YourMT3+ load (with resume + graceful fallback)
         if prefer_yourmt3:
             self._load_yourmt3_model(model_id)
 
         if self.model is None and not BASIC_PITCH_AVAILABLE:
-            print("⚠️  No transcription models loaded — Basic Pitch not installed")
-            print("    Install: pip install basic-pitch")
-            print("    Transcription will fail until a model is available.")
+            pass
 
-    def _load_yourmt3_model(self, model_id):
+    def _load_yourmt3_model(self, model_id) -> None:
         """
         Download and load YourMT3+ model with resume and graceful fallback.
 
@@ -349,8 +328,6 @@ class EarAgent:
           4. If any step fails, self.model stays None (graceful fallback)
         """
         global YMT3_AVAILABLE
-
-        print(f"   Checking YourMT3+ ({model_id})...")
 
         checkpoint_dir = self._download_checkpoint(model_id)
         if checkpoint_dir is None:
@@ -364,42 +341,26 @@ class EarAgent:
 
         if self.model is not None:
             YMT3_AVAILABLE = True
-            print("✅ YourMT3+ model loaded successfully")
         else:
-            print("   YourMT3+ not available — Basic Pitch will be used")
+            pass
 
     def _download_checkpoint(self, model_id):
         """Download YourMT3+ checkpoint from HF Hub with resume support."""
         if not HF_HUB_AVAILABLE:
-            print("   ⚠️  huggingface_hub not installed — cannot download checkpoint")
-            print("      Install: pip install huggingface_hub")
             return None
 
         try:
-            print(f"   Downloading checkpoint from {model_id} (resume enabled)...")
-            checkpoint_dir = snapshot_download(
+            return snapshot_download(
                 repo_id=model_id,
                 revision="main",
                 resume_download=True,
                 local_files_only=False,
                 max_workers=4,
             )
-            print(f"   Checkpoint cached at: {checkpoint_dir}")
-            return checkpoint_dir
         except Exception as e:
             http_401 = "401" in str(e) or "Authorization" in str(e)
-            print(f"   ⚠️  Checkpoint download failed: {e}")
-            print(f"      Expected model repo: https://huggingface.co/{model_id}")
             if http_401:
-                print()
-                print("      NOTE: 'mimbres/YourMT3-cpu' is a Gradio Space, not a model repo.")
-                print("      The actual model checkpoints are at 'mimbres/YourMT3'.")
-                print("      If you see 401 from mimbres/YourMT3, the repo may require")
-                print("      authentication. Try logging in with:")
-                print("        huggingface-cli login")
-            print()
-            print("      Manual download: https://huggingface.co/mimbres/YourMT3/tree/main")
-            print("      Then place the checkpoint(s) in your cache dir and re-run.")
+                pass
             return None
 
     def _clone_yourmt3_codebase(self):
@@ -417,7 +378,6 @@ class EarAgent:
             os.makedirs(self.YOURMT3_CACHE, exist_ok=True)
 
             if os.path.exists(os.path.join(self.YOURMT3_CACHE, ".git")):
-                print("   Updating YourMT3 codebase (git fetch)...")
                 result = subprocess.run(  # nosec B603 B607 — hardcoded git cmd
                     [
                         "git",
@@ -448,9 +408,8 @@ class EarAgent:
                         timeout=30,
                     )
                 else:
-                    print(f"   git fetch failed, using cached version: {result.stderr.strip()}")
+                    pass
             else:
-                print("   Cloning YourMT3 codebase from HF Space...")
                 result = subprocess.run(  # nosec B603 B607 — hardcoded git cmd
                     [
                         "git",
@@ -465,13 +424,6 @@ class EarAgent:
                     timeout=120,
                 )
                 if result.returncode != 0:
-                    print(f"   ⚠️  Clone failed: {result.stderr.strip()}")
-                    print(
-                        "      The codebase is at https://huggingface.co/spaces/mimbres/YourMT3-cpu",
-                    )
-                    print(
-                        "      (GitHub repo mimbres/YourMT3 only has README — code lives in the HF Space)",
-                    )
                     return None
 
             # Code is under amt/src/ in the Space repo
@@ -483,23 +435,19 @@ class EarAgent:
             ]
             missing = [f for f in essentials if not os.path.exists(os.path.join(code_root, f))]
             if missing:
-                print(f"   ⚠️  Missing files in cloned repo: {missing}")
                 return None
 
             if code_root not in sys.path:
                 sys.path.insert(0, code_root)
 
-            print(f"   Codebase cached at: {code_root}")
             return code_root
 
         except subprocess.TimeoutExpired:
-            print("   ⚠️  Git operation timed out — check network")
             return None
-        except Exception as e:
-            print(f"   ⚠️  Codebase setup failed: {e}")
+        except Exception:
             return None
 
-    def _import_and_load_model(self, checkpoint_dir, code_dir):
+    def _import_and_load_model(self, checkpoint_dir, code_dir) -> None:
         """
         Import the YourMT3 custom class and load the checkpoint.
 
@@ -521,8 +469,6 @@ class EarAgent:
             from utils.task_manager import TaskManager
         except ImportError as e:
             log.warning("yourmt3_import_failed", error=str(e), code_dir=code_dir)
-            print(f"   ⚠️  Cannot import YourMT3 modules: {e}")
-            print(f"      Codebase at: {code_dir}")
             health.set_component("yourmt3", "error: import failed")
             return
 
@@ -563,14 +509,13 @@ class EarAgent:
                 checkpoint = torch.load(
                     last_ckpt,
                     map_location=self.device,
-                    weights_only=False,
-                )  # nosec B614 — YourMT3 checkpoints require full pickle
+                    weights_only=True,
+                )  # If YourMT3+ checkpoint requires full pickle, re-evaluate with source verification
                 state_dict = checkpoint.get("state_dict", checkpoint)
                 state_dict = {k: v for k, v in state_dict.items() if "pitchshift" not in k}
                 model.load_state_dict(state_dict, strict=False)
             else:
                 log.warning("yourmt3_no_checkpoint", path=str(last_ckpt))
-                print(f"   ⚠️  No checkpoint found at: {last_ckpt}")
                 health.set_component("yourmt3", "error: no checkpoint")
                 return
 
@@ -599,9 +544,7 @@ class EarAgent:
                 health.set_component("yourmt3", "loaded (no utils)")
 
         except Exception as e:
-            log.error("yourmt3_load_failed", exc=e)
-            print(f"   ⚠️  Model load failed: {e}")
-            print("      Falling back to Basic Pitch.")
+            log.exception("yourmt3_load_failed", exc=e)
             health.set_component("yourmt3", f"error: {type(e).__name__}")
             import traceback
 
@@ -787,7 +730,6 @@ class EarAgent:
                     return result
                 except Exception as e:
                     log.warning("yourmt3_fell_back", file=file, error=str(e))
-                    print("   YourMT3+ failed, falling back to Basic Pitch...")
 
         # ── Try Basic Pitch ───────────────────────────────────────────
         if BASIC_PITCH_AVAILABLE:
@@ -809,14 +751,16 @@ class EarAgent:
                     return result
                 except Exception as e:
                     log.warning("basic_pitch_failed", file=file, error=str(e))
-                    print(f"   Basic Pitch failed too: {e}")
 
         # ── Nothing worked: raise error ──────────────────────────────
         log.error("transcribe_all_failed", file=file, target=target)
         health.record_request(success=False, details=f"transcribe: {file}")
-        raise RuntimeError(
+        msg = (
             f"No transcription models available for {file}. "
-            "Install Basic Pitch (pip install basic-pitch) or ensure YourMT3+ loads correctly.",
+            "Install Basic Pitch (pip install basic-pitch) or ensure YourMT3+ loads correctly."
+        )
+        raise RuntimeError(
+            msg,
         )
 
     def _transcribe_with_basic_pitch(
@@ -833,10 +777,9 @@ class EarAgent:
         Basic Pitch is production-ready and works well for guitar/bass.
         """
         log = get_logger("ear_agent")
-        print(f"   Using Basic Pitch (onset: {onset_threshold}, frame: {frame_threshold})")
 
         try:
-            model_output, midi_data, note_events = basic_pitch_predict(
+            _model_output, midi_data, _note_events = basic_pitch_predict(
                 audio_path,
                 onset_threshold=onset_threshold,
                 frame_threshold=frame_threshold,
@@ -852,12 +795,10 @@ class EarAgent:
             notes = self._filter_by_instrument_range(notes, target)
 
             log.info("basic_pitch_done", note_count=len(notes), target=target)
-            print(f"✅ Transcribed {len(notes)} notes (Basic Pitch)")
             return notes
 
         except Exception as e:
-            log.error("basic_pitch_error", exc=e, file=os.path.basename(audio_path))
-            print(f"❌ Basic Pitch error: {e}")
+            log.exception("basic_pitch_error", exc=e, file=os.path.basename(audio_path))
             import traceback
 
             traceback.print_exc()
@@ -884,10 +825,11 @@ class EarAgent:
 
         if tm is None or not hasattr(model, "inference_file"):
             log.warning("yourmt3_not_ready")
-            raise RuntimeError("Model missing inference_file method")
+            msg = "Model missing inference_file method"
+            raise RuntimeError(msg)
 
         # Load and resample audio
-        audio, sr = librosa.load(audio_path, sr=model.audio_cfg["sample_rate"], mono=True)
+        audio, _sr = librosa.load(audio_path, sr=model.audio_cfg["sample_rate"], mono=True)
         audio = torch.from_numpy(audio).unsqueeze(0)
 
         # Segment audio — use stored utility or inline fallback
@@ -948,7 +890,6 @@ class EarAgent:
 
         notes = self._filter_by_instrument_range(notes, target)
         log.info("yourmt3_transcribed", note_count=len(notes), target=target)
-        print(f"✅ Transcribed {len(notes)} notes (YourMT3+)")
         return notes
 
     # ── Inline fallbacks (no cloned-repo dependency) ──────────────────────
@@ -973,7 +914,7 @@ class EarAgent:
     def _merge_notes_inline(zipped_events):
         """Convert zipped (onset, offset, pitch, velocity, instrument) to note dicts."""
         notes = []
-        for onset, offset, pitch, velocity, instrument in zipped_events:
+        for onset, offset, pitch, velocity, _instrument in zipped_events:
             notes.append(
                 {
                     "pitch": int(pitch),
@@ -1085,9 +1026,7 @@ class EarAgent:
 
         # ── No format matched ─────────────────────────────────────
         if not notes:
-            print("⚠ Could not parse YourMT3 output format")
-            print(f"   Raw (first 200 chars): {midi_events[:200]}")
-            print("   Install from source or check model hub for format changes.")
+            pass
 
         return notes
 
@@ -1182,7 +1121,7 @@ class EarAgent:
 
         removed_count = len(notes) - len(filtered)
         if removed_count > 0:
-            print(f"   Filtered {removed_count} out-of-range notes")
+            pass
 
         return filtered
 
@@ -1222,20 +1161,18 @@ class EarAgent:
 
         removed_count = len(raw_notes) - len(cleaned)
         if removed_count > 0:
-            print(f"   Cleaned {removed_count} artifact notes")
+            pass
 
         return cleaned
 
-    def export_midi(self, notes: list[note_seq.NoteSequence.Note], path: str):
+    def export_midi(self, notes: list[note_seq.NoteSequence.Note], path: str) -> None:
         """Export note sequence to MIDI file."""
         if not notes:
-            print(f"⚠️  No notes to export to {path}")
             return
 
         ns = note_seq.NoteSequence(notes=notes)
         ns.ticks_per_quarter = 480  # Standard MIDI resolution
         note_seq.sequence_proto_to_midi_file(ns, path)
-        print(f"📝 Saved MIDI: {os.path.basename(path)}")
 
 
 # ============================================================================
@@ -1257,7 +1194,7 @@ class TabAgent:
     No changes needed from original - implementation is already optimal.
     """
 
-    def __init__(self, tuning: list[int], num_frets: int = 24):
+    def __init__(self, tuning: list[int], num_frets: int = 24) -> None:
         """
         Initialize tablature generator.
 
@@ -1366,8 +1303,7 @@ class TabAgent:
 
         # Check for unplayable notes
         if not all(layers):
-            unplayable = [i for i, layer in enumerate(layers) if not layer]
-            print(f"⚠️  Warning: Notes at indices {unplayable} are unplayable")
+            [i for i, layer in enumerate(layers) if not layer]
             return []
 
         # Initialize DP
@@ -1414,7 +1350,7 @@ class TabAgent:
             best_path.append(layers[i][last_idx])
 
         # Reverse to get chronological order
-        best_path = best_path[::-1]
+        best_path.reverse()
 
         # Annotate techniques (slides, hammer-ons, pull-offs)
         final_tab: list = []

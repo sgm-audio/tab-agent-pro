@@ -6,7 +6,7 @@ import pytest
 from monitoring import PipelineLogger, default_metrics, health
 
 
-def test_health_tracker():
+def test_health_tracker() -> None:
     d = health.as_dict()
     assert "status" in d
     assert "uptime_s" in d
@@ -19,12 +19,12 @@ def test_health_tracker():
     assert d["status"] == "up"
 
 
-def test_default_metrics():
+def test_default_metrics() -> None:
     assert hasattr(default_metrics, "track_stage")
     assert callable(default_metrics.track_stage)
 
 
-def test_pipeline_logger():
+def test_pipeline_logger() -> None:
     log = PipelineLogger("test_module")
     # Capture stdout
     from io import StringIO
@@ -55,7 +55,7 @@ def test_pipeline_logger():
     assert json.loads(lines[2])["error_type"] == "ValueError"
 
 
-def test_create_ui():
+def test_create_ui() -> None:
     pytest.importorskip("gradio")
     import app
 

@@ -44,7 +44,7 @@ jobs:
       run: mypy .
 
     - name: Run tests with coverage
-      run: pytest tests/ test_pipeline.py -v --cov=. --cov-report=term-missing
+      run: pytest tests/ -v --cov=. --cov-report=term-missing
 
     - name: Security scan with Bandit
-      run: bandit -r agents.py main.py app.py monitoring.py suno_postprocessor.py init_memory.py
+      run: bandit -r agents.py main.py app.py monitoring.py suno_postprocessor.py init_memory.py tests/

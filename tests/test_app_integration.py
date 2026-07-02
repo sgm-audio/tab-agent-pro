@@ -14,7 +14,7 @@ def _import_app():
     return app
 
 
-def test_create_app_health():
+def test_create_app_health() -> None:
     app = _import_app()
     from httpx import ASGITransport, AsyncClient
 
@@ -36,7 +36,7 @@ def test_create_app_health():
     assert "platform" in data
 
 
-def test_create_app_metrics():
+def test_create_app_metrics() -> None:
     app = _import_app()
     from httpx import ASGITransport, AsyncClient
 
@@ -52,7 +52,7 @@ def test_create_app_metrics():
     assert isinstance(resp.json(), dict)
 
 
-def test_create_ui_returns_blocks():
+def test_create_ui_returns_blocks() -> None:
     app = _import_app()
     import gradio as gr
 
@@ -60,7 +60,7 @@ def test_create_ui_returns_blocks():
     assert isinstance(demo, gr.Blocks)
 
 
-def test_process_audio_impl_none_audio():
+def test_process_audio_impl_none_audio() -> None:
     app = _import_app()
 
     msg, zip_path = app._process_audio_impl(None, "Guitar", True, True, True, None)
@@ -68,16 +68,16 @@ def test_process_audio_impl_none_audio():
     assert zip_path is None
 
 
-def test_process_audio_non_gpu_wrapper():
+def test_process_audio_non_gpu_wrapper() -> None:
     app = _import_app()
 
     with patch("app._process_audio_impl", return_value=("OK", "/tmp/z.zip")) as mock_impl:
-        msg, zp = app.process_audio("f.wav", "Guitar", True, True, True, MagicMock())
+        msg, _zp = app.process_audio("f.wav", "Guitar", True, True, True, MagicMock())
         assert msg == "OK"
         mock_impl.assert_called_once()
 
 
-def test_process_audio_impl_error():
+def test_process_audio_impl_error() -> None:
     app = _import_app()
 
     mock_progress = MagicMock()
@@ -139,7 +139,7 @@ def _run_mocked_pipeline(app, instrument, stems_fn, is_suno=False):
     return msg, zip_path
 
 
-def test_process_audio_impl_guitar_full_pipeline():
+def test_process_audio_impl_guitar_full_pipeline() -> None:
     app = _import_app()
 
     msg, zip_path = _run_mocked_pipeline(app, "Guitar", _make_mock_stems)
@@ -148,7 +148,7 @@ def test_process_audio_impl_guitar_full_pipeline():
     assert zip_path.endswith(".zip")
 
 
-def test_process_audio_impl_bass_full_pipeline():
+def test_process_audio_impl_bass_full_pipeline() -> None:
     app = _import_app()
 
     msg, zip_path = _run_mocked_pipeline(app, "Bass", _make_mock_bass_stems)
@@ -157,7 +157,7 @@ def test_process_audio_impl_bass_full_pipeline():
     assert zip_path.endswith(".zip")
 
 
-def test_process_audio_impl_suno_true():
+def test_process_audio_impl_suno_true() -> None:
     app = _import_app()
 
     msg, zip_path = _run_mocked_pipeline(app, "Guitar", _make_mock_stems, is_suno=True)
@@ -165,7 +165,7 @@ def test_process_audio_impl_suno_true():
     assert zip_path is not None
 
 
-def test_process_audio_impl_zip_with_files():
+def test_process_audio_impl_zip_with_files() -> None:
     app = _import_app()
 
     fixed = _real_dt(2024, 6, 15, 10, 30, 0)
@@ -181,20 +181,20 @@ def test_process_audio_impl_zip_with_files():
         with (
             patch("app.process_suno_audio", return_value=("/tmp/test.wav", False, {})),
             patch("app._validate_audio", return_value=None),
+            patch("app.SplitterAgent") as sc,
         ):
-            with patch("app.SplitterAgent") as sc:
-                sc.return_value.separate_stems.return_value = {"guitar": "/tmp/g.wav"}
-                sc.return_value.process_guitars.return_value = _make_mock_stems()
-                with patch("app.EarAgent") as ec:
-                    ec.return_value.transcribe_stem.return_value = []
-                    ec.return_value.humanize_and_clean.return_value = []
-                    with patch("app.SunoNotePostprocessor") as sgc:
-                        sgc.return_value.process.return_value = []
-                        with patch("app.TabAgent") as tc:
-                            tc.return_value.generate_tab.return_value = []
-                            with patch("app.export_tab_to_txt"), patch("app.export_tab_to_json"):
-                                msg, zp = app._process_audio_impl(
-                                    "d.wav", "Guitar", True, True, True, mock_progress
-                                )
+            sc.return_value.separate_stems.return_value = {"guitar": "/tmp/g.wav"}
+            sc.return_value.process_guitars.return_value = _make_mock_stems()
+            with patch("app.EarAgent") as ec:
+                ec.return_value.transcribe_stem.return_value = []
+                ec.return_value.humanize_and_clean.return_value = []
+                with patch("app.SunoNotePostprocessor") as sgc:
+                    sgc.return_value.process.return_value = []
+                    with patch("app.TabAgent") as tc:
+                        tc.return_value.generate_tab.return_value = []
+                        with patch("app.export_tab_to_txt"), patch("app.export_tab_to_json"):
+                            msg, _zp = app._process_audio_impl(
+                                "d.wav", "Guitar", True, True, True, mock_progress
+                            )
         assert "Complete!" in msg
         assert session_dir.exists()

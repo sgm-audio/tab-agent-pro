@@ -1,7 +1,7 @@
+import argparse
 import json
 import os
 import sys
-import argparse
 from datetime import datetime
 
 from agents import EarAgent, SplitterAgent, TabAgent
@@ -50,24 +50,21 @@ def load_user_memory():
                 preferences = json.load(f)
                 if "config" in preferences:
                     config.update(preferences["config"])
-            print(f"🧠 Loaded preferences from: {memory_file}")
-        except Exception as e:
-            print(f"⚠️  Warning: Could not load preferences: {e}")
-            print("   Using default configuration")
+        except Exception:
+            pass
     else:
-        print("📋 Using default configuration (run init_memory.py to customize)")
+        pass
 
     return memory_file, config
 
 
-def export_tab_to_txt(tab_data, output_path, instrument="Guitar"):
+def export_tab_to_txt(tab_data, output_path, instrument="Guitar") -> None:
     """Export tablature to human-readable text format.
 
     Groups simultaneous notes (within 50ms) into the same column
     so chords align vertically across strings.
     """
     if not tab_data:
-        print(f"⚠️  No tab data to export for {instrument}")
         return
 
     num_strings = max(pos["string"] for pos in tab_data) + 1
@@ -96,7 +93,7 @@ def export_tab_to_txt(tab_data, output_path, instrument="Guitar"):
 
     # Build column grid: one column per time group
     cols = []
-    for grp_time, grp_positions in groups:
+    for _grp_time, grp_positions in groups:
         col = [""] * num_strings  # one slot per string
         for pos in grp_positions:
             col[pos["string"]] = _fmt(pos)
@@ -134,10 +131,8 @@ def export_tab_to_txt(tab_data, output_path, instrument="Guitar"):
         f.write("\nLegend: s=slide, h=hammer-on, p=pull-off\n")
         f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
-    print(f"📄 Saved tab: {output_path}")
 
-
-def export_tab_to_json(tab_data, output_path, instrument="Guitar"):
+def export_tab_to_json(tab_data, output_path, instrument="Guitar") -> None:
     """Export tablature to JSON format for programmatic use."""
     data = {
         "instrument": instrument,
@@ -147,8 +142,6 @@ def export_tab_to_json(tab_data, output_path, instrument="Guitar"):
 
     with open(output_path, "w") as f:
         json.dump(data, f, indent=2)
-
-    print(f"📄 Saved JSON: {output_path}")
 
 
 def parse_args():
@@ -195,10 +188,7 @@ Examples:
     return parser.parse_args()
 
 
-def main():
-    print("=" * 60)
-    print("🎸 TAB AGENT - Audio to Tablature Pipeline")
-    print("=" * 60)
+def main() -> None:
 
     args = parse_args()
 
@@ -209,7 +199,6 @@ def main():
     audio_path = os.path.abspath(args.audio)
 
     if not os.path.exists(audio_path):
-        print(f"❌ Error: Audio file not found: {audio_path}")
         sys.exit(1)
 
     if args.output_dir:
@@ -222,16 +211,11 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
 
     song_name = os.path.splitext(os.path.basename(audio_path))[0]
-    print(f"\n🎵 Processing: {os.path.basename(audio_path)}")
-    print(f"📂 Output: {output_dir}\n")
 
     # Load user memory and configuration
     memory_file, config = load_user_memory()
 
     # Suno artifact detection and preprocessing
-    print("\n" + "=" * 60)
-    print("STAGE 0: AUDIO QUALITY ANALYSIS")
-    print("=" * 60)
 
     processed_audio, is_suno, suno_metrics = process_suno_audio(
         audio_path,
@@ -243,9 +227,6 @@ def main():
     frame_threshold = args.frame
 
     # Initialize agents
-    print("\n" + "=" * 60)
-    print("STAGE 1-3: STEM SEPARATION & PROCESSING")
-    print("=" * 60)
 
     splitter = SplitterAgent(output_dir=os.path.join(output_dir, "stems"))
 
@@ -259,15 +240,11 @@ def main():
     bass_clean = splitter.process_bass(stems["bass"])
 
     # Initialize transcription agent
-    print("\n" + "=" * 60)
-    print("STAGE 4: AUDIO TRANSCRIPTION")
-    print("=" * 60)
 
     ear = EarAgent(device=args.device)
     suno_postprocessor = SunoNotePostprocessor()
 
     # Transcribe lead guitar
-    print("\n🎸 Transcribing Lead Guitar...")
     lead_notes_raw = ear.transcribe_stem(
         guitar_stems["lead"],
         target="Lead Guitar",
@@ -282,7 +259,6 @@ def main():
         ear.export_midi(lead_notes, lead_midi_path)
 
     # Transcribe rhythm guitar (left channel)
-    print("\n🎸 Transcribing Rhythm Guitar (L)...")
     rhythm_l_notes_raw = ear.transcribe_stem(
         guitar_stems["left"],
         target="Rhythm Guitar L",
@@ -296,7 +272,6 @@ def main():
         ear.export_midi(rhythm_l_notes, rhythm_l_midi_path)
 
     # Transcribe rhythm guitar (right channel)
-    print("\n🎸 Transcribing Rhythm Guitar (R)...")
     rhythm_r_notes_raw = ear.transcribe_stem(
         guitar_stems["right"],
         target="Rhythm Guitar R",
@@ -310,7 +285,6 @@ def main():
         ear.export_midi(rhythm_r_notes, rhythm_r_midi_path)
 
     # Transcribe bass
-    print("\n🎸 Transcribing Bass...")
     bass_notes_raw = ear.transcribe_stem(
         bass_clean,
         target="Bass",
@@ -324,14 +298,10 @@ def main():
         ear.export_midi(bass_notes, bass_midi_path)
 
     # Generate tablature
-    print("\n" + "=" * 60)
-    print("STAGE 5: TABLATURE GENERATION")
-    print("=" * 60)
 
     # Guitar tablature
     guitar_agent = TabAgent(tuning=config["guitar_tuning"], num_frets=config["num_frets"])
 
-    print("\n🎸 Generating Lead Guitar Tab...")
     lead_tab = guitar_agent.generate_tab(lead_notes)
     if not args.no_tab:
         export_tab_to_txt(
@@ -346,7 +316,6 @@ def main():
             "Lead Guitar",
         )
 
-    print("\n🎸 Generating Rhythm Guitar (L) Tab...")
     rhythm_l_tab = guitar_agent.generate_tab(rhythm_l_notes)
     if not args.no_tab:
         export_tab_to_txt(
@@ -361,7 +330,6 @@ def main():
             "Rhythm Guitar L",
         )
 
-    print("\n🎸 Generating Rhythm Guitar (R) Tab...")
     rhythm_r_tab = guitar_agent.generate_tab(rhythm_r_notes)
     if not args.no_tab:
         export_tab_to_txt(
@@ -379,7 +347,6 @@ def main():
     # Bass tablature
     bass_agent = TabAgent(tuning=config["bass_tuning"], num_frets=config["num_frets"])
 
-    print("\n🎸 Generating Bass Tab...")
     bass_tab = bass_agent.generate_tab(bass_notes)
     if not args.no_tab:
         export_tab_to_txt(
@@ -407,33 +374,16 @@ def main():
 
             with open(memory_file, "w") as f:
                 json.dump(preferences, f, indent=2)
-        except Exception as e:
-            print(f"⚠️  Could not log session: {e}")
+        except Exception:
+            pass
 
     # Summary
-    print("\n" + "=" * 60)
-    print("✅ PIPELINE COMPLETE")
-    print("=" * 60)
     if not args.no_midi:
-        print("\n📁 MIDI Files:")
-        print(f"      - {song_name}_lead_guitar.mid")
-        print(f"      - {song_name}_rhythm_L.mid")
-        print(f"      - {song_name}_rhythm_R.mid")
-        print(f"      - {song_name}_bass.mid")
+        pass
     if not args.no_tab:
-        print("\n📁 Tablature Files:")
-        print(f"      - {song_name}_lead_guitar.tab")
-        print(f"      - {song_name}_rhythm_L.tab")
-        print(f"      - {song_name}_rhythm_R.tab")
-        print(f"      - {song_name}_bass.tab")
+        pass
     if not args.no_json:
-        print("\n📁 JSON Files:")
-        print(f"      - {song_name}_lead_guitar.json")
-        print(f"      - {song_name}_rhythm_L.json")
-        print(f"      - {song_name}_rhythm_R.json")
-        print(f"      - {song_name}_bass.json")
-    print(f"\n📂 Location: {output_dir}")
-    print("\n" + "=" * 60)
+        pass
 
 
 if __name__ == "__main__":

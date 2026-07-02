@@ -1,5 +1,5 @@
 """
-Tab Agent — Production Monitoring & Health Checks
+Tab Agent — Production Monitoring & Health Checks.
 
 Structured JSON logging, pipeline metrics, and health endpoint support.
 All output goes to stdout (Docker/HF Spaces compatible). No external services required.
@@ -35,11 +35,11 @@ from typing import Any
 class PipelineLogger:
     """Structured JSON logger for pipeline events."""
 
-    def __init__(self, module: str):
+    def __init__(self, module: str) -> None:
         self.module = module
         self._start_time = time.time()
 
-    def _emit(self, level: str, event: str, **kwargs):
+    def _emit(self, level: str, event: str, **kwargs) -> None:
         record = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "level": level,
@@ -48,25 +48,25 @@ class PipelineLogger:
             "uptime_s": round(time.time() - self._start_time, 3),
             **kwargs,
         }
-        print(json.dumps(record, default=str), flush=True)
+        print(json.dumps(record, default=str), flush=True)  # noqa: T201 — structured log output
 
-    def info(self, event: str, **kwargs):
+    def info(self, event: str, **kwargs) -> None:
         self._emit("INFO", event, **kwargs)
 
-    def warn(self, event: str, **kwargs):
+    def warn(self, event: str, **kwargs) -> None:
         self._emit("WARN", event, **kwargs)
 
-    def warning(self, event: str, **kwargs):
+    def warning(self, event: str, **kwargs) -> None:
         self._emit("WARN", event, **kwargs)
 
-    def error(self, event: str, exc: Exception | None = None, **kwargs):
+    def error(self, event: str, exc: Exception | None = None, **kwargs) -> None:
         data = kwargs
         if exc:
             data["error_type"] = type(exc).__name__
             data["error_msg"] = str(exc)
         self._emit("ERROR", event, **data)
 
-    def metric(self, name: str, value: float, unit: str = "", **kwargs):
+    def metric(self, name: str, value: float, unit: str = "", **kwargs) -> None:
         self._emit("METRIC", name, value=value, unit=unit, **kwargs)
 
 
@@ -90,7 +90,7 @@ class HealthTracker:
     STATUS_STARTING = "starting"
     STATUS_DEGRADED = "degraded"
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._status = self.STATUS_STARTING
         self._last_error: str | None = None
         self._last_success: str | None = None
@@ -104,13 +104,13 @@ class HealthTracker:
         }
         self._start_time = time.time()
 
-    def set_status(self, status: str):
+    def set_status(self, status: str) -> None:
         self._status = status
 
-    def set_component(self, name: str, status: str):
+    def set_component(self, name: str, status: str) -> None:
         self._component_status[name] = status
 
-    def record_request(self, success: bool, details: str = ""):
+    def record_request(self, success: bool, details: str = "") -> None:
         self._total_requests += 1
         if success:
             self._last_success = details
@@ -151,7 +151,7 @@ health.set_status(HealthTracker.STATUS_UP)
 class PipelineMetrics:
     """Tracks per-stage timing and success/failure counts."""
 
-    def __init__(self, logger: PipelineLogger | None = None):
+    def __init__(self, logger: PipelineLogger | None = None) -> None:
         self.log = logger or get_logger("metrics")
         self.stage_times: dict[str, list] = {}
         self.stage_counts: dict[str, int] = {}
@@ -161,7 +161,7 @@ class PipelineMetrics:
         """Context manager that times a pipeline stage and logs metrics."""
         return _StageTracker(self, stage_name)
 
-    def record_stage(self, name: str, elapsed: float, success: bool):
+    def record_stage(self, name: str, elapsed: float, success: bool) -> None:
         self.stage_times.setdefault(name, []).append(elapsed)
         self.stage_counts[name] = self.stage_counts.get(name, 0) + 1
         if not success:
@@ -198,7 +198,7 @@ class PipelineMetrics:
 
 
 class _StageTracker:
-    def __init__(self, parent: PipelineMetrics, name: str):
+    def __init__(self, parent: PipelineMetrics, name: str) -> None:
         self.parent = parent
         self.name = name
         self.start = 0.0

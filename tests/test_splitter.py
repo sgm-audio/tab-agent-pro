@@ -21,20 +21,20 @@ from agents import SplitterAgent
 class TestSplitterAgent(unittest.TestCase):
     """Unit tests for SplitterAgent spatial processing logic."""
 
-    def setUp(self):
+    def setUp(self) -> None:
         self.tmpdir = tempfile.mkdtemp()
         self.splitter = SplitterAgent(output_dir=self.tmpdir)
 
-    def tearDown(self):
+    def tearDown(self) -> None:
         import shutil
 
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def test_output_dir_created(self):
+    def test_output_dir_created(self) -> None:
         """Output directory is created on init."""
-        self.assertTrue(os.path.isdir(self.splitter.output_dir))
+        assert os.path.isdir(self.splitter.output_dir)
 
-    def test_center_kill_factor_reduces_center(self):
+    def test_center_kill_factor_reduces_center(self) -> None:
         """Mid-side processing isolates centre from sides."""
         sr = 44100
         duration = 1.0
@@ -52,15 +52,15 @@ class TestSplitterAgent(unittest.TestCase):
         result = self.splitter.process_guitars(stereo_path)
 
         # Read back processed files
-        lead, lead_sr = sf.read(result["lead"])
+        lead, _lead_sr = sf.read(result["lead"])
         rhythm_l, _ = sf.read(result["left"])
         rhythm_r, _ = sf.read(result["right"])
 
         # Lead (mid) should be stronger than rhythm sides (after centre kill)
-        self.assertGreater(np.max(np.abs(lead)), np.max(np.abs(rhythm_l)))
-        self.assertGreater(np.max(np.abs(lead)), np.max(np.abs(rhythm_r)))
+        assert np.max(np.abs(lead)) > np.max(np.abs(rhythm_l))
+        assert np.max(np.abs(lead)) > np.max(np.abs(rhythm_r))
 
-    def test_process_guitars_returns_correct_keys(self):
+    def test_process_guitars_returns_correct_keys(self) -> None:
         """process_guitars returns dict with lead, left, right keys."""
         sr = 44100
         stereo = np.random.randn(2, sr).astype(np.float32)
@@ -68,13 +68,13 @@ class TestSplitterAgent(unittest.TestCase):
         sf.write(stereo_path, stereo.T, sr)
 
         result = self.splitter.process_guitars(stereo_path)
-        self.assertIn("lead", result)
-        self.assertIn("left", result)
-        self.assertIn("right", result)
+        assert "lead" in result
+        assert "left" in result
+        assert "right" in result
         for path in result.values():
-            self.assertTrue(os.path.exists(path))
+            assert os.path.exists(path)
 
-    def test_process_bass_returns_path(self):
+    def test_process_bass_returns_path(self) -> None:
         """process_bass returns a valid file path."""
         sr = 44100
         mono = np.random.randn(sr).astype(np.float32)
@@ -82,7 +82,7 @@ class TestSplitterAgent(unittest.TestCase):
         sf.write(bass_path, mono, sr)
 
         result = self.splitter.process_bass(bass_path)
-        self.assertTrue(os.path.exists(result))
+        assert os.path.exists(result)
 
 
 if __name__ == "__main__":
