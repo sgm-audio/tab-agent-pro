@@ -16,10 +16,9 @@
         Detects slides, hammer-ons, and pull-offs automatically.
       </description>
       <links>
-        <link rel="website" href="https://github.com/scottmills306/tab-agent-pro">Repository</link>
-        <link rel="documentation" href="https://github.com/scottmills306/tab-agent-pro/blob/main/README.md">Documentation</link>
+        <link rel="website" href="https://github.com/sgm-audio/tab-agent-pro">Repository</link>
+        <link rel="documentation" href="https://github.com/sgm-audio/tab-agent-pro/blob/main/README.md">Documentation</link>
       </links>
-      <donation>https://github.com/sponsors/scottmills306</donation>
     </metadata>
 
     <version name="1.0.0" author="Scott Mills" type="main">
