@@ -8,7 +8,7 @@ app_file: Dockerfile
 license: mit
 ---
 
-[![CI](https://github.com/scottmills306/tab-agent-pro/actions/workflows/ci.yml/badge.svg)](https://github.com/scottmills306/tab-agent-pro/actions/workflows/ci.yml)
+[![CI](https://github.com/sgm-audio/tab-agent-pro/actions/workflows/ci.yml/badge.svg)](https://github.com/sgm-audio/tab-agent-pro/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -115,7 +115,7 @@ Legend: s=slide, h=hammer-on, p=pull-off
 ## REAPER Integration
 
 1. Extensions → ReaPack → Import repositories
-2. Add: `https://raw.githubusercontent.com/scottmills306/tab-agent-pro/main/index.xml`
+2. Add: `https://raw.githubusercontent.com/sgm-audio/tab-agent-pro/main/index.xml`
 3. Install **Tab Agent** and **Tab Agent Settings**
 4. Select audio → Run script
 
