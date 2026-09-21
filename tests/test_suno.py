@@ -55,7 +55,7 @@ class TestSunoArtifactDetector(unittest.TestCase):
         clean = 0.5 * np.sin(2 * np.pi * 440 * t)
         path = self._write_wav("clean.wav", clean)
         is_suno, metrics = self.detector.analyze(path)
-        assert isinstance(is_suno, (bool, np.bool_))
+        assert isinstance(is_suno, bool | np.bool_)
         assert isinstance(metrics, dict)
         assert "hf_ratio" in metrics
         assert "spectral_flatness" in metrics

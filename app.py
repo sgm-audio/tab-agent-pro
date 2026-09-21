@@ -57,7 +57,7 @@ if GPU_AVAILABLE:
         include_midi=True,
         include_tab=True,
         include_json=True,
-        progress=gr.Progress(),
+        progress=gr.Progress(),  # noqa: B008 - Gradio documented pattern
     ):
         """
         Process audio file and generate tablature.
@@ -91,7 +91,7 @@ else:
         include_midi=True,
         include_tab=True,
         include_json=True,
-        progress=gr.Progress(),
+        progress=gr.Progress(),  # noqa: B008 - Gradio documented pattern
     ):
         """Process audio file and generate tablature (CPU-only)."""
         return _process_audio_impl(

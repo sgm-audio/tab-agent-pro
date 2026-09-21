@@ -48,7 +48,7 @@ class PipelineLogger:
             "uptime_s": round(time.time() - self._start_time, 3),
             **kwargs,
         }
-        print(json.dumps(record, default=str), flush=True)  # noqa: T201 — structured log output
+        print(json.dumps(record, default=str), flush=True)
 
     def info(self, event: str, **kwargs) -> None:
         self._emit("INFO", event, **kwargs)

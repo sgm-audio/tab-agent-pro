@@ -115,7 +115,8 @@ def main() -> int:
         "init_memory.py",
     ]:
         try:
-            compile(open(f).read(), f, "exec")
+            with open(f) as fh:
+                compile(fh.read(), f, "exec")
             check(f"Syntax OK: {f}", True)
         except SyntaxError as e:
             check(f"Syntax OK: {f}", False, str(e))

@@ -465,31 +465,31 @@ class TestEarAgentFilterByInstrumentRangeEdgeCases(unittest.TestCase):
         result = self.ear._filter_by_instrument_range(notes, "Guitar")
         assert len(result) == 3
 
-    def test_bass_range_preserves_edge_low_B0(self) -> None:
+    def test_bass_range_preserves_edge_low_b0(self) -> None:
         """Bass range includes low B0 (pitch 23)."""
         notes = [make_note(23, 0.0)]
         result = self.ear._filter_by_instrument_range(notes, "bass")
         assert len(result) == 1
 
-    def test_bass_range_preserves_edge_high_G4(self) -> None:
+    def test_bass_range_preserves_edge_high_g4(self) -> None:
         """Bass range includes high G4 (pitch 67)."""
         notes = [make_note(67, 0.0)]
         result = self.ear._filter_by_instrument_range(notes, "bass")
         assert len(result) == 1
 
-    def test_bass_removes_below_B0(self) -> None:
+    def test_bass_removes_below_b0(self) -> None:
         """Bass range removes notes below B0 (pitch 23)."""
         notes = [make_note(22, 0.0)]  # below B0
         result = self.ear._filter_by_instrument_range(notes, "Bass")
         assert len(result) == 0
 
-    def test_guitar_removes_below_E2(self) -> None:
+    def test_guitar_removes_below_e2(self) -> None:
         """Guitar range removes notes below E2 (pitch 40)."""
         notes = [make_note(39, 0.0)]  # below E2
         result = self.ear._filter_by_instrument_range(notes, "Guitar")
         assert len(result) == 0
 
-    def test_guitar_removes_above_E6(self) -> None:
+    def test_guitar_removes_above_e6(self) -> None:
         """Guitar range removes notes above E6 (pitch 88)."""
         notes = [make_note(89, 0.0)]
         result = self.ear._filter_by_instrument_range(notes, "Guitar")

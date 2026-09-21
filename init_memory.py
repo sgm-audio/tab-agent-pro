@@ -169,40 +169,38 @@ def save_profile(profile_key: str, memory_dir: str | None = None) -> str:
 
 def list_profiles() -> None:
     """Print available profiles to stdout."""
-    print("\nAvailable Profiles:\n")  # noqa: T201 — CLI output
+    print("\nAvailable Profiles:\n")
     for key, prof in PROFILES.items():
         strings = f"{prof['num_strings']}-string"
         label = "🎸" if not prof["prefer_low_strings"] else "🎵"
-        print(f"  {label} {key:22s} | {prof['name']}")  # noqa: T201
-        print(f"    {'':22s} | {prof['description']}")  # noqa: T201
-        print(  # noqa: T201
+        print(f"  {label} {key:22s} | {prof['name']}")
+        print(f"    {'':22s} | {prof['description']}")
+        print(
             f"    {'':22s} | {strings}, onset={prof['onset_threshold']}, "
             f"suno={'aggressive' if prof['suno_aggressive_mode'] else 'light'}",
         )
-        print()  # noqa: T201
+        print()
 
 
 def interactive_select() -> str:
     """Prompt the user to select a profile interactively."""
-    print(  # noqa: T201
-        """
+    print("""
 ╔══════════════════════════════════════════════════════════════╗
 ║          🎸 Tab Agent - Profile Initialization              ║
 ╚══════════════════════════════════════════════════════════════╝
-"""
-    )
+""")
     keys = list(PROFILES.keys())
     for idx, key in enumerate(keys, 1):
         prof = PROFILES[key]
         strings = f"{prof['num_strings']}-string"
         label = "🎸" if not prof["prefer_low_strings"] else "🎵"
-        print(f"  [{idx}] {label} {prof['name']}")  # noqa: T201
-        print(f"      {prof['description']}")  # noqa: T201
-        print(  # noqa: T201
+        print(f"  [{idx}] {label} {prof['name']}")
+        print(f"      {prof['description']}")
+        print(
             f"      {strings}, onset={prof['onset_threshold']}, "
             f"suno={'aggressive' if prof['suno_aggressive_mode'] else 'light'}",
         )
-        print()  # noqa: T201
+        print()
 
     while True:
         try:
@@ -228,8 +226,8 @@ def main() -> None:
             if candidate in PROFILES:
                 profile_key = candidate
             else:
-                print(f"❌ Unknown profile: {candidate}")  # noqa: T201
-                print("   Use --list to see available profiles")  # noqa: T201
+                print(f"❌ Unknown profile: {candidate}")
+                print("   Use --list to see available profiles")
                 sys.exit(1)
 
     if profile_key is None:
@@ -238,9 +236,9 @@ def main() -> None:
     memory_path = save_profile(profile_key)
     prof = PROFILES[profile_key]
 
-    print(f"\n✅ Profile '{prof['name']}' saved!")  # noqa: T201
-    print(f"   Config written to: {memory_path}")  # noqa: T201
-    print("   Ready — run 'python main.py <audio_file>' to transcribe.\n")  # noqa: T201
+    print(f"\n✅ Profile '{prof['name']}' saved!")
+    print(f"   Config written to: {memory_path}")
+    print("   Ready — run 'python main.py <audio_file>' to transcribe.\n")
 
 
 if __name__ == "__main__":

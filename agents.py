@@ -1262,10 +1262,9 @@ class TabAgent:
 
         # 5-string bass preference: avoid high frets on low strings
         # (Low strings on bass have better tone for low notes)
-        if self.num_strings == 5:
+        if self.num_strings == 5 and curr["string"] < 2 and 0 < curr["fret"] < 5:
             # Low B and E strings (indices 0-1)
-            if curr["string"] < 2 and 0 < curr["fret"] < 5:
-                cost += 1.0  # Slight penalty for low frets on low strings
+            cost += 1.0  # Slight penalty for low frets on low strings
 
         return cost
 

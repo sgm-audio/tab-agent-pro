@@ -89,10 +89,12 @@ class TestLoadUserMemory(unittest.TestCase):
         assert config["guitar_tuning"] == [40, 45, 50, 55, 59, 64]
 
     def test_docker_path(self) -> None:
-        with mock.patch("main.os.path.exists", return_value=True):
-            with mock.patch("main.os.makedirs"):
-                with mock.patch("main.sys.platform", "linux"):
-                    memory_file, config = load_user_memory()
+        with (
+            mock.patch("main.os.path.exists", return_value=True),
+            mock.patch("main.os.makedirs"),
+            mock.patch("main.sys.platform", "linux"),
+        ):
+            memory_file, config = load_user_memory()
         assert memory_file.startswith("/app/user_memory")
         assert config["bass_num_strings"] == 5
 

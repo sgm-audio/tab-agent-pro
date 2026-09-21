@@ -147,9 +147,9 @@ class TestTabAgentGenerateTab(unittest.TestCase):
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
         techniques = [r["technique"] for r in result]
         # At least one technique should be detected
-        assert any(t in ["slide", "hammer", "pull"] for t in techniques), (
-            f"Expected technique detection, got: {techniques}"
-        )
+        assert any(
+            t in ["slide", "hammer", "pull"] for t in techniques
+        ), f"Expected technique detection, got: {techniques}"
 
     def test_bass_five_string_tuning(self) -> None:
         """5-string bass tuning works correctly."""

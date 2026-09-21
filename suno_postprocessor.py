@@ -52,7 +52,7 @@ class SunoArtifactDetector:
         y, sr = librosa.load(audio_path, sr=self.sample_rate, mono=True, duration=30)
 
         # Compute spectrogram
-        S = np.abs(librosa.stft(y))
+        spec = np.abs(librosa.stft(y))
         freqs = librosa.fft_frequencies(sr=sr)
 
         metrics = {}
@@ -60,8 +60,8 @@ class SunoArtifactDetector:
         # 1. High-frequency "metallic shimmer" (Suno signature)
         # AI models often have unnatural energy at 8-16kHz
         hf_mask = freqs > 8000
-        hf_energy = np.mean(S[hf_mask])
-        total_energy = np.mean(S)
+        hf_energy = np.mean(spec[hf_mask])
+        total_energy = np.mean(spec)
         metrics["hf_ratio"] = hf_energy / (total_energy + 1e-10)
 
         # 2. Spectral flatness (naturalness measure)
@@ -85,7 +85,7 @@ class SunoArtifactDetector:
         #   Counteracts the spectral_flatness false-positive on pure tones.
         from scipy.signal import find_peaks
 
-        mean_spectrum = np.mean(S, axis=1)  # Average over time
+        mean_spectrum = np.mean(spec, axis=1)  # Average over time
         prominence = np.max(mean_spectrum) * 0.02
         peaks, _ = find_peaks(mean_spectrum, prominence=prominence)
         peak_count = len(peaks)
@@ -163,8 +163,8 @@ class SunoAudioPreprocessor:
         Strategy: Apply gentle low-pass filter or reduce gain in problem bands.
         """
         # Use STFT to target specific frequency bands
-        D = librosa.stft(y)
-        mag, phase = librosa.magphase(D)
+        stft_matrix = librosa.stft(y)
+        mag, phase = librosa.magphase(stft_matrix)
 
         # Get frequency bins
         freqs = librosa.fft_frequencies(sr=sr)
@@ -177,8 +177,8 @@ class SunoAudioPreprocessor:
         mag[hf_start:hf_end, :] *= 0.3
 
         # Reconstruct
-        D_processed = mag * phase
-        return librosa.istft(D_processed)
+        processed = mag * phase
+        return librosa.istft(processed)
 
     def _spectral_gate(self, y: np.ndarray, sr: float, threshold_db: float = -40) -> np.ndarray:
         """
@@ -186,8 +186,8 @@ class SunoAudioPreprocessor:
 
         Removes frequency components below threshold.
         """
-        D = librosa.stft(y)
-        mag, phase = librosa.magphase(D)
+        stft_matrix = librosa.stft(y)
+        mag, phase = librosa.magphase(stft_matrix)
 
         # Convert to dB
         mag_db = librosa.amplitude_to_db(mag, ref=np.max)
@@ -199,8 +199,8 @@ class SunoAudioPreprocessor:
         mag_gated = mag * mask
 
         # Reconstruct
-        D_gated = mag_gated * phase
-        return librosa.istft(D_gated)
+        gated = mag_gated * phase
+        return librosa.istft(gated)
 
 
 class SunoNotePostprocessor:

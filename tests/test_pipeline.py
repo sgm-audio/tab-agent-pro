@@ -91,9 +91,9 @@ class TestEndToEndPipeline(unittest.TestCase):
         assert isinstance(notes_raw, list)
         # Each note should be a note_seq.NoteSequence.Note
         if notes_raw:
-            assert all(hasattr(n, "pitch") and hasattr(n, "start_time") for n in notes_raw), (
-                "Notes must have pitch and start_time attributes"
-            )
+            assert all(
+                hasattr(n, "pitch") and hasattr(n, "start_time") for n in notes_raw
+            ), "Notes must have pitch and start_time attributes"
 
     def test_tab_agent_generates_tab(self) -> None:
         """TabAgent generates tablature from note data."""

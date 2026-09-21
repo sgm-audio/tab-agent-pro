@@ -110,32 +110,37 @@ def _run_mocked_pipeline(app, instrument, stems_fn, is_suno=False):
     mock_export_json = patch("app.export_tab_to_json")
     mock_validate = patch("app._validate_audio", return_value=None)
 
-    with mock_suno, mock_export_txt, mock_export_json, mock_validate:
-        with patch("app.SplitterAgent") as splitter_cls:
-            splitter_inst = splitter_cls.return_value
-            splitter_inst.separate_stems.return_value = {
-                "guitar": "/tmp/g.wav",
-                "bass": "/tmp/b.wav",
-            }
-            splitter_inst.process_guitars.return_value = stems_fn()
-            splitter_inst.process_bass.return_value = "/tmp/bass_clean.wav"
+    with (
+        mock_suno,
+        mock_export_txt,
+        mock_export_json,
+        mock_validate,
+        patch("app.SplitterAgent") as splitter_cls,
+        patch("app.EarAgent") as ear_cls,
+        patch("app.SunoNotePostprocessor") as sgp_cls,
+        patch("app.TabAgent") as tab_cls,
+    ):
+        splitter_inst = splitter_cls.return_value
+        splitter_inst.separate_stems.return_value = {
+            "guitar": "/tmp/g.wav",
+            "bass": "/tmp/b.wav",
+        }
+        splitter_inst.process_guitars.return_value = stems_fn()
+        splitter_inst.process_bass.return_value = "/tmp/bass_clean.wav"
 
-            with patch("app.EarAgent") as ear_cls:
-                ear_inst = ear_cls.return_value
-                ear_inst.transcribe_stem.return_value = []
-                ear_inst.humanize_and_clean.return_value = []
+        ear_inst = ear_cls.return_value
+        ear_inst.transcribe_stem.return_value = []
+        ear_inst.humanize_and_clean.return_value = []
 
-                with patch("app.SunoNotePostprocessor") as sgp_cls:
-                    sgp_inst = sgp_cls.return_value
-                    sgp_inst.process.return_value = []
+        sgp_inst = sgp_cls.return_value
+        sgp_inst.process.return_value = []
 
-                    with patch("app.TabAgent") as tab_cls:
-                        tab_inst = tab_cls.return_value
-                        tab_inst.generate_tab.return_value = []
+        tab_inst = tab_cls.return_value
+        tab_inst.generate_tab.return_value = []
 
-                        msg, zip_path = app._process_audio_impl(
-                            "dummy.wav", instrument, True, True, True, mock_progress
-                        )
+        msg, zip_path = app._process_audio_impl(
+            "dummy.wav", instrument, True, True, True, mock_progress
+        )
     return msg, zip_path
 
 
