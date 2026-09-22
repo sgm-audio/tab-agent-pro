@@ -40,7 +40,7 @@ jobs:
       run: black --check .
 
     - name: Type check with mypy
-      continue-on-error: true
+      continue-on-error: false
       run: mypy .
 
     - name: Run tests with coverage
