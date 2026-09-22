@@ -848,12 +848,19 @@ class TestSplitterSeparateWithApi(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _patch_demucs_api(self):
-        """Create agents.demucs_api if it doesn't exist, for mocking."""
+        """Patch agents.demucs_api with a mock, whether or not demucs is installed."""
         import agents as _a
 
-        if not hasattr(_a, "demucs_api"):
-            _a.demucs_api = MagicMock()
-            _a.DEMUCS_API_AVAILABLE = True
+        original_api = getattr(_a, "demucs_api", None)
+        original_flag = _a.DEMUCS_API_AVAILABLE
+
+        def _restore():
+            _a.demucs_api = original_api
+            _a.DEMUCS_API_AVAILABLE = original_flag
+
+        self.addCleanup(_restore)
+        _a.demucs_api = MagicMock()
+        _a.DEMUCS_API_AVAILABLE = True
         return _a.demucs_api
 
     @patch("agents.sf.write")
