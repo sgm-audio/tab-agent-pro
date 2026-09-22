@@ -7,6 +7,7 @@ Optimized for Zero GPU deployment with Basic Pitch model.
 """
 
 import atexit
+import contextlib
 import os
 import shutil
 import signal
@@ -454,12 +455,10 @@ def cleanup_stale_sessions(max_age_hours: int = 1) -> None:
     now = datetime.now()
     for d in OUTPUT_DIR.iterdir():
         if d.is_dir():
-            try:
+            with contextlib.suppress(Exception):
                 age = now - datetime.fromtimestamp(d.stat().st_mtime)
                 if age.total_seconds() > max_age_hours * 3600:
                     shutil.rmtree(d, ignore_errors=True)
-            except Exception:
-                pass
 
 
 # Main entry point

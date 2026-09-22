@@ -47,4 +47,5 @@ jobs:
       run: pytest tests/ -v --cov=. --cov-report=term-missing
 
     - name: Security scan with Bandit
-      run: bandit -r agents.py main.py app.py monitoring.py suno_postprocessor.py init_memory.py tests/
+      # Exclude tests/; B101 (assert) there is expected and noisy.
+      run: bandit -r agents.py main.py app.py monitoring.py suno_postprocessor.py init_memory.py -x tests/

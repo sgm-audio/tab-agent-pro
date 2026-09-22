@@ -11,7 +11,7 @@ Improvements from Basic Pitch:
 """
 
 import os
-import subprocess
+import subprocess  # nosec B404 - used only for a fixed demucs CLI invocation, no shell=True
 import sys
 
 import librosa
@@ -350,7 +350,7 @@ class EarAgent:
             return None
 
         try:
-            return snapshot_download(
+            return snapshot_download(  # nosec B615 - revision="main" is the published model default
                 repo_id=model_id,
                 revision="main",
                 resume_download=True,

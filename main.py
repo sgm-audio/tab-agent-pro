@@ -50,7 +50,8 @@ def load_user_memory():
                 preferences = json.load(f)
                 if "config" in preferences:
                     config.update(preferences["config"])
-        except Exception:
+        except (OSError, json.JSONDecodeError):
+            # Corrupt or unreadable preferences file; use defaults
             pass
     else:
         pass
@@ -374,7 +375,8 @@ def main() -> None:
 
             with open(memory_file, "w") as f:
                 json.dump(preferences, f, indent=2)
-        except Exception:
+        except OSError:
+            # Session logging is best-effort; don't fail the run
             pass
 
     # Summary
