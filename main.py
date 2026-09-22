@@ -7,8 +7,8 @@ from datetime import datetime
 from agents import EarAgent, SplitterAgent, TabAgent
 from suno_postprocessor import SunoNotePostprocessor, process_suno_audio
 
-# Fix Windows console encoding for emojis
-if sys.platform == "win32":
+# Fix Windows console encoding for emojis (skipped under pytest; detach would break capture)
+if sys.platform == "win32" and "pytest" not in sys.modules:
     import codecs
 
     sys.stdout = codecs.getwriter("utf-8")(sys.stdout.detach())
