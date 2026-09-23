@@ -381,14 +381,14 @@ def create_ui():
 
         with gr.Accordion("Links", open=False):
             gr.Markdown("""
-            - [GitHub](https://github.com/scottmills306/tab-agent-pro)
-            - [ReaPack](https://github.com/scottmills306/tab-agent-pro#reaper-integration)
+            - [GitHub](https://github.com/sgm-audio/tab-agent-pro)
+            - [ReaPack](https://github.com/sgm-audio/tab-agent-pro#reaper-integration)
             - [Basic Pitch](https://github.com/spotify/basic-pitch)
             """)
 
         gr.HTML("""
             <div class="tab-agent-footer">
-                MIT · <a href="https://github.com/scottmills306/tab-agent-pro">Tab Agent</a> ·
+                MIT · <a href="https://github.com/sgm-audio/tab-agent-pro">Tab Agent</a> ·
                 Built with <a href="https://github.com/spotify/basic-pitch">Basic Pitch</a> ·
                 Python 3.10+
             </div>
