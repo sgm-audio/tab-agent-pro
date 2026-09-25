@@ -11,7 +11,8 @@ from suno_postprocessor import SunoNotePostprocessor, process_suno_audio
 if sys.platform == "win32" and "pytest" not in sys.modules:
     import codecs
 
-    sys.stdout = codecs.getwriter("utf-8")(sys.stdout.detach())
+    if hasattr(sys.stdout, "detach"):
+        sys.stdout = codecs.getwriter("utf-8")(sys.stdout.detach())
 
 # Technique detection constants
 TECHNIQUE_SLIDE = "slide"
@@ -83,7 +84,7 @@ def export_tab_to_txt(tab_data, output_path, instrument="Guitar") -> None:
         return str(f)
 
     # Group positions by start_time (within 50ms tolerance)
-    groups = []  # list of (time, [pos, ...])
+    groups: list[tuple[float, list]] = []
     for pos in tab_data:
         t = pos.get("start_time", 0.0)
         # Find or create group

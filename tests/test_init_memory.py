@@ -77,7 +77,7 @@ def test_list_profiles(capsys) -> None:
 
 def test_profile_tunings_are_valid_midi() -> None:
     for key, profile in PROFILES.items():
-        for note in profile["tuning"]:
+        for note in profile["tuning"]:  # type: ignore[attr-defined]
             assert 0 <= note <= 127, f"{key} has invalid MIDI note {note}"
 
 

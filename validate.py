@@ -299,8 +299,8 @@ def main() -> int:
         ]
         export_tab_to_txt(tab_data, "/tmp/validated_tab.tab", "Test Guitar")
         check("export_tab_to_txt() creates file", os.path.exists("/tmp/validated_tab.tab"))
-        with open("/tmp/validated_tab.tab") as f:
-            content = f.read()
+        with open("/tmp/validated_tab.tab") as fh:
+            content = fh.read()
         check(
             "ASCII tab contains technique markers",
             "3s" in content or "slide" in content,
@@ -317,8 +317,8 @@ def main() -> int:
         )
         import json
 
-        with open("/tmp/validated_tab.json") as f:
-            data = json.load(f)
+        with open("/tmp/validated_tab.json") as fh:
+            data = json.load(fh)
         check("JSON has instrument field", "instrument" in data)
         check("JSON has tablature field", "tablature" in data)
         check("JSON tablature is list", isinstance(data["tablature"], list))
@@ -345,8 +345,8 @@ def main() -> int:
 
         path = init_memory.save_profile("rock_standard", memory_dir="/tmp/validated_memory")
         check("init_memory.save_profile() creates file", os.path.exists(path))
-        with open(path) as f:
-            data = json.load(f)
+        with open(path) as fh:
+            data = json.load(fh)
         check(
             "init_memory config has tuning",
             "config" in data and "guitar_tuning" in data["config"],
@@ -380,8 +380,8 @@ def main() -> int:
 
     if os.path.exists("run.sh"):
         check("run.sh is executable", os.access("run.sh", os.X_OK))
-        with open("run.sh") as f:
-            content = f.read()
+        with open("run.sh") as fh:
+            content = fh.read()
         check("run.sh has shebang", content.startswith("#!/"))
         check("run.sh references requirements.txt", "requirements.txt" in content)
         check("run.sh handles --web flag", "--web" in content)

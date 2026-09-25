@@ -72,8 +72,7 @@ class TestSplitterAgentSeparateStems(unittest.TestCase):
         """When DEMUCS_API_AVAILABLE and API succeeds, return API result."""
         mock_metrics.track_stage.return_value = self._make_cm()
         expected = {"guitar": "/fake/other.wav", "bass": "/fake/bass.wav"}
-        self.splitter._separate_with_api = MagicMock(return_value=expected)
-
+        self.splitter._separate_with_api = MagicMock(return_value=expected)  # type: ignore[method-assign]  # test monkeypatch of private method
         result = self.splitter.separate_stems(self.dummy_audio)
 
         assert result == expected
@@ -86,10 +85,9 @@ class TestSplitterAgentSeparateStems(unittest.TestCase):
     def test_separate_stems_api_fails_cli_succeeds(self, mock_metrics, mock_health) -> None:
         """When API fails but CLI works, return CLI result."""
         mock_metrics.track_stage.return_value = self._make_cm()
-        self.splitter._separate_with_api = MagicMock(side_effect=RuntimeError("OOM"))
+        self.splitter._separate_with_api = MagicMock(side_effect=RuntimeError("OOM"))  # type: ignore[method-assign]  # test monkeypatch of private method
         expected = {"guitar": "/cli/other.wav", "bass": "/cli/bass.wav"}
-        self.splitter._separate_with_subprocess = MagicMock(return_value=expected)
-
+        self.splitter._separate_with_subprocess = MagicMock(return_value=expected)  # type: ignore[method-assign]  # test monkeypatch of private method
         result = self.splitter.separate_stems(self.dummy_audio)
 
         assert result == expected
@@ -101,9 +99,9 @@ class TestSplitterAgentSeparateStems(unittest.TestCase):
     def test_separate_stems_api_and_cli_fail_raw_fallback(self, mock_metrics, mock_health) -> None:
         """When API and CLI fail, return raw audio fallback."""
         mock_metrics.track_stage.return_value = self._make_cm()
-        self.splitter._separate_with_api = MagicMock(side_effect=RuntimeError("OOM"))
-        self.splitter._separate_with_subprocess = MagicMock(side_effect=RuntimeError("no demucs"))
-        self.splitter._raw_audio_fallback = MagicMock(
+        self.splitter._separate_with_api = MagicMock(side_effect=RuntimeError("OOM"))  # type: ignore[method-assign]  # test monkeypatch of private method
+        self.splitter._separate_with_subprocess = MagicMock(side_effect=RuntimeError("no demucs"))  # type: ignore[method-assign]  # test monkeypatch of private method
+        self.splitter._raw_audio_fallback = MagicMock(  # type: ignore[method-assign]  # test monkeypatch of private method
             return_value={"guitar": "/raw/other.wav", "bass": "/raw/bass.wav"}
         )
 
@@ -119,8 +117,7 @@ class TestSplitterAgentSeparateStems(unittest.TestCase):
         """When DEMUCS_API is not available, skip directly to CLI."""
         mock_metrics.track_stage.return_value = self._make_cm()
         expected = {"guitar": "/cli/other.wav", "bass": "/cli/bass.wav"}
-        self.splitter._separate_with_subprocess = MagicMock(return_value=expected)
-
+        self.splitter._separate_with_subprocess = MagicMock(return_value=expected)  # type: ignore[method-assign]  # test monkeypatch of private method
         result = self.splitter.separate_stems(self.dummy_audio)
 
         assert result == expected
@@ -955,16 +952,16 @@ class TestEarYourMT3TranscribePath(unittest.TestCase):
         mock_no_grad.return_value.__enter__.return_value = None
         mock_no_grad.return_value.__exit__.return_value = False
 
-        self.ear.model = MagicMock()
-        self.ear.model.inference_file = MagicMock(return_value=([MagicMock()], MagicMock()))
-        self.ear.processor = MagicMock()
-        self.ear.processor.num_decoding_channels = 1
-        self.ear.processor.detokenize_list_batches.return_value = (
+        self.ear.model = MagicMock()  # type: ignore[assignment]  # mock replaces real model/None in test
+        self.ear.model.inference_file = MagicMock(return_value=([MagicMock()], MagicMock()))  # type: ignore[attr-defined,assignment]
+        self.ear.processor = MagicMock()  # type: ignore[assignment]  # mock in test
+        self.ear.processor.num_decoding_channels = 1  # type: ignore[attr-defined,assignment]
+        self.ear.processor.detokenize_list_batches.return_value = (  # type: ignore[attr-defined]
             [(0.0, 0.5, 60, 80, 1)],
             MagicMock(),
             MagicMock(),
         )
-        self.ear.model.audio_cfg = {
+        self.ear.model.audio_cfg = {  # type: ignore[attr-defined,assignment]
             "sample_rate": 16000,
             "input_frames": 320,
         }
@@ -1225,10 +1222,10 @@ class TestEarYourMT3FailureAndBranches(unittest.TestCase):
         mock_no_grad.return_value.__enter__.return_value = None
         mock_no_grad.return_value.__exit__.return_value = False
 
-        self.ear.model = MagicMock()
-        self.ear.model.inference_file = MagicMock(side_effect=RuntimeError("mt3-crash"))
-        self.ear.processor = MagicMock()
-        self.ear.model.audio_cfg = {
+        self.ear.model = MagicMock()  # type: ignore[assignment]  # mock replaces real model/None in test
+        self.ear.model.inference_file = MagicMock(side_effect=RuntimeError("mt3-crash"))  # type: ignore[attr-defined,assignment]
+        self.ear.processor = MagicMock()  # type: ignore[assignment]  # mock in test
+        self.ear.model.audio_cfg = {  # type: ignore[attr-defined,assignment]
             "sample_rate": 16000,
             "input_frames": 320,
         }
@@ -1256,16 +1253,16 @@ class TestEarYourMT3FailureAndBranches(unittest.TestCase):
         mock_no_grad.return_value.__enter__.return_value = None
         mock_no_grad.return_value.__exit__.return_value = False
 
-        self.ear.model = MagicMock()
-        self.ear.model.inference_file = MagicMock(return_value=([MagicMock()], MagicMock()))
-        self.ear.processor = MagicMock()
-        self.ear.processor.num_decoding_channels = 1
-        self.ear.processor.detokenize_list_batches.return_value = (
+        self.ear.model = MagicMock()  # type: ignore[assignment]  # mock replaces real model/None in test
+        self.ear.model.inference_file = MagicMock(return_value=([MagicMock()], MagicMock()))  # type: ignore[attr-defined,assignment]
+        self.ear.processor = MagicMock()  # type: ignore[assignment]  # mock in test
+        self.ear.processor.num_decoding_channels = 1  # type: ignore[attr-defined,assignment]
+        self.ear.processor.detokenize_list_batches.return_value = (  # type: ignore[attr-defined]
             [(0.0, 0.5, 60, 80, 1)],
             MagicMock(),
             MagicMock(),
         )
-        self.ear.model.audio_cfg = {
+        self.ear.model.audio_cfg = {  # type: ignore[attr-defined,assignment]
             "sample_rate": 16000,
             "input_frames": 4000,
         }
@@ -1306,11 +1303,11 @@ class TestEarYourMT3FailureAndBranches(unittest.TestCase):
 
         mock_load.return_value = (np.zeros(16000, dtype=np.float32), 16000)
 
-        self.ear.model = MagicMock()
-        self.ear.model.audio_cfg = {"sample_rate": 16000, "input_frames": 320}
+        self.ear.model = MagicMock()  # type: ignore[assignment]  # mock replaces real model/None in test
+        self.ear.model.audio_cfg = {"sample_rate": 16000, "input_frames": 320}  # type: ignore[attr-defined,assignment]
         # Don't set inference_file — model lacks it
-        del self.ear.model.inference_file
-        self.ear.processor = MagicMock()
+        del self.ear.model.inference_file  # type: ignore[attr-defined,union-attr]
+        self.ear.processor = MagicMock()  # type: ignore[assignment]  # mock in test
         self.ear._ymt3_utils = {}
 
         with patch("agents.basic_pitch_predict") as mock_bp:

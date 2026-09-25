@@ -29,7 +29,9 @@ from monitoring import get_logger, health
 # Basic Pitch imports (proven and reliable for MVP)
 basic_pitch_predict = None
 try:
-    from basic_pitch.inference import predict as basic_pitch_predict
+    from basic_pitch.inference import predict as _bp_predict
+
+    basic_pitch_predict = _bp_predict
 
     BASIC_PITCH_AVAILABLE = True
 except ImportError:
@@ -544,7 +546,7 @@ class EarAgent:
                 health.set_component("yourmt3", "loaded (no utils)")
 
         except Exception as e:
-            log.exception("yourmt3_load_failed", exc=e)
+            log.error("yourmt3_load_failed", exc=e)
             health.set_component("yourmt3", f"error: {type(e).__name__}")
             import traceback
 
@@ -778,6 +780,9 @@ class EarAgent:
         """
         log = get_logger("ear_agent")
 
+        if not BASIC_PITCH_AVAILABLE or basic_pitch_predict is None:
+            raise RuntimeError("basic_pitch is not installed")
+
         try:
             _model_output, midi_data, _note_events = basic_pitch_predict(
                 audio_path,
@@ -798,7 +803,7 @@ class EarAgent:
             return notes
 
         except Exception as e:
-            log.exception("basic_pitch_error", exc=e, file=os.path.basename(audio_path))
+            log.error("basic_pitch_error", exc=e, file=os.path.basename(audio_path))
             import traceback
 
             traceback.print_exc()

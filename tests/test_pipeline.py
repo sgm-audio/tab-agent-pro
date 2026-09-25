@@ -34,6 +34,9 @@ from suno_postprocessor import SunoNotePostprocessor, process_suno_audio
 class TestEndToEndPipeline(unittest.TestCase):
     """Full pipeline test using synthetic audio."""
 
+    tmpdir: str
+    audio_path: str
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.tmpdir = tempfile.mkdtemp()

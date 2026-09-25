@@ -37,6 +37,9 @@ def generate_sine_sweep(duration_sec, sr=22050):
 class TestBenchmark(unittest.TestCase):
     """Measure transcription timing (mocked model, real audio pipeline)."""
 
+    tmpdir: str
+    results: dict
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.tmpdir = tempfile.mkdtemp()
