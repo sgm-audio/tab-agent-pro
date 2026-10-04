@@ -50,6 +50,12 @@ except ImportError:
 # YMT3_AVAILABLE is set True only after successful import + checkpoint load.
 YMT3_AVAILABLE = False
 
+# Experiment/checkpoint used by both the download filter and the arg builder.
+# It must match a directory under {repo}/logs/2024/ (see
+# https://huggingface.co/mimbres/YourMT3/tree/main/logs/2024).
+YOURMT3_EXP_ID = "notask_all_cross_v6_xk2_amp0811_gm_ext_plus_nops_b72"
+YOURMT3_CKPT_NAME = "model.ckpt"
+
 # HuggingFace Hub for checkpoint downloads (with resume)
 try:
     from huggingface_hub import snapshot_download
@@ -273,7 +279,10 @@ class EarAgent:
     Fallback:      Basic Pitch (Spotify, production-ready)
     """
 
-    YOURMT3_CACHE = os.path.join(os.path.expanduser("~"), ".cache", "tab_agent", "yourmt3")
+    # Honor CACHE_DIR (see .env.example); defaults to ~/.cache/tab_agent/yourmt3
+    YOURMT3_CACHE = os.path.join(
+        os.path.expanduser(os.getenv("CACHE_DIR", "~/.cache/tab_agent")), "yourmt3"
+    )
 
     def __init__(
         self,
@@ -317,7 +326,13 @@ class EarAgent:
             self._load_yourmt3_model(model_id)
 
         if self.model is None and not BASIC_PITCH_AVAILABLE:
-            pass
+            get_logger("ear_agent").warning(
+                "no_transcription_backend",
+                detail=(
+                    "Neither YourMT3+ nor Basic Pitch is available; "
+                    "transcribe_stem() will raise."
+                ),
+            )
 
     def _load_yourmt3_model(self, model_id) -> None:
         """
@@ -343,26 +358,45 @@ class EarAgent:
 
         if self.model is not None:
             YMT3_AVAILABLE = True
-        else:
-            pass
 
     def _download_checkpoint(self, model_id):
-        """Download YourMT3+ checkpoint from HF Hub with resume support."""
+        """
+        Download the YourMT3+ checkpoint from the HF Hub.
+
+        Only the experiment directory the code loads is fetched (the repo holds
+        several multi-GB checkpoints), `HF_TOKEN` is used when set, and
+        huggingface_hub's cache handles resumption. `resume_download` is no
+        longer passed: it was deprecated and removed from huggingface_hub.
+        """
         if not HF_HUB_AVAILABLE:
             return None
 
         try:
-            return snapshot_download(  # nosec B615 - revision="main" is the published model default
-                repo_id=model_id,
+            # Only the checkpoint the loader actually opens is fetched: the repo
+            # holds several multi-GB checkpoints.
+            return snapshot_download(
+                repo_id=model_id,  # nosec B615 - revision="main" is the published default
                 revision="main",
-                resume_download=True,
                 local_files_only=False,
                 max_workers=4,
+                token=os.getenv("HF_TOKEN") or None,
+                allow_patterns=[f"logs/2024/{YOURMT3_EXP_ID}/*"],
             )
         except Exception as e:
             http_401 = "401" in str(e) or "Authorization" in str(e)
             if http_401:
-                pass
+                get_logger("ear_agent").warning(
+                    "yourmt3_checkpoint_unauthorized",
+                    model_id=model_id,
+                    detail=(
+                        "HTTP 401 — 'mimbres/YourMT3-cpu' is a Space, not a model repo. "
+                        "Use 'mimbres/YourMT3'."
+                    ),
+                )
+            else:
+                get_logger("ear_agent").warning(
+                    "yourmt3_checkpoint_failed", model_id=model_id, error=str(e)
+                )
             return None
 
     def _clone_yourmt3_codebase(self):
@@ -410,7 +444,10 @@ class EarAgent:
                         timeout=30,
                     )
                 else:
-                    pass
+                    get_logger("ear_agent").warning(
+                        "yourmt3_git_fetch_failed",
+                        returncode=result.returncode,
+                    )
             else:
                 result = subprocess.run(  # nosec B603 B607 — hardcoded git cmd
                     [
@@ -548,9 +585,6 @@ class EarAgent:
         except Exception as e:
             log.error("yourmt3_load_failed", exc=e)
             health.set_component("yourmt3", f"error: {type(e).__name__}")
-            import traceback
-
-            traceback.print_exc()
             self.model = None
 
     def _build_yourmt3_args(self, checkpoint_dir):
@@ -681,8 +715,8 @@ class EarAgent:
         # Build args list matching the checkpoint layout:
         #   {save_dir}/2024/{exp_id}/checkpoints/{ckpt}
         # The "YMT3+" checkpoint uses exp_id@ckpt syntax.
-        exp_id = "notask_all_cross_v6_xk2_amp0811_gm_ext_plus_nops_b72"
-        ckpt_name = "model.ckpt"
+        exp_id = YOURMT3_EXP_ID
+        ckpt_name = YOURMT3_CKPT_NAME
         precision = "16" if torch.cuda.is_available() else "32"
 
         args_list = [f"{exp_id}@{ckpt_name}"]
@@ -802,11 +836,18 @@ class EarAgent:
             log.info("basic_pitch_done", note_count=len(notes), target=target)
             return notes
 
+        except ModuleNotFoundError as e:
+            # e.g. mir_eval/resampy missing because basic-pitch was installed with
+            # --no-deps (see Dockerfile). Report the missing module plainly.
+            log.error(
+                "basic_pitch_dependency_missing",
+                exc=e,
+                file=os.path.basename(audio_path),
+                detail="install basic-pitch with its dependencies (mir_eval, resampy)",
+            )
+            raise
         except Exception as e:
             log.error("basic_pitch_error", exc=e, file=os.path.basename(audio_path))
-            import traceback
-
-            traceback.print_exc()
             raise
 
     def _transcribe_with_yourmt3(
@@ -1030,9 +1071,6 @@ class EarAgent:
                 return sorted(notes, key=lambda n: n.start_time)
 
         # ── No format matched ─────────────────────────────────────
-        if not notes:
-            pass
-
         return notes
 
     def _parse_mt3_tokens(
@@ -1126,7 +1164,12 @@ class EarAgent:
 
         removed_count = len(notes) - len(filtered)
         if removed_count > 0:
-            pass
+            get_logger("ear_agent").info(
+                "notes_filtered_out_of_range",
+                target=target,
+                removed=removed_count,
+                kept=len(filtered),
+            )
 
         return filtered
 
@@ -1166,7 +1209,12 @@ class EarAgent:
 
         removed_count = len(raw_notes) - len(cleaned)
         if removed_count > 0:
-            pass
+            get_logger("ear_agent").info(
+                "notes_cleaned",
+                removed=removed_count,
+                kept=len(cleaned),
+                is_bass=is_bass,
+            )
 
         return cleaned
 
@@ -1196,7 +1244,8 @@ class TabAgent:
     - 5-string bass optimization (low-string preference)
     - Configurable tuning support
 
-    No changes needed from original - implementation is already optimal.
+    Notes outside the instrument's range are skipped (and reported in
+    ``last_skipped_notes``) instead of discarding the whole track.
     """
 
     def __init__(self, tuning: list[int], num_frets: int = 24) -> None:
@@ -1212,6 +1261,7 @@ class TabAgent:
         self.tuning = tuning
         self.num_frets = num_frets
         self.num_strings = len(tuning)
+        self.last_skipped_notes: list[int] = []
 
     def get_valid_positions(self, midi_note: int) -> list[dict]:
         """
@@ -1287,6 +1337,10 @@ class TabAgent:
         3. Backtrack to reconstruct optimal path
         4. Annotate techniques (slides, hammer-ons, pull-offs)
 
+        Notes with no valid string/fret position are skipped and listed in
+        ``self.last_skipped_notes``; the remaining notes still produce tablature.
+        Returns an empty list only when no note is playable.
+
         Args:
             midi_notes: List of note_seq.NoteSequence.Note objects
             technique_sensitivity: 0-1 threshold for technique detection
@@ -1296,19 +1350,36 @@ class TabAgent:
             List of tab positions with technique annotations
 
         """
+        # Reflect this call even when there is nothing to do
+        self.last_skipped_notes = []
+
         if not midi_notes:
             return []
 
         # Convert to simplified representation
         notes = [{"pitch": n.pitch, "start": n.start_time} for n in midi_notes]
 
-        # Get valid positions for each note
-        layers = [self.get_valid_positions(n["pitch"]) for n in notes]
+        # Get valid positions for each note, skipping notes that cannot be played
+        # on this instrument (previously one such note discarded the whole track).
+        positions_by_note = [(note, self.get_valid_positions(note["pitch"])) for note in notes]
+        playable = [(note, positions) for note, positions in positions_by_note if positions]
 
-        # Check for unplayable notes
-        if not all(layers):
-            [i for i, layer in enumerate(layers) if not layer]
+        self.last_skipped_notes = [
+            int(note["pitch"]) for note, positions in positions_by_note if not positions
+        ]
+        if self.last_skipped_notes:
+            get_logger("tab_agent").warning(
+                "unplayable_notes_skipped",
+                pitches=sorted(set(self.last_skipped_notes)),
+                skipped=len(self.last_skipped_notes),
+                kept=len(playable),
+            )
+
+        if not playable:
             return []
+
+        notes = [note for note, _positions in playable]
+        layers = [positions for _note, positions in playable]
 
         # Initialize DP
         path = []

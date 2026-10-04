@@ -25,9 +25,13 @@ class TestLoadUserMemory(unittest.TestCase):
 
     def setUp(self) -> None:
         self.tmp = tempfile.mkdtemp()
+        # Run from an empty directory: ./user_memory must not pick up real state
+        self._cwd = os.getcwd()
+        os.chdir(self.tmp)
 
     def tearDown(self) -> None:
-        shutil.rmtree(self.tmp)
+        os.chdir(self._cwd)
+        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _local_memory_file(self):
         return os.path.join(self.tmp, "user_memory", "user_preferences.json")
@@ -197,7 +201,47 @@ class TestExportTabToTxtCoverage(unittest.TestCase):
         tab_data = [{"string": 5, "fret": 0}]
         export_tab_to_txt(tab_data, self._path("single.tab"), "Guitar")
         content = self._read("single.tab")
-        assert "E|0|" in content
+        assert "E|0" in content
+
+    def test_num_strings_keeps_full_grid(self) -> None:
+        """num_strings keeps the grid the size of the instrument, not of the data."""
+        tab_data = [{"string": 0, "fret": 3}]
+        export_tab_to_txt(tab_data, self._path("grid.tab"), "Guitar", num_strings=6)
+        content = self._read("grid.tab")
+        # All six string labels appear even though only one string was used
+        for label in ["E|", "B|", "G|", "D|", "A|"]:
+            assert label in content
+
+    def test_adjacent_columns_do_not_merge(self) -> None:
+        """Two multi-character frets in a row must stay visually separated."""
+        tab_data = [
+            {"string": 0, "fret": 12, "start_time": 0.0},
+            {"string": 0, "fret": 15, "start_time": 0.5},
+        ]
+        export_tab_to_txt(tab_data, self._path("adjacent.tab"), "Guitar", num_strings=6)
+        content = self._read("adjacent.tab")
+        assert "1215" not in content
+        assert "12 15" in content
+
+    def test_notes_on_same_string_in_one_group_are_all_kept(self) -> None:
+        """Previously the later note overwrote the earlier one in the output."""
+        tab_data = [
+            {"string": 3, "fret": 15, "technique": "pick", "start_time": 0.65},
+            {"string": 3, "fret": 8, "technique": "pull", "start_time": 0.66},
+        ]
+        export_tab_to_txt(tab_data, self._path("same.tab"), "Guitar", num_strings=6)
+        content = self._read("same.tab")
+        assert "15/8p" in content
+
+    def test_num_strings_written_to_json(self) -> None:
+        export_tab_to_json(
+            [{"string": 0, "fret": 0}], self._path("s.json"), "Guitar", num_strings=6
+        )
+        import json
+
+        with open(self._path("s.json")) as f:
+            data = json.load(f)
+        assert data["num_strings"] == 6
 
     def test_chord_simultaneous_notes(self) -> None:
         tab_data = [

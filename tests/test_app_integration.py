@@ -92,6 +92,16 @@ def test_process_audio_impl_error() -> None:
         assert zip_path is None
 
 
+def _mock_notes():
+    """Two note objects shaped like note_seq notes (app only reads pitch/times)."""
+    import note_seq
+
+    return [
+        note_seq.NoteSequence.Note(pitch=64, start_time=0.0, end_time=0.4, velocity=80),
+        note_seq.NoteSequence.Note(pitch=67, start_time=0.5, end_time=0.9, velocity=80),
+    ]
+
+
 def _make_mock_stems():
     return {"lead": "/tmp/lead.wav", "left": "/tmp/left.wav", "right": "/tmp/right.wav"}
 
@@ -129,14 +139,16 @@ def _run_mocked_pipeline(app, instrument, stems_fn, is_suno=False):
         splitter_inst.process_bass.return_value = "/tmp/bass_clean.wav"
 
         ear_inst = ear_cls.return_value
-        ear_inst.transcribe_stem.return_value = []
-        ear_inst.humanize_and_clean.return_value = []
+        ear_inst.transcribe_stem.return_value = _mock_notes()
+        ear_inst.humanize_and_clean.return_value = _mock_notes()
 
         sgp_inst = sgp_cls.return_value
-        sgp_inst.process.return_value = []
+        sgp_inst.process.return_value = _mock_notes()
 
         tab_inst = tab_cls.return_value
-        tab_inst.generate_tab.return_value = []
+        tab_inst.generate_tab.return_value = [
+            {"string": 0, "fret": 3, "technique": "pick", "start_time": 0.0}
+        ]
 
         msg, zip_path = app._process_audio_impl(
             "dummy.wav", instrument, True, True, True, mock_progress
@@ -191,12 +203,14 @@ def test_process_audio_impl_zip_with_files() -> None:
             sc.return_value.separate_stems.return_value = {"guitar": "/tmp/g.wav"}
             sc.return_value.process_guitars.return_value = _make_mock_stems()
             with patch("app.EarAgent") as ec:
-                ec.return_value.transcribe_stem.return_value = []
-                ec.return_value.humanize_and_clean.return_value = []
+                ec.return_value.transcribe_stem.return_value = _mock_notes()
+                ec.return_value.humanize_and_clean.return_value = _mock_notes()
                 with patch("app.SunoNotePostprocessor") as sgc:
-                    sgc.return_value.process.return_value = []
+                    sgc.return_value.process.return_value = _mock_notes()
                     with patch("app.TabAgent") as tc:
-                        tc.return_value.generate_tab.return_value = []
+                        tc.return_value.generate_tab.return_value = [
+                            {"string": 0, "fret": 3, "technique": "pick", "start_time": 0.0}
+                        ]
                         with patch("app.export_tab_to_txt"), patch("app.export_tab_to_json"):
                             msg, _zp = app._process_audio_impl(
                                 "d.wav", "Guitar", True, True, True, mock_progress

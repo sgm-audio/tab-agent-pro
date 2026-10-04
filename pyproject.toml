@@ -8,36 +8,52 @@ version = "1.0.0"
 description = "AI-powered guitar/bass tablature transcription"
 requires-python = ">=3.10"
 dependencies = [
-    "gradio>=4.0.0",
+    "gradio>=4.44,<7",
     "spaces>=0.19.0",
-    "basic-pitch>=0.4.0",
+    "basic-pitch>=0.4.0,<0.5",
+    # Imported by basic_pitch.note_creation; required because the Dockerfile
+    # installs basic-pitch with --no-deps (its Linux extra pulls TensorFlow).
+    "mir_eval>=0.6",
+    "resampy>=0.2.2,<0.4.3",
     "onnxruntime>=1.17.0",
     "numpy>=1.18,<3",
-    "transformers>=4.48.0",
-    "huggingface_hub>=0.20.0",
     "demucs>=4.0.0",
     "librosa==0.10.2",
     "soundfile==0.12.1",
     "scipy>=1.11.0",
+    # pretty-midi 0.2.10 imports pkg_resources, removed from setuptools >= 81
+    "setuptools<81",
     "pretty-midi==0.2.10",
     "note-seq==0.0.5",
     "IPython>=8.0,<8.30",
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "ruff>=0.1.0",
-    "black>=23.0.0",
+    "ruff==0.11.5",
+    "black==26.5.1",
     "mypy>=1.0.0",
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "bandit>=1.7.0",
+    # Executes reaper/TabAgent.lua against a stubbed REAPER API
+    "lupa>=2.0",
 ]
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["*"]
-exclude = ["tests*", "examples*"]
+# Flat-layout project: the application is a set of top-level modules, so the
+# modules (not packages) must be declared or the wheel ships nothing.
+[tool.setuptools]
+py-modules = [
+    "agents",
+    "app",
+    "main",
+    "monitoring",
+    "suno_postprocessor",
+    "init_memory",
+    "validate",
+]
 
 [tool.ruff]
 target-version = "py310"
@@ -59,6 +75,8 @@ target-version = ["py310"]
 python_version = "3.10"
 strict_optional = true
 ignore_missing_imports = true
+# Build artifacts must not be type-checked (duplicate module "agents")
+exclude = ["^build/", "^dist/", "^\\.eggs/"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
