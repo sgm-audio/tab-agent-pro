@@ -32,6 +32,11 @@ python app.py
 # Open http://localhost:7860
 ```
 
+> On Linux, Basic Pitch's default dependency set includes TensorFlow, which the
+> ONNX backend does not use. The Dockerfile (and CI) installs it with
+> `--no-deps` plus its real runtime imports — `mir_eval` and `resampy` — instead:
+> `pip install -r requirements.txt` still works, it just installs more than needed.
+
 The server binds to `HOST` (default `0.0.0.0` so containers and Hugging Face
 Spaces can reach it) and listens on `PORT` (default `7860`). Both are read from
 the environment or from an optional `.env` file — see `.env.example`.
