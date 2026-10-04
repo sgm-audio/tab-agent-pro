@@ -13,7 +13,7 @@ concurrency:
 jobs:
   ci:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
     - uses: actions/checkout@v4
@@ -34,6 +34,15 @@ jobs:
     - name: Check formatting with Black
       run: black --check .
 
+    - name: Validate ReaPack index
+      run: python tools/check_index.py
+
+    - name: Check .env.example keys are honoured
+      run: python tools/check_env_example.py
+
+    - name: Check Docker install line
+      run: python tools/check_docker_install.py
+
     # --- Heavy installs only after lint passes ---
     - name: Install system dependencies
       run: |
@@ -44,10 +53,16 @@ jobs:
       run: pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 
     - name: Install project dependencies
-      run: pip install -r requirements.txt
+      run: |
+        # Match the Dockerfile: basic-pitch is installed with --no-deps because
+        # its Linux default dependency set pulls TensorFlow, which the ONNX
+        # backend does not use. mir_eval/resampy are its real runtime imports.
+        pip install --no-deps "basic-pitch>=0.4.0,<0.5" "mir_eval>=0.6" "resampy>=0.2.2,<0.4.3"
+        grep -v '^basic-pitch' requirements.txt > /tmp/req-nobp.txt
+        pip install -r /tmp/req-nobp.txt
 
     - name: Install remaining dev dependencies
-      run: pip install mypy pytest pytest-cov bandit
+      run: pip install "mypy==2.4.0" pytest pytest-cov "bandit==1.9.4" lupa
 
     - name: Type check with mypy
       continue-on-error: false
@@ -56,6 +71,20 @@ jobs:
     - name: Run tests with coverage
       run: pytest tests/ -v --cov=. --cov-report=term-missing
 
+    # Proves the shipped Docker install line produces a working backend.
+    - name: Smoke test transcription backend
+      run: |
+        python - <<'PY'
+        import agents
+        assert agents.BASIC_PITCH_AVAILABLE, "Basic Pitch is not importable"
+        from basic_pitch.inference import predict  # noqa: F401  (imports mir_eval/resampy too)
+        print("Basic Pitch importable via ONNX")
+        PY
+
+    - name: REAPER settings propagation
+      run: python tools/check_reaper_settings.py
+
     - name: Security scan with Bandit
       # Exclude tests/; B101 (assert) there is expected and noisy.
-      run: bandit -r agents.py main.py app.py monitoring.py suno_postprocessor.py init_memory.py -x tests/
+      run: bandit -r . -x ./tests,./.git
+

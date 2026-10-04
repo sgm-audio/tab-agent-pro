@@ -1,6 +1,8 @@
 --[[
   Tab Agent Pro — Settings UI (REAPER)
-  Configure install path, tuning preset, instrument, and export options.
+  Configure install path, tuning preset, instrument, thresholds, output
+  directory and export options. The values are stored in REAPER's ExtState and
+  consumed by reaper/TabAgent.lua, which passes them to main.py as CLI flags.
 
   Author: Scott Mills
   License: MIT
@@ -27,6 +29,13 @@ for i, p in ipairs(PROFILES) do
 end
 local PROFILE_MENU = table.concat(PROFILE_MENU_LINES, "\n")
 
+local function profile_defaults(key)
+  for _, p in ipairs(PROFILES) do
+    if p.key == key then return p end
+  end
+  return nil
+end
+
 -- ============================================================================
 -- PERSISTENT SETTINGS
 -- ============================================================================
@@ -35,29 +44,53 @@ local EXSTATE_KEY = "TabAgent"
 
 local function load_settings()
   local s = {}
-  s.install_path = reaper.GetExtState(EXSTATE_KEY, "install_path")
-  s.profile     = reaper.GetExtState(EXSTATE_KEY, "profile")
-  s.instrument  = reaper.GetExtState(EXSTATE_KEY, "instrument")
-  s.export_midi = reaper.GetExtState(EXSTATE_KEY, "export_midi")
-  s.export_tab  = reaper.GetExtState(EXSTATE_KEY, "export_tab")
-  s.export_json = reaper.GetExtState(EXSTATE_KEY, "export_json")
-  if s.profile == "" then s.profile = "rock_standard" end
-  if s.instrument == "" then s.instrument = "Guitar" end
-  if s.export_midi == "" then s.export_midi = "1" end
-  if s.export_tab == "" then s.export_tab = "1" end
-  if s.export_json == "" then s.export_json = "1" end
+  local function get(key, default)
+    local v = reaper.GetExtState(EXSTATE_KEY, key)
+    if v == nil or v == "" then return default end
+    return v
+  end
+  s.install_path = get("install_path", "")
+  s.profile      = get("profile", "rock_standard")
+  s.instrument   = get("instrument", "Guitar")
+  s.onset        = get("onset", "")
+  s.frame        = get("frame", "")
+  s.output_dir   = get("output_dir", "")
+  s.export_midi  = get("export_midi", "1")
+  s.export_tab   = get("export_tab", "1")
+  s.export_json  = get("export_json", "1")
   return s
 end
 
 local function save_settings(s)
   reaper.SetExtState(EXSTATE_KEY, "profile",     s.profile, true)
   reaper.SetExtState(EXSTATE_KEY, "instrument",  s.instrument, true)
-  reaper.SetExtState(EXSTATE_KEY, "export_midi", tostring(s.export_midi and 1 or 0), true)
-  reaper.SetExtState(EXSTATE_KEY, "export_tab",  tostring(s.export_tab and 1 or 0), true)
-  reaper.SetExtState(EXSTATE_KEY, "export_json", tostring(s.export_json and 1 or 0), true)
-  if s.install_path then
+  reaper.SetExtState(EXSTATE_KEY, "onset",       s.onset or "", true)
+  reaper.SetExtState(EXSTATE_KEY, "frame",       s.frame or "", true)
+  reaper.SetExtState(EXSTATE_KEY, "output_dir",  s.output_dir or "", true)
+  reaper.SetExtState(EXSTATE_KEY, "export_midi", s.export_midi and "1" or "0", true)
+  reaper.SetExtState(EXSTATE_KEY, "export_tab",  s.export_tab and "1" or "0", true)
+  reaper.SetExtState(EXSTATE_KEY, "export_json", s.export_json and "1" or "0", true)
+  if s.install_path and s.install_path ~= "" then
     reaper.SetExtState(EXSTATE_KEY, "install_path", s.install_path, true)
   end
+end
+
+-- ============================================================================
+-- CSV HELPERS (GetUserInputs joins fields with commas; empty fields must be
+-- preserved, which gmatch("[^,]+") does not do)
+-- ============================================================================
+
+local function split_csv(input)
+  local parts = {}
+  for part in (input .. ","):gmatch("(.-),") do
+    parts[#parts + 1] = part:match("^%s*(.-)%s*$")
+  end
+  return parts
+end
+
+local function yes(value)
+  local v = tostring(value or ""):lower()
+  return v == "1" or v == "yes" or v == "true"
 end
 
 -- ============================================================================
@@ -67,22 +100,26 @@ end
 local function show_gui()
   local s = load_settings()
 
-  local ret, input = reaper.GetUserInputs(
-    "Tab Agent — Settings",
-    6,
-    "Profile number (see below),Install path,Instrument (Guitar/Bass),Export MIDI (1=yes),Export Tab (1=yes),Export JSON (1=yes)",
-    s.profile .. "," .. (s.install_path or "") .. "," .. s.instrument .. "," ..
-    (s.export_midi or "1") .. "," .. (s.export_tab or "1") .. "," .. (s.export_json or "1")
-  )
+  local fields = "Profile number (see console after saving),Install path," ..
+    "Instrument (Guitar/Bass),Onset threshold (blank=profile)," ..
+    "Frame threshold (blank=profile),Output dir (blank=repo/output)," ..
+    "Export MIDI (1=yes),Export Tab (1=yes),Export JSON (1=yes)"
 
+  local defaults = table.concat({
+    s.profile, s.install_path, s.instrument, s.onset, s.frame, s.output_dir,
+    s.export_midi, s.export_tab, s.export_json,
+  }, ",")
+
+  local ret, input = reaper.GetUserInputs("Tab Agent — Settings", 9, fields, defaults)
   if not ret then return end
 
-  -- Show profile menu after dialog so user sees it next time
+  -- Show profile menu after dialog so the user can pick a number next time
   reaper.ShowConsoleMsg("Tab Agent — Available Profiles:\n" .. PROFILE_MENU .. "\n")
 
-  local parts = {}
-  for part in input:gmatch("[^,]+") do
-    parts[#parts+1] = part:match("^%s*(.-)%s*$")
+  local parts = split_csv(input)
+  if #parts < 9 then
+    reaper.MB("Unexpected input — settings not saved.", "Tab Agent — Settings", 0)
+    return
   end
 
   local prof_idx = tonumber(parts[1])
@@ -94,22 +131,31 @@ local function show_gui()
 
   if parts[2] ~= "" then s.install_path = parts[2] end
   if parts[3] ~= "" then s.instrument = parts[3] end
-  s.export_midi = parts[4] == "1" or parts[4] == "yes"
-  s.export_tab  = parts[5] == "1" or parts[5] == "yes"
-  s.export_json = parts[6] == "1" or parts[6] == "yes"
+
+  -- Blank threshold fields mean "use the selected profile's values"; main.py
+  -- resolves CLI flag > profile > built-in default.
+  s.onset = parts[4]
+  s.frame = parts[5]
+
+  s.output_dir  = parts[6] or ""
+  s.export_midi = yes(parts[7])
+  s.export_tab  = yes(parts[8])
+  s.export_json = yes(parts[9])
 
   save_settings(s)
 
   local prof_name = s.profile
-  for _, p in ipairs(PROFILES) do
-    if p.key == s.profile then prof_name = p.name; break end
-  end
+  local p = profile_defaults(s.profile)
+  if p then prof_name = p.name end
 
   reaper.MB(
     "Settings saved!\n" ..
     "Profile: " .. prof_name .. "\n" ..
     "Instrument: " .. s.instrument .. "\n" ..
-    "Install: " .. (s.install_path or "(auto)") .. "\n" ..
+    "Onset/Frame: " .. (s.onset ~= "" and s.onset or "(profile)") .. " / " ..
+      (s.frame ~= "" and s.frame or "(profile)") .. "\n" ..
+    "Install: " .. (s.install_path ~= "" and s.install_path or "(auto)") .. "\n" ..
+    "Output: " .. (s.output_dir ~= "" and s.output_dir or "(repo/output)") .. "\n" ..
     "Exports: " ..
       (s.export_midi and "MIDI " or "") ..
       (s.export_tab and "Tab " or "") ..
@@ -124,15 +170,16 @@ end
 
 local function auto_detect()
   if reaper.GetExtState(EXSTATE_KEY, "install_path") ~= "" then return end
+  local home = os.getenv("HOME") or ""
   local candidates = {
     reaper.GetResourcePath() .. "/Scripts/Tab-Agent",
     reaper.GetResourcePath() .. "/Scripts/Tab-Agent-Pro",
-    os.getenv("HOME") .. "/tab-agent-pro",
-    os.getenv("HOME") .. "/Tab-Agent-Pro",
-    os.getenv("USERPROFILE") .. "/tab-agent-pro",
+    home .. "/tab-agent-pro",
+    home .. "/Tab-Agent-Pro",
+    (os.getenv("USERPROFILE") or "") .. "/tab-agent-pro",
   }
   for _, p in ipairs(candidates) do
-    if reaper.file_exists(p .. "/main.py") then
+    if p ~= "" and reaper.file_exists(p .. "/main.py") then
       reaper.SetExtState(EXSTATE_KEY, "install_path", p, true)
       reaper.MB("Tab Agent detected at:\n" .. p .. "\n\nRun 'Tab Agent' to transcribe.", "Tab Agent — Ready", 0)
       return

@@ -1,51 +1,42 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index name="Tab Agent Pro" version="1.0"
-       xmlns="http://www.cockos.com/reapack/schema/1.0">
+<!--
+  ReaPack repository index for Tab Agent Pro.
+
+  Generated/validated with reapack-index (https://github.com/cfillion/reapack-index)
+  and checked in CI by tools/check_index.py.
+
+  Format notes (docs-audit P1-4):
+    * root carries version="1" and the commit sha the sources are pinned to
+    * packages are <reapack> (the legacy <reaper> element is not recognised)
+    * <version> has name/author/time (ISO8601 UTC); type is not an attribute
+    * each <source> body is the file to download; main=/file= names the
+      filename it is installed as in REAPER
+
+  To regenerate after a code change, install reapack-index and run it on this
+  repository, then update the commit attribute; tools/check_index.py reports
+  mismatches.
+-->
+<index version="1" commit="c503e0b3fcd3cb3de77ddc5283cbe176bbcb7add" name="Tab Agent Pro">
   <category name="Transcription">
-    <description>Audio-to-tablature transcription tools powered by AI.</description>
+    <reapack name="Tab Agent" type="script" desc="AI-powered audio-to-tablature transcription">
+      <version name="1.0.0" author="Scott Mills" time="2026-10-04T00:00:00Z">
+        <source main="TabAgent.lua">reaper/TabAgent.lua</source>
+        <changelog><![CDATA[
+Initial release: Basic Pitch + YourMT3+ transcription, Demucs stem separation,
+technique detection (slides/hammer-ons/pull-offs), MIDI/tab/JSON export.
+Settings from "Tab Agent Settings" are passed through to main.py.
+        ]]></changelog>
+      </version>
+    </reapack>
+
+    <reapack name="Tab Agent Settings" type="script" desc="Configure Tab Agent Pro profiles and exports">
+      <version name="1.0.0" author="Scott Mills" time="2026-10-04T00:00:00Z">
+        <source main="Settings.lua">reaper/Settings.lua</source>
+        <changelog><![CDATA[
+Initial release: 8 preset profiles, instrument selection, install path,
+onset/frame thresholds, output directory, export format toggles.
+        ]]></changelog>
+      </version>
+    </reapack>
   </category>
-
-  <!-- Tab Agent — main transcription script -->
-  <reaper name="Tab Agent" type="script">
-    <metadata>
-      <owner>Scott Mills</owner>
-      <description>
-        AI-powered audio-to-tablature transcription.
-        Uses Demucs stem separation, Basic Pitch / YourMT3+ transcription,
-        and dynamic-programming fingering optimization.
-        Detects slides, hammer-ons, and pull-offs automatically.
-      </description>
-      <links>
-        <link rel="website" href="https://github.com/sgm-audio/tab-agent-pro">Repository</link>
-        <link rel="documentation" href="https://github.com/sgm-audio/tab-agent-pro/blob/main/README.md">Documentation</link>
-      </links>
-    </metadata>
-
-    <version name="1.0.0" author="Scott Mills" type="main">
-      <source file="reaper/TabAgent.lua">TabAgent.lua</source>
-      <changelog><![CDATA[
-        Initial release: Basic Pitch + YourMT3+ transcription, Demucs stem separation,
-        technique detection (slides/hammer-ons/pull-offs), MIDI/tab/JSON export.
-      ]]></changelog>
-    </version>
-  </reaper>
-
-  <!-- Tab Agent Settings — configuration UI -->
-  <reaper name="Tab Agent Settings" type="script">
-    <metadata>
-      <owner>Scott Mills</owner>
-      <description>
-        Configure Tab Agent Pro settings: tuning presets, instrument selection,
-        onset thresholds, and export format preferences.
-      </description>
-    </metadata>
-
-    <version name="1.0.0" author="Scott Mills" type="main">
-      <source file="reaper/Settings.lua">Settings.lua</source>
-      <changelog><![CDATA[
-        Initial release: 8 preset profiles, instrument selection,
-        onset/frame threshold controls, export format options.
-      ]]></changelog>
-    </version>
-  </reaper>
 </index>

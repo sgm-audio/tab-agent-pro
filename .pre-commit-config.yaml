@@ -1,7 +1,9 @@
+# Keep hook versions in sync with .github/workflows/ci.yml (the CI job is the
+# source of truth; these hooks must not disagree with it).
 exclude: ^venv.*/|\.codegraph/|AUDIT\.md|PLAN\.md|\.coverage
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.20
+    rev: v0.11.5
     hooks:
       - id: ruff
         args: [--fix]
@@ -9,11 +11,19 @@ repos:
       - id: ruff-format
         types_or: [python, pyi]
 
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v2.1.0
+  # Use the same formatter the CI gate runs (black --check).
+  - repo: https://github.com/psf/black-pre-commit-mirror
+    rev: 26.5.1
     hooks:
-      - id: mypy
-        args: [--no-strict-optional, --ignore-missing-imports]
+      - id: black
+        language_version: python3
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v2.4.0
+    hooks:
+      - # Match pyproject.toml ([tool.mypy] strict_optional = true) and CI's `mypy .`
+        id: mypy
+        args: [--strict-optional, --ignore-missing-imports]
         additional_dependencies: [types-PyYAML]
 
   - repo: https://github.com/pre-commit/pre-commit-hooks

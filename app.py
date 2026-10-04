@@ -1,9 +1,14 @@
 """
-Tab Agent - Hugging Face Gradio Interface (MVP)
+Tab Agent - Hugging Face Gradio Interface
 AI-powered guitar/bass tablature transcription using Basic Pitch.
 
 This is the web UI for the Tab Agent transcription system.
-Optimized for Zero GPU deployment with Basic Pitch model.
+
+Deployment notes:
+  * Binds to ``HOST`` (default ``0.0.0.0`` so Docker/Hugging Face Spaces can reach it).
+  * Honours ``PORT`` (default 7860, the port Spaces routes to).
+  * ``process_audio`` is decorated with ``spaces.GPU`` when the Space actually runs on
+    Zero GPU hardware (``SPACES_ZERO_GPU``); otherwise it is a plain CPU function.
 """
 
 import atexit
@@ -21,18 +26,46 @@ import gradio as gr
 
 from monitoring import health
 
-# Zero GPU support for faster processing
+
+def _load_dotenv(path: str = ".env") -> None:
+    """Minimal .env loader (no python-dotenv dependency). Existing env vars win."""
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip("'\"")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except OSError:
+        pass
+
+
+_load_dotenv()
+
+# Import Tab Agent modules
+from agents import EarAgent, SplitterAgent, TabAgent  # noqa: E402
+from main import export_tab_to_json, export_tab_to_txt  # noqa: E402
+from suno_postprocessor import SunoNotePostprocessor, process_suno_audio  # noqa: E402
+
+# Zero GPU support: the decorator only reserves a GPU on ZeroGPU Spaces. On CPU
+# Spaces `spaces.GPU` is a pass-through, so we still import `spaces` when present
+# but only report GPU acceleration when the runtime really provides it.
 try:
     import spaces
 
-    GPU_AVAILABLE = True
+    SPACES_AVAILABLE = True
 except ImportError:
-    GPU_AVAILABLE = False
+    spaces = None  # type: ignore[assignment]
+    SPACES_AVAILABLE = False
 
-# Import Tab Agent modules
-from agents import EarAgent, SplitterAgent, TabAgent
-from main import export_tab_to_json, export_tab_to_txt
-from suno_postprocessor import SunoNotePostprocessor, process_suno_audio
+ZERO_GPU = os.getenv("SPACES_ZERO_GPU", "").lower() in ("1", "true")
+GPU_AVAILABLE = SPACES_AVAILABLE and ZERO_GPU
 
 # Configuration
 TEMP_DIR = tempfile.gettempdir()
@@ -47,62 +80,61 @@ MAX_FILE_SIZE_MB = 50
 MAX_DURATION_SEC = 300  # 5 minutes
 ALLOWED_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aiff"}
 
+# PyTorch device for the transcription agent ("auto", "cpu", "cuda", "mps")
+DEVICE = os.getenv("DEVICE", "auto")
 
-# Apply Zero GPU decorator if available
+BASS_TARGETS = {"Bass", "bass"}
+
+
+def process_audio(
+    audio_file,
+    instrument_type="Guitar",
+    include_midi=True,
+    include_tab=True,
+    include_json=True,
+    progress=gr.Progress(),  # noqa: B008 - Gradio documented pattern
+):
+    """
+    Process audio file and generate tablature.
+
+    Args:
+        audio_file: Path to uploaded audio file
+        instrument_type: "Guitar" or "Bass"
+        include_midi: Export MIDI files
+        include_tab: Export ASCII tab files
+        include_json: Export JSON files
+        progress: Gradio progress callback
+
+    Returns:
+        Tuple of (status_message, output_files_zip)
+
+    """
+    return _process_audio_impl(
+        audio_file,
+        instrument_type,
+        include_midi,
+        include_tab,
+        include_json,
+        progress,
+    )
+
+
 if GPU_AVAILABLE:
 
     @spaces.GPU
-    def process_audio(
-        audio_file,
-        instrument_type="Guitar",
-        include_midi=True,
-        include_tab=True,
-        include_json=True,
-        progress=gr.Progress(),  # noqa: B008 - Gradio documented pattern
-    ):
-        """
-        Process audio file and generate tablature.
+    def _gpu_process_audio(*args, **kwargs):
+        """Run the pipeline on a Zero GPU slice. Only active on ZeroGPU Spaces."""
+        return process_audio(*args, **kwargs)
 
-        Args:
-            audio_file: Path to uploaded audio file
-            instrument_type: "Guitar" or "Bass"
-            include_midi: Export MIDI files
-            include_tab: Export ASCII tab files
-            include_json: Export JSON files
-            progress: Gradio progress callback
-
-        Returns:
-            Tuple of (status_message, output_files_zip)
-
-        """
-        return _process_audio_impl(
-            audio_file,
-            instrument_type,
-            include_midi,
-            include_tab,
-            include_json,
-            progress,
-        )
-
+    _reserve_gpu = True
 else:
+    _gpu_process_audio = None
+    _reserve_gpu = False
 
-    def process_audio(
-        audio_file,
-        instrument_type="Guitar",
-        include_midi=True,
-        include_tab=True,
-        include_json=True,
-        progress=gr.Progress(),  # noqa: B008 - Gradio documented pattern
-    ):
-        """Process audio file and generate tablature (CPU-only)."""
-        return _process_audio_impl(
-            audio_file,
-            instrument_type,
-            include_midi,
-            include_tab,
-            include_json,
-            progress,
-        )
+# `ui_entry` is what the Gradio button is bound to: the Zero GPU wrapper when the
+# runtime provides a GPU, otherwise the plain function. Both accept 5 inputs and
+# a defaulted `progress`, so the number of connected inputs never matters.
+ui_entry = _gpu_process_audio if _reserve_gpu else process_audio
 
 
 def _validate_audio(audio_path: Path) -> str | None:
@@ -128,11 +160,11 @@ def _validate_audio(audio_path: Path) -> str | None:
 
 def _process_audio_impl(
     audio_file,
-    instrument_type,
-    include_midi,
-    include_tab,
-    include_json,
-    progress,
+    instrument_type="Guitar",
+    include_midi=True,
+    include_tab=True,
+    include_json=True,
+    progress=gr.Progress(),  # noqa: B008 - Gradio documented pattern
 ):
     """Internal implementation of audio processing."""
     cleanup_stale_sessions()
@@ -167,6 +199,14 @@ def _process_audio_impl(
             str(audio_path),
             output_path=str(session_dir / f"{song_name}_processed.wav"),
         )
+        health.set_component(
+            "suno_detector",
+            (
+                f"ai_audio_detected (hf_ratio={suno_metrics.get('hf_ratio', 0):.4f})"
+                if is_suno
+                else "clean"
+            ),
+        )
 
         # Adjust thresholds for AI-generated audio
         if is_suno:
@@ -176,9 +216,9 @@ def _process_audio_impl(
             onset_threshold = 0.5
             frame_threshold = 0.3
 
-        # Initialize agents (auto-detects GPU via Zero GPU)
+        # Initialize agents
         splitter = SplitterAgent(output_dir=str(session_dir / "stems"))
-        ear = EarAgent(device="auto")  # Auto-detect: GPU if available, else CPU
+        ear = EarAgent(device=DEVICE)
         suno_postprocessor = SunoNotePostprocessor()
 
         # Stage 1-3: Stem separation and processing
@@ -186,7 +226,8 @@ def _process_audio_impl(
         stems = splitter.separate_stems(processed_audio)
 
         progress(0.3, desc="🎸 Processing guitar stems...")
-        if instrument_type == "Guitar":
+        is_bass = instrument_type in BASS_TARGETS
+        if not is_bass:
             guitar_stems = splitter.process_guitars(stems["guitar"])
             processed_stems = {
                 "lead": guitar_stems["lead"],
@@ -214,12 +255,12 @@ def _process_audio_impl(
                 onset_threshold=onset_threshold,
                 frame_threshold=frame_threshold,
             )
-            notes_clean = ear.humanize_and_clean(notes_raw, is_bass=(instrument_type == "Bass"))
+            notes_clean = ear.humanize_and_clean(notes_raw, is_bass=is_bass)
             # Apply Suno post-processing if needed
             notes_clean = suno_postprocessor.process(notes_clean, is_suno, suno_metrics)
 
             # Export MIDI
-            if include_midi:
+            if include_midi and notes_clean:
                 midi_path = session_dir / f"{song_name}_{stem_name}.mid"
                 ear.export_midi(notes_clean, str(midi_path))
 
@@ -228,30 +269,39 @@ def _process_audio_impl(
         # Stage 5: Tablature generation
         progress(0.8, desc="📝 Generating tablature...")
 
-        if instrument_type == "Guitar":
-            tab_agent = TabAgent(tuning=GUITAR_TUNING, num_frets=24)
-        else:
-            tab_agent = TabAgent(tuning=BASS_TUNING, num_frets=24)
+        tuning = BASS_TUNING if is_bass else GUITAR_TUNING
+        tab_agent = TabAgent(tuning=tuning, num_frets=24)
+
+        # Tracks that produced no usable tablature (e.g. all notes unplayable)
+        skipped: list[str] = []
+        written = 0
 
         for stem_name, notes in results.items():
             tab_data = tab_agent.generate_tab(notes)
 
+            if notes and not tab_data:
+                skipped.append(stem_name)
+
             # Export tab files
-            if include_tab:
+            if include_tab and tab_data:
                 tab_path = session_dir / f"{song_name}_{stem_name}.tab"
                 export_tab_to_txt(
                     tab_data,
                     str(tab_path),
                     instrument=f"{instrument_type} - {stem_name}",
+                    num_strings=len(tuning),
                 )
+                written += 1
 
-            if include_json:
+            if include_json and tab_data:
                 json_path = session_dir / f"{song_name}_{stem_name}.json"
                 export_tab_to_json(
                     tab_data,
                     str(json_path),
                     instrument=f"{instrument_type} - {stem_name}",
+                    num_strings=len(tuning),
                 )
+                written += 1
 
         # Create ZIP archive
         progress(0.9, desc="📦 Creating download package...")
@@ -262,18 +312,26 @@ def _process_audio_impl(
                 if file.is_file() and file != zip_path:
                     arcname = file.relative_to(session_dir)
                     zipf.write(file, arcname)
+                    written += 1
 
         progress(1.0, desc="✅ Complete!")
 
+        if not results or not any(results.values()):
+            return (
+                "⚠️ **No notes were transcribed.** The audio may be too quiet, "
+                "or a transcription backend may be missing "
+                "(check `/health` → `components`).",
+                str(zip_path),
+            )
+
         # Generate status message
         elapsed = time.time() - start_time
-        file_count = len(list(session_dir.glob("*.*"))) - 1  # Exclude zip
         status_msg = f"""
 ✅ **Transcription Complete!**
 
 - **Song**: {song_name}
 - **Instrument**: {instrument_type}
-- **Files Generated**: {file_count}
+- **Files Generated**: {written}
 - **Processing Time**: {elapsed:.1f}s
 - **Formats**: {
             ", ".join(
@@ -284,33 +342,57 @@ def _process_audio_impl(
                 ]
             ).strip(", ")
         }
+"""
+        if skipped:
+            status_msg += (
+                f"\n⚠️ No tablature for: {', '.join(skipped)} — notes fell outside the "
+                "instrument's range/tuning.\n"
+            )
 
-📥 **Download the ZIP file below to get all outputs!**
-        """
+        status_msg += "\n📥 **Download the ZIP file below to get all outputs!**\n"
 
+        health.record_request(success=True, details=f"transcribe: {song_name}")
         return status_msg, str(zip_path)
 
     except Exception as e:
         from monitoring import get_logger
 
         get_logger("app").error("transcription_failed", exc=e)
+        health.record_request(success=False, details=f"transcribe: {Path(audio_file).name}")
         error_msg = f"❌ **Transcription failed:** {e}"
         return error_msg, None
 
 
 # Create Gradio interface
-def create_ui():
-    """Create Gradio UI interface."""
-    css = """
+UI_CSS = """
     .tab-agent-header h1 { font-size: 2.2rem; margin-bottom: 0; }
     .tab-agent-header p { color: #666; margin-top: 0.25rem; }
     .tab-agent-footer { text-align: center; color: #999; font-size: 0.85rem; padding-top: 1rem; border-top: 1px solid #e5e7eb; margin-top: 1.5rem; }
     .status-box { min-height: 120px; }
     """
+
+
+def _gradio_major() -> int:
+    with contextlib.suppress(Exception):
+        return int(gr.__version__.split(".")[0])
+    return 4
+
+
+def _ui_style_kwargs() -> dict:
+    """
+    Theme/CSS live in the Blocks constructor on Gradio < 6 and moved to
+    mount_gradio_app()/launch() on Gradio 6+.
+    """
+    if _gradio_major() >= 6:
+        return {}
+    return {"theme": gr.themes.Soft(), "css": UI_CSS}
+
+
+def create_ui():
+    """Create Gradio UI interface."""
     with gr.Blocks(
         title="Tab Agent — AI Tablature Transcription",
-        theme=gr.themes.Soft(),
-        css=css,
+        **_ui_style_kwargs(),
     ) as demo:
         gr.HTML("""
             <div class="tab-agent-header">
@@ -371,7 +453,7 @@ def create_ui():
 
         with gr.Accordion("How it works", open=False):
             gr.Markdown("""
-            1. **Stem separation** — Demucs isolates guitar/bass from the mix
+            1. **Stem separation** — Demucs isolates the guitar/bass/other stems from the mix
             2. **Spatial processing** — Mid-side technique splits lead from rhythm
             3. **AI transcription** — Basic Pitch converts audio → MIDI notes
             4. **Tablature generation** — Dynamic programming assigns notes to strings/frets
@@ -395,7 +477,7 @@ def create_ui():
             """)
 
         transcribe_btn.click(
-            fn=_process_audio_impl,
+            fn=ui_entry,
             inputs=[audio_input, instrument_type, export_midi, export_tab, export_json],
             outputs=[status_output, download_output],
         ).then(
@@ -426,7 +508,11 @@ def create_app():
 
         return default_metrics.summary()
 
-    return gr.mount_gradio_app(parent_app, demo, path="/")
+    mount_kwargs: dict = {}
+    if _gradio_major() >= 6:
+        mount_kwargs = {"theme": gr.themes.Soft(), "css": UI_CSS}
+
+    return gr.mount_gradio_app(parent_app, demo, path="/", **mount_kwargs)
 
 
 def cleanup_temp_dirs() -> None:
@@ -461,8 +547,24 @@ def cleanup_stale_sessions(max_age_hours: int = 1) -> None:
                     shutil.rmtree(d, ignore_errors=True)
 
 
-# Main entry point
-if __name__ == "__main__":
+def serve() -> None:
+    """
+    Run the FastAPI + Gradio app with uvicorn.
+
+    Binds HOST (default 0.0.0.0 so Docker/Hugging Face Spaces can reach it) and
+    PORT (default 7860, the port Spaces routes to).
+    """
     import uvicorn
 
-    uvicorn.run(create_app(), host=os.getenv("HOST", "127.0.0.1"), port=7860)
+    # Binding 0.0.0.0 is required for container/Hugging Face Spaces routing;
+    # set HOST=127.0.0.1 for local-only use.
+    uvicorn.run(
+        create_app(),
+        host=os.getenv("HOST", "0.0.0.0"),  # nosec B104
+        port=int(os.getenv("PORT", "7860")),
+    )
+
+
+# Main entry point
+if __name__ == "__main__":
+    serve()

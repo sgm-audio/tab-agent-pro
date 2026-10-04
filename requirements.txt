@@ -1,18 +1,19 @@
-# Tab Agent MVP - Docker Space Requirements
-gradio>=4.0.0
+# Tab Agent - Docker Space Requirements
+gradio>=4.44,<7
 
-# Zero GPU support (HuggingFace Spaces)
+# Zero GPU support (HuggingFace Spaces). Harmless on CPU Spaces: spaces.GPU()
+# passes through when SPACES_ZERO_GPU is not set.
 spaces>=0.19.0
 
 # Core transcription (Basic Pitch with ONNX backend)
-# ONNX runtime is auto-detected by basic-pitch; no TensorFlow needed
-basic-pitch>=0.4.0
+# ONNX runtime is auto-detected by basic-pitch; no TensorFlow needed on Linux.
+# NOTE: the Dockerfile installs basic-pitch with --no-deps and therefore lists
+# its real runtime imports (mir_eval, resampy) explicitly. Keep them in sync.
+basic-pitch>=0.4.0,<0.5
+mir_eval>=0.6
+resampy>=0.2.2,<0.4.3
 onnxruntime>=1.17.0
 numpy>=1.18,<3
-
-# YourMT3+ transformer model support
-transformers>=4.48.0
-huggingface_hub>=0.20.0
 
 # Demucs stem separation (Python API, no CLI dependency)
 demucs>=4.0.0
@@ -28,5 +29,14 @@ setuptools<81
 pretty-midi==0.2.10
 note-seq==0.0.5
 IPython>=8.0,<8.30
+
+# Server (app.py serves the FastAPI + Gradio app; these are transitive via
+# gradio but are used directly, so they are listed here as well)
+fastapi>=0.110
+uvicorn>=0.27
+
+# NOTE: transformers is intentionally NOT a dependency. YourMT3+ is a custom
+# PyTorch Lightning model (see agents.py) and the code never imports
+# transformers, so it was only ~1 GB of dead weight in the image.
 
 # Gradio is handled by HF Spaces runtime

@@ -277,13 +277,40 @@ class TestTabAgentGenerateTabEdgeCases(unittest.TestCase):
         assert len(result) == 0
 
     def test_unplayable_interleaved_with_playable(self) -> None:
-        """If any note is unplayable, entire result is empty."""
+        """Unplayable notes are skipped; the playable notes still produce tab."""
         notes = [
             make_note(40, 0.0),  # playable
             make_note(10, 0.5),  # unplayable
         ]
         result = self.agent.generate_tab(notes)
-        assert len(result) == 0
+        assert len(result) == 1
+        assert result[0]["fret"] == 0
+        assert self.agent.last_skipped_notes == [10]
+
+    def test_unplayable_notes_are_recorded(self) -> None:
+        """Skipped pitches are exposed on last_skipped_notes for callers to report."""
+        notes = [
+            make_note(40, 0.0),
+            make_note(10, 0.5),
+            make_note(5, 1.0),
+            make_note(45, 1.5),
+        ]
+        result = self.agent.generate_tab(notes)
+        assert len(result) == 2
+        assert self.agent.last_skipped_notes == [10, 5]
+
+    def test_playable_notes_clear_previous_skips(self) -> None:
+        """last_skipped_notes reflects only the most recent call."""
+        self.agent.generate_tab([make_note(10, 0.0)])
+        assert self.agent.last_skipped_notes == [10]
+
+        self.agent.generate_tab([make_note(40, 0.0)])
+        assert self.agent.last_skipped_notes == []
+
+    def test_empty_note_list_resets_skips(self) -> None:
+        self.agent.generate_tab([make_note(10, 0.0)])
+        assert self.agent.generate_tab([]) == []
+        assert self.agent.last_skipped_notes == []
 
     def test_technique_slide_adjacent_1_fret(self) -> None:
         """1-fret difference on same string fast → slide."""
