@@ -1,6 +1,6 @@
 """
 Tab Agent - Modernized with YourMT3+ (January 2026)
-Multi-instrument music transcription using state-of-the-art transformers.
+Multi-instrument music transcription using transformer models (YourMT3+).
 
 Improvements from Basic Pitch:
 - YourMT3+ with hierarchical attention transformers
@@ -82,7 +82,7 @@ class SplitterAgent:
     """
     Audio stem separation using Demucs Python API.
 
-    Demucs v4 with htdemucs model remains state-of-the-art for:
+    Demucs v4 (htdemucs) is used for:
     - Guitar/bass separation
     - Multi-stem source separation
     - Real-time processing capability
@@ -276,7 +276,7 @@ class EarAgent:
     gracefully to Basic Pitch if either component is unavailable.
 
     Primary model: YourMT3+ (custom Lightning)
-    Fallback:      Basic Pitch (Spotify, production-ready)
+    Fallback:      Basic Pitch (Spotify)
     """
 
     # Honor CACHE_DIR (see .env.example); defaults to ~/.cache/tab_agent/yourmt3
@@ -810,7 +810,7 @@ class EarAgent:
         """
         Transcribe using Basic Pitch (Spotify's proven model).
 
-        Basic Pitch is production-ready and works well for guitar/bass.
+        Basic Pitch is the fallback when YourMT3+ isn't available.
         """
         log = get_logger("ear_agent")
 

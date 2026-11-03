@@ -32,10 +32,12 @@ python app.py
 # Open http://localhost:7860
 ```
 
-> On Linux, Basic Pitch's default dependency set includes TensorFlow, which the
-> ONNX backend does not use. The Dockerfile (and CI) installs it with
-> `--no-deps` plus its real runtime imports — `mir_eval` and `resampy` — instead:
-> `pip install -r requirements.txt` still works, it just installs more than needed.
+> On Linux with Python 3.12 or newer, plain `pip install -r requirements.txt` fails.
+> basic-pitch 0.4 requires TensorFlow < 2.15.1, which has no Python 3.12 wheels, and
+> the ONNX backend doesn't use TensorFlow anyway. Use the route from
+> `.github/workflows/ci.yml` and the Dockerfile instead: install basic-pitch with
+> `--no-deps`, then add its real runtime imports, `mir_eval` and `resampy`
+> (checked 2026-10-31).
 
 The server binds to `HOST` (default `0.0.0.0` so containers and Hugging Face
 Spaces can reach it) and listens on `PORT` (default `7860`). Both are read from
