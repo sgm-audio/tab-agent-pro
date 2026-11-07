@@ -1,5 +1,171 @@
 # Changelog
 
+## 1.1.0 (2026-11-07)
+
+Production-readiness pass: the seven-phase audit chain (repo audit → claim
+verification → build validation → dynamic testing → hardening → docs → sign-off).
+Artifacts live in `artifacts/`. No API changes; no breaking changes to the CLI,
+the web UI or the REAPER scripts.
+
+### Added — observability and honest health
+- **`/ready` readiness endpoint.** Returns `503` with the blocking component
+  until a required backend is loadable; `/health` stays `200` as a liveness
+  probe. The container `HEALTHCHECK` now probes `/ready`, so a broken image never
+  receives traffic. Previously `/health` reported `up` with every backend dead.
+- **Component health derived, not hardcoded.** `HealthTracker` computes status
+  from recorded operations and load results, so `down`/`degraded` are facts
+  rather than literals.
+- **Bounded metrics.** `PipelineMetrics` keeps a fixed window per stage; the old
+  unbounded list grew without limit on a long-lived server.
+- **Error references.** A failed web request returns a short `error_ref`; the
+  full exception stays in the logs, matched by that reference.
+
+### Fixed — the lockfile gate could not have passed in CI
+CI failed on "Verify lockfile matches the installed environment", and it was
+right to. Three defects, all in the gate rather than the code:
+
+- The lock had been generated inside a development virtualenv, so it contained
+  lint/test/audit tooling (27 packages) that is never shipped, and it **omitted
+  `setuptools`**, which is declared and is load-bearing for `pretty_midi`.
+- It also locked the 13 NVIDIA CUDA redistributables and `triton`, which the
+  CPU-only image deliberately does not install — so `pip install -r
+  requirements.lock` would try to pull ~2.5 GB of CUDA back in.
+- The check compared lock and environment for *exact equality* while the
+  install came from *ranges*, so it could never pass. A later step also called
+  `pip-audit --ignore-vuln-file`, a flag that does not exist in pip-audit.
+
+The lock is now the runtime closure (118 packages, CPU-only, `setuptools`
+included), CI and the Docker build both **enforce** it (`pip install --no-deps
+-r requirements.lock`) and then verify the result, `tools/check_lockfile.py
+--verify` compares the closure rather than raw equality, and the vulnerability
+gate runs through `tools/check_vulns.py` as designed. Verified from a clean venv:
+145 packages install from the lock with no TensorFlow and no CUDA. The gate was
+negative-tested against a wrong pin, a removed package and an unlocked declared
+dependency.
+
+### Fixed — sign-off finding: readiness failed a serving instance
+During the staging-equivalent live run, `/ready` returned `503` **while** the
+instance completed a full transcription: Demucs has no weights in that
+environment, so its passthrough fallback ran, and demucs was treated as
+readiness-critical. Readiness now gates on transcription only; a quality
+fallback shows up as `status: degraded` plus a new `degraded_components` field
+in `/health`, and the instance stays in rotation. Regression tests assert both
+directions (no transcription backend → `503`, no Demucs → `200` + degraded).
+
+### Fixed — silent failure modes
+Ten sites that swallowed errors now log, record health, and either recover or
+escalate. Worst offenders: `.env` parsing, saved preferences (corrupt JSON),
+YourMT3+ clone timeout/failure, malformed token parsing, and "Cannot read audio"
+with an empty reason. A silent `except Exception: return None` around the
+checkpoint clone had been hiding every download failure.
+
+### Fixed — concurrency and resource leaks
+- **Per-request session directories** (`mkdtemp`) — concurrent requests could
+  previously collide in one shared output directory and return each other's
+  files.
+- **Bounded queue** (`MAX_CONCURRENT_REQUESTS`, `QUEUE_MAX_SIZE`) — the task
+  queue is no longer unbounded.
+- **Pruning** — stale sessions (1 h) and stale uploads (`UPLOAD_TTL_SEC`, 900 s)
+  are removed; upload temp files previously accumulated forever.
+- Verified no memory leak: 0.1 MB/run steady state, 0.03 MB retained by
+  `tracemalloc` over 20 runs (an initial +4.7 MB/run reading was cold-start
+  allocator growth, disproved by warm-up-controlled re-measurement).
+
+### Added — supply chain and CI
+- **`requirements.lock`** — 118 exact pins covering the runtime closure of the
+  declared dependencies (CPU-only: neither the TensorFlow tree nor the NVIDIA
+  CUDA redistributables are locked, because neither is installed), with the
+  two-stage Basic Pitch install documented in the header. CI and the Docker
+  build both *enforce* it (`pip install --no-deps -r requirements.lock`) and
+  then verify the result, so a range-based install cannot silently drift.
+  `tools/check_lockfile.py` verifies the installed environment against it
+  (`--write` regenerates, `--static` checks declared deps without installing).
+- **Vulnerability gate** — `tools/check_vulns.py` audits the *installed* set
+  (pip-audit cannot resolve `requirements.txt`/lock here without pulling the
+  unused TensorFlow tree) and fails on any advisory that is not accepted in
+  `.pip-audit-ignore` with a reason **and an unexpired date**. Negative-tested:
+  an expired entry and a removed acceptance both fail the gate.
+- **YourMT3+ checkpoint pinning** — `YOURMT3_REVISION` selects a commit sha;
+  `YOURMT3_REQUIRE_PINNED_REVISION=1` makes an unpinned download a hard error
+  (fail closed). Unpinned runs log a warning.
+- **CI rewritten** as a gate pipeline: ruff/black → repo guards → gitleaks +
+  bandit → CPU-torch install → lockfile verify → CVE gate → mypy → pytest with
+  coverage → failure simulations → backend smoke → `validate.py`.
+
+### Changed — container
+- `Dockerfile` rewritten: non-root `tabagent` user, application code read-only
+  at runtime with only the cache and output directories writable, CPU-only torch
+  index, exec-form `CMD`, `/ready` healthcheck, and the lockfile check enforced
+  during the build.
+
+### Changed — docs
+- **README corrections.** The example tablature is now the real output of
+  `python main.py examples/guitar_solo.wav` (the previous sample was
+  hand-written and did not match any code path). The 50 MB / 5 min limits are
+  scoped to the web UI — the CLI has none. The GPU claim is conditional:
+  acceleration is advertised only on a ZeroGPU Space that reports
+  `SPACES_ZERO_GPU=1`, or with `DEVICE=cuda`; the default image is CPU-only.
+  Test counts, project structure, env vars and the deploy file list are current.
+- **`docs/RUNBOOK.md`** — deploy, health semantics, alert thresholds, log
+  queries, rollback (with a rehearsal procedure), dependency refresh, capacity
+  notes, known failure modes, release checklist.
+- **`docs/ACCEPTED_RISKS.md`** — every accepted advisory with exposure analysis
+  and expiry, plus the non-CVE design risks (no auth, no rate limiting, LGPL
+  `soxr`).
+- **`SECURITY.md`** — threat model, scope, disclosure process, built-in controls.
+- **`THIRD_PARTY_NOTICES.md`** — license table verified from installed metadata;
+  the two reciprocal licenses (`soxr` LGPL-2.1-or-later, `tqdm` MPL-2.0) with
+  the reasoning that keeps MIT distribution valid. No GPL/AGPL anywhere.
+- **`.env.example`** now documents `YOURMT3_REVISION`,
+  `YOURMT3_REQUIRE_PINNED_REVISION` and `SPACES_ZERO_GPU` (11 variables, all
+  verified as read by the code).
+
+### Merged from upstream before release
+- `main` moved to `4061696` (PRs #7 and #8: drop-tuning pitch floor, chord
+  octave deduplication, low-string preference, device config, same-second
+  session disambiguation). Conflicts in `app.py`, `index.xml` and `README.md`
+  were resolved by keeping this branch's `mkdtemp` session isolation — which
+  subsumes #8's retry loop and closes its check-then-create window — while
+  taking every upstream pipeline improvement (tuning-derived `min_pitch`,
+  runtime `DEVICE` plumbing, suno aggressiveness, `prefer_low_strings`).
+  `#8`'s new test asserted the counter-suffix naming scheme; it now asserts
+  distinct-directory behaviour instead.
+
+### New gate — `check_lockfile.py --interpreter`
+Added after CI's second failure: the lock installed fine on 3.11 (where it was
+generated) but 16 of its pins declare `requires-python >= 3.11`, so the 3.10 CI
+runner could not install it at all, while the image (3.12) was unaffected. The
+check queries each pin's `requires-python` and fails with the offending list;
+verified negative by forcing the interpreter down to 3.10, which reproduced
+exactly the CI error. It runs in CI before the install and first thing in the
+Docker build.
+
+### Changed — Python floor is now 3.11
+The pinned dependency set requires it: 16 of the 118 pins declare
+`requires-python >= 3.11` (numpy, scipy, onnxruntime, pandas, starlette,
+scikit-learn, tornado, ...). The image has always been `python:3.12-slim`, but
+CI ran 3.10 and `pyproject.toml` advertised 3.10+, so the locked set could not
+actually be installed on the documented minimum. CI now runs 3.12 (the shipped
+interpreter), `requires-python` is `>=3.11`, and
+`tools/check_lockfile.py --interpreter` fails the build when any pin cannot
+install on the running Python.
+
+### Verified
+- 301 tests pass; 93% statement coverage (259 before this pass, 269 on `main`).
+- `ruff`, `black --check`, `mypy` clean; `bandit` 0 issues across the tree.
+- 15/15 failure-mode simulations behave as documented, including a live
+  network-timeout fallback from YourMT3+ to Basic Pitch.
+- Performance baseline recorded: 604 MB RSS after imports, tablature DP 5–7 µs
+  per note (5 000 notes ≈ 31 ms), Basic Pitch 0.82 s for a 2 s clip.
+
+### Not verified (honestly)
+- No Docker daemon in the audit environment: the image build, the staging
+  deploy and the rollback drill are validated by static guards and by running
+  every command outside the container, not by a real build. See
+  `artifacts/phase7_signoff.json` → `unverifiable`.
+- The YourMT3+ happy path cannot run here (gated multi-GB checkpoint, no Hub
+  egress); it is instrumented and fails closed instead.
+
 ## 1.0.1 (2026-10-04)
 
 Fixes from the documentation/reality audit (`AUDIT.md`). No API changes.

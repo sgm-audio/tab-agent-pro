@@ -35,6 +35,18 @@ IPython>=8.0,<8.30
 fastapi>=0.110
 uvicorn>=0.27
 
+# Provides the `hf` CLI used by tools/deploy_space.sh. It is also pulled in
+# transitively by gradio, but the deployment script depends on it, so it is
+# declared explicitly rather than inherited.
+huggingface_hub[cli]>=0.23
+
+# Transcription runtime. The Dockerfile pins these to the CPU-only index; the
+# PyPI resolver would otherwise pull NVIDIA CUDA wheels for a CPU Space.
+# Declared here so a non-Docker install matches the image and so the demucs
+# requirement (torch>=2.1) is satisfiable without an implicit upgrade.
+torch>=2.1
+torchaudio>=2.1
+
 # NOTE: transformers is intentionally NOT a dependency. YourMT3+ is a custom
 # PyTorch Lightning model (see agents.py) and the code never imports
 # transformers, so it was only ~1 GB of dead weight in the image.

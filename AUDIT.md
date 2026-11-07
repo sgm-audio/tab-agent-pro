@@ -598,3 +598,55 @@ python -c "import inspect,huggingface_hub as h; print('resume_download' in inspe
 
 *No application code was modified by this audit; all fixes above are proposals. `AUDIT.md` already appears in
 `.pre-commit-config.yaml`'s `exclude:` list, so this file will not trip the local hooks.*
+
+---
+
+# Appendix C — Post-fix verification (2026-11-07, `1.1.0`)
+
+This appendix records the outcome of the fixes proposed above, re-tested from
+scratch as part of the production-readiness chain. Every row was re-run in this
+environment; nothing here is asserted from the proposal text.
+
+**Machine-readable versions:** `artifacts/phase2_verification.json` (claim-by-claim),
+`artifacts/phase3_build_report.json`, `artifacts/phase4_test_report.json`,
+`artifacts/phase5_hardening_report.json`, `artifacts/phase7_signoff.json`.
+
+| # | Original finding | Status | Evidence |
+|---|---|---|---|
+| P0-1 | Web UI button raised on every click | ✅ Fixed | Real HTTP round-trip via `gradio_client` `/process_audio` completes in ~24 s and returns a 6-file ZIP; integration tests cover the same handler |
+| P0-2 | Docker image could not transcribe (missing `mir_eval`/`resampy`) | ✅ Fixed | Both pinned in `requirements.txt`/`pyproject.toml`; `tools/check_docker_install.py` guards the install line and the runtime imports in CI |
+| P0-3 | Container bound `127.0.0.1` | ✅ Fixed | Defaults to `HOST=0.0.0.0`, reads `PORT`; `ENV HOST/PORT` in the image; live probe on `0.0.0.0:7860` succeeded |
+| P0-4 | "Zero GPU acceleration" claim was false | ✅ Fixed | `GPU_AVAILABLE` requires `SPACES_ZERO_GPU=1`; README wording is now conditional and explicit about the default CPU image |
+| P1-1 | No `/ready`; health said `up` with all backends dead | ✅ Fixed | Forcing every backend unavailable now yields `/health` `down` and `/ready` `503`; container healthcheck probes `/ready` |
+| P1-2 | `--profile` / `--instrument` parsed but ignored | ✅ Fixed | Profiles applied and persisted, instrument filters the pipeline; regression tests plus `tools/check_reaper_settings.py` |
+| P1-3 | REAPER settings inert | ✅ Fixed | `Settings.lua` values reach `main.py` as CLI flags; guarded in CI |
+| P1-4 | `index.xml` malformed for ReaPack | ✅ Fixed | Structure re-derived from `reapack-index` source (`main` = Action List section, `file` = installed filename); commit fixed to `e7cd693f…`; `tools/check_index.py` validates it, including that the commit resolves |
+| P1-5 | One unplayable note discarded the whole track | ✅ Fixed | Notes outside the range are skipped, counted in `last_skipped_notes` and reported; regression test |
+| P1-6 | Tablature rendering collapsed adjacent cells | ✅ Fixed | `1215` → `12 15`, shared-string collisions rendered as `15/8p`, grid keeps full instrument width |
+| P1-7 | "Full mix" only works with Demucs weights | 🟡 Documented | Falls back to raw-audio passthrough with logged warnings instead of failing silently; the limitation is stated in the README and runbook |
+| P1-8 | `validate.py` unusable (exit 1, silent) | ✅ Fixed | Prints PASS/FAIL/SKIP, exits non-zero only on real failures; 101 pass / 0 fail / 1 skip |
+| P1-9 | Wheel shipped no modules | ✅ Fixed | `py-modules` declared; `pip install .` installs the app |
+| P2-1 | `.env.example` documented unread variables | ✅ Fixed | 11 variables, all referenced; `tools/check_env_example.py` fails CI otherwise |
+| P2-2 | Stale counts / drift in README | ✅ Fixed | 290 tests, real tablature sample, scoped limits, conditional GPU wording, current deploy file list |
+| P2-3 | Live Space ran a stale revision | 🟡 Process fix | `tools/deploy_space.sh` now ships the exact file list including `requirements.lock`, with an `hf` preflight; deploying remains an operator step needing a token |
+
+## New findings discovered by this pass (not in the original audit)
+
+| # | Severity | Finding | Resolution |
+|---|---|---|---|
+| N-1 | **High** | `/health` reported `up` even when every backend failed to load — readiness and liveness were conflated | Split into `/health` (liveness + detail) and `/ready` (503 until a required backend loads); health is now derived from recorded operations |
+| N-2 | **High** | Concurrent web requests shared one output directory and could return each other's files | Per-request `mkdtemp` sessions; verified with concurrent HTTP requests |
+| N-3 | **High** | The YourMT3+ checkpoint was loaded from a mutable branch with no pin | `YOURMT3_REVISION` + fail-closed `YOURMT3_REQUIRE_PINNED_REVISION`; single `torch.load` call verified `weights_only=True` |
+| N-4 | Medium | Metrics retention was unbounded (slow memory growth on a long-lived server) | Fixed-size window per stage |
+| N-5 | Medium | Upload temp files were never pruned | `UPLOAD_TTL_SEC` pruner (900 s) plus session pruner (1 h) |
+| N-6 | Medium | Ten `except ...: pass` / bare-return sites hid real failures (dotenv, preferences, clone timeout, token parsing) | All log structured context and update component health |
+| N-7 | Medium | No dependency pinning or vulnerability gate; `pip-audit -r requirements.txt` could not even resolve | `requirements.lock` (118 pins: the runtime closure, CPU-only, no CUDA/TensorFlow) + `tools/check_vulns.py` against the installed set, with expiring acceptances |
+| N-8 | Medium | Container ran as root with a writable application tree | Non-root user, read-only code, writable cache/output only |
+| N-9 | Low | The README's tablature example did not correspond to any code path | Replaced with verbatim output |
+| N-10 | Low | `setuptools` advisories invite an automatic "fix" that breaks transcription | Pin documented as load-bearing with a reproduced failure in `docs/ACCEPTED_RISKS.md` |
+
+**Verdict:** 14 of the 16 findings re-checked here are fully fixed; 2 (P1-7
+Demucs-weights dependency, P2-3 live-Space drift) are documented with the
+limitation stated rather than hidden, and P2-3 additionally gained a deployment
+script that ships the exact file list. Ten further issues were found and fixed
+during this pass. No finding is left silently unaddressed.
