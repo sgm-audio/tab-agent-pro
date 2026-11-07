@@ -52,6 +52,14 @@ EXCLUDED = {
 # they are still recorded so drift is visible.
 PINNED_ELSEWHERE = ("torch", "torchaudio")
 
+
+def _public_version(name: str, version: str) -> str:
+    """Drop the PEP 440 local tag (such as +cpu) for index-pinned packages."""
+    if name in PINNED_ELSEWHERE:
+        return version.split("+", 1)[0]
+    return version
+
+
 # The PyPI torch wheel declares the NVIDIA CUDA runtime as a conditional
 # requirement on Linux; the CPU-only wheel this project ships does not. The image
 # and CI both install from https://download.pytorch.org/whl/cpu precisely to
@@ -328,7 +336,7 @@ def check_verify(extra: list[str] | None = None) -> int:
     drifted = sorted(
         f"{name} locked=={locked[name]} but installed=={current[name]}"
         for name in closure & set(locked) & set(current)
-        if locked[name] != current[name]
+        if _public_version(name, locked[name]) != _public_version(name, current[name])
     )
     absent = sorted(
         f"{name} locked=={locked[name]} but not installed" for name in closure - set(current)
@@ -413,7 +421,7 @@ def main(argv: list[str] | None = None) -> int:
     changed = sorted(
         f"{name} {locked[name]} -> {current[name]}"
         for name in set(locked) & set(current)
-        if locked[name] != current[name]
+        if _public_version(name, locked[name]) != _public_version(name, current[name])
     )
 
     if missing or stale or changed:
