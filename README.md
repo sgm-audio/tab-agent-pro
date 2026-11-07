@@ -80,7 +80,7 @@ Basic Pitch with its ONNX backend plus the stem-separation stack.
 ### Validation
 
 ```bash
-python -m pytest tests/            # 265 tests
+python -m pytest tests/            # 269 tests
 python validate.py                 # end-to-end checklist (PASS/FAIL summary)
 
 python tools/check_index.py           # ReaPack index format
@@ -213,7 +213,7 @@ is what runs.
 ├── validate.py            # End-to-end checklist
 ├── reaper/                # REAPER Lua scripts
 ├── tools/                 # Config/deployment guard scripts
-├── tests/                 # 265 tests
+├── tests/                 # 269 tests
 ├── examples/              # Demo audio
 ├── pyproject.toml         # Project config
 ├── Dockerfile             # HF Spaces deployment
