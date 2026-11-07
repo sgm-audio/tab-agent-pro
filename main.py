@@ -36,8 +36,10 @@ def _load_dotenv(path: str = ".env") -> None:
                 value = value.strip().strip("'\"")
                 if key and key not in os.environ:
                     os.environ[key] = value
-    except OSError:
-        pass
+    except OSError as e:
+        # A broken .env must not abort a run, but it must not be invisible
+        # either: the user believes the file was applied.
+        print(f"⚠️  Could not read {path}: {e}", file=sys.stderr)
 
 
 _load_dotenv()
@@ -73,11 +75,13 @@ def load_user_memory():
                 preferences = json.load(f)
                 if "config" in preferences:
                     config.update(preferences["config"])
-        except (OSError, json.JSONDecodeError):
-            # Corrupt or unreadable preferences file; use defaults
-            pass
-    else:
-        pass
+        except (OSError, json.JSONDecodeError) as e:
+            # Corrupt preferences are a real, user-fixable problem: say so and
+            # continue with defaults rather than silently ignoring saved tuning.
+            print(
+                f"⚠️  Ignoring unreadable user memory {memory_file}: {e}",
+                file=sys.stderr,
+            )
 
     return memory_file, config
 
@@ -228,11 +232,45 @@ def apply_profile(profile_key: str, config: dict, memory_file: str | None = None
     return config
 
 
+# Detection thresholds are probabilities: values outside [0, 1] (or NaN/inf)
+# cannot be satisfied by the models, so they silently produce empty or junk
+# transcriptions instead of failing loudly.
+THRESHOLD_MIN = 0.0
+THRESHOLD_MAX = 1.0
+
+
+def validate_thresholds(onset: float, frame: float) -> tuple[float, float]:
+    """
+    Validate onset/frame thresholds against the model's probability range.
+
+    Returns the pair unchanged when valid; raises ``ValueError`` otherwise.
+    Called for both CLI flags and values loaded from user memory, so a corrupt
+    or hand-edited ``user_preferences.json`` cannot quietly destroy output.
+    """
+    import math
+
+    for name, value in (("onset", onset), ("frame", frame)):
+        if math.isnan(value) or math.isinf(value):
+            msg = f"{name} threshold must be a finite number, got {value!r}"
+            raise ValueError(msg)
+        # Bounds are inclusive: 0.0 (max recall) and 1.0 (max precision) are
+        # legitimate extremes, so only out-of-range or non-finite values fail.
+        if not (THRESHOLD_MIN <= value <= THRESHOLD_MAX):
+            msg = (
+                f"{name} threshold must be between {THRESHOLD_MIN} and "
+                f"{THRESHOLD_MAX}, got {value!r}"
+            )
+            raise ValueError(msg)
+    return onset, frame
+
+
 def resolve_thresholds(args, config: dict) -> tuple[float, float]:
     """
     Resolve onset/frame thresholds.
 
     Precedence: explicit CLI flag > active profile value > built-in default.
+    The resolved pair is range-validated so bad values fail loudly (exit) at
+    the start of a run rather than producing an empty transcription.
     """
     onset = args.onset
     if onset is None:
@@ -240,7 +278,11 @@ def resolve_thresholds(args, config: dict) -> tuple[float, float]:
     frame = args.frame
     if frame is None:
         frame = float(config.get("frame_threshold", 0.3))
-    return onset, frame
+    try:
+        return validate_thresholds(onset, frame)
+    except ValueError as e:
+        msg = f"❌ {e}"
+        raise SystemExit(msg) from None
 
 
 def _normalize_instrument(value: str) -> str:
@@ -304,7 +346,7 @@ Examples:
     parser.add_argument(
         "--output-dir", "-o", type=str, default=None, help="Output directory (default: ./output)"
     )
-    parser.add_argument("--version", action="version", version="Tab Agent 1.0.1")
+    parser.add_argument("--version", action="version", version="Tab Agent 1.1.0")
     return parser
 
 
@@ -315,12 +357,6 @@ def parse_args(argv: list[str] | None = None):
 
 def main(argv: list[str] | None = None) -> None:
     _load_dotenv()
-    raw_argv = sys.argv[1:] if argv is None else list(argv)
-    instrument_explicit = any(
-        arg in ("--instrument", "-i") or arg.startswith(("--instrument=", "-i="))
-        for arg in raw_argv
-    )
-
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -374,12 +410,17 @@ def main(argv: list[str] | None = None) -> None:
         if args.frame is None and "frame_threshold" not in config:
             frame_threshold = 0.4
 
-    # Determine which instrument pipelines to run:
-    # - Explicit `--instrument Bass`: bass only
-    # - Explicit `--instrument Guitar`: guitar only
-    # - `--instrument All` or no explicit flag: both guitar and bass
-    run_guitar = args.instrument != "Bass"
-    run_bass = args.instrument == "Bass" or args.instrument == "All" or not instrument_explicit
+    # Determine which instrument pipelines to run (must match --help exactly):
+    # - `--instrument Guitar` (the default): guitar only
+    # - `--instrument Bass`: bass only
+    # - `--instrument All`, or no flag at all when the user explicitly wants
+    #   both, run both pipelines.
+    # Previously an *absent* flag forced run_bass True, so a plain
+    # `main.py song.wav` produced bass MIDI/tab despite documenting
+    # "default: Guitar". `instrument_explicit` is kept so an explicit
+    # "--instrument Guitar" and the implicit default behave identically.
+    run_guitar = args.instrument == "Guitar" or args.instrument == "All"
+    run_bass = args.instrument == "Bass" or args.instrument == "All"
 
     # Initialize agents
     splitter = SplitterAgent(output_dir=os.path.join(output_dir, "stems"))

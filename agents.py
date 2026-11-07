@@ -56,6 +56,24 @@ YMT3_AVAILABLE = False
 YOURMT3_EXP_ID = "notask_all_cross_v6_xk2_amp0811_gm_ext_plus_nops_b72"
 YOURMT3_CKPT_NAME = "model.ckpt"
 
+# Supply-chain hardening for the downloaded checkpoint.
+#
+# `torch.load(weights_only=True)` is used, but the unpickler has had bypasses
+# (e.g. PYSEC-2026-1856) in the torch versions this project can install, and
+# `revision="main"` means the bytes can change without review. A commit pin
+# makes the download reproducible and reviewable.
+#
+# Set YOURMT3_REVISION to the commit sha of mimbres/YourMT3 you have reviewed.
+# When it is unset the download follows "main" and a warning is logged;
+# set YOURMT3_REQUIRE_PINNED_REVISION=1 to make an unpinned download a hard
+# failure (recommended for production).
+YOURMT3_REVISION = os.getenv("YOURMT3_REVISION") or ""
+REQUIRE_PINNED_REVISION = os.getenv("YOURMT3_REQUIRE_PINNED_REVISION", "").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
 # HuggingFace Hub for checkpoint downloads (with resume)
 try:
     from huggingface_hub import snapshot_download
@@ -71,6 +89,17 @@ try:
     TORCHAUDIO_AVAILABLE = True
 except ImportError:
     TORCHAUDIO_AVAILABLE = False
+
+# Publish backend availability at import time so /health and /ready are
+# meaningful before the first request (previously every component read
+# "unknown" and the tracker reported "up" regardless of what imported).
+health.set_component("basic_pitch", "available" if BASIC_PITCH_AVAILABLE else "unavailable")
+health.set_component(
+    "demucs",
+    "available" if DEMUCS_API_AVAILABLE else "unavailable",
+)
+# Past startup: status is now derived from the components above.
+health.set_status("up")
 
 
 # ============================================================================
@@ -384,12 +413,34 @@ class EarAgent:
             return None
 
         cache_root = os.path.expanduser(os.getenv("CACHE_DIR", "~/.cache/tab_agent"))
+
+        revision = YOURMT3_REVISION or "main"
+        if not YOURMT3_REVISION:
+            if REQUIRE_PINNED_REVISION:
+                get_logger("ear_agent").error(
+                    "yourmt3_revision_unpinned",
+                    detail=(
+                        "YOURMT3_REQUIRE_PINNED_REVISION is set but YOURMT3_REVISION is "
+                        "empty: refusing to download an unreviewed checkpoint"
+                    ),
+                )
+                health.set_component("yourmt3", "error: revision not pinned")
+                return None
+            get_logger("ear_agent").warning(
+                "yourmt3_revision_unpinned",
+                revision="main",
+                detail=(
+                    "downloading from 'main'; set YOURMT3_REVISION to a reviewed "
+                    "commit sha for a reproducible, reviewable checkpoint"
+                ),
+            )
+
         try:
             # Only the checkpoint the loader actually opens is fetched: the repo
             # holds several multi-GB checkpoints.
             return snapshot_download(
                 repo_id=model_id,  # nosec B615
-                revision="main",
+                revision=revision,
                 local_files_only=False,
                 max_workers=4,
                 token=os.getenv("HF_TOKEN") or None,
@@ -477,6 +528,12 @@ class EarAgent:
                     timeout=120,
                 )
                 if result.returncode != 0:
+                    get_logger("ear_agent").warning(
+                        "yourmt3_git_clone_failed",
+                        returncode=result.returncode,
+                        stderr=(result.stderr or "").strip()[-300:],
+                    )
+                    health.set_component("yourmt3", "error: clone failed")
                     return None
 
             # Code is under amt/src/ in the Space repo
@@ -488,6 +545,12 @@ class EarAgent:
             ]
             missing = [f for f in essentials if not os.path.exists(os.path.join(code_root, f))]
             if missing:
+                get_logger("ear_agent").warning(
+                    "yourmt3_codebase_incomplete",
+                    code_root=code_root,
+                    missing=missing,
+                )
+                health.set_component("yourmt3", "error: incomplete codebase")
                 return None
 
             if code_root not in sys.path:
@@ -495,9 +558,24 @@ class EarAgent:
 
             return code_root
 
+        # Every failure below is a real, diagnosable condition: log it instead
+        # of returning None silently (the caller can only fall back to Basic
+        # Pitch, and the operator needs to know why).
         except subprocess.TimeoutExpired:
+            get_logger("ear_agent").warning("yourmt3_clone_timeout", cache=self.YOURMT3_CACHE)
+            health.set_component("yourmt3", "error: clone timeout")
             return None
-        except Exception:
+        except OSError as e:
+            get_logger("ear_agent").warning(
+                "yourmt3_clone_os_error", cache=self.YOURMT3_CACHE, error=str(e)
+            )
+            health.set_component("yourmt3", "error: clone failed")
+            return None
+        except Exception as e:  # never let YourMT3 setup break a transcription run
+            get_logger("ear_agent").error(
+                "yourmt3_codebase_failed", exc=e, cache=self.YOURMT3_CACHE
+            )
+            health.set_component("yourmt3", f"error: {type(e).__name__}")
             return None
 
     def _import_and_load_model(self, checkpoint_dir, code_dir) -> None:
@@ -559,11 +637,16 @@ class EarAgent:
 
             last_ckpt = dir_info.get("last_ckpt_path")
             if last_ckpt and os.path.exists(last_ckpt):
+                # weights_only=True refuses arbitrary pickle payloads. It has had
+                # bypasses, hence the revision pin above; `map_location` keeps the
+                # tensor copy on the selected device. If a future checkpoint
+                # requires a full pickle, do NOT relax this: verify the source
+                # revision and load it in a sandbox instead.
                 checkpoint = torch.load(
                     last_ckpt,
                     map_location=self.device,
                     weights_only=True,
-                )  # If YourMT3+ checkpoint requires full pickle, re-evaluate with source verification
+                )
                 state_dict = checkpoint.get("state_dict", checkpoint)
                 state_dict = {k: v for k, v in state_dict.items() if "pitchshift" not in k}
                 model.load_state_dict(state_dict, strict=False)
@@ -1105,6 +1188,7 @@ class EarAgent:
         active_notes: dict[int, tuple[float, int]] = {}  # pitch -> (start, velocity)
         current_time = 0.0
         i = 0
+        skipped = 0
 
         while i < len(tokens):
             tok = tokens[i].upper()
@@ -1141,8 +1225,26 @@ class EarAgent:
 
                 else:
                     i += 1
-            except (ValueError, IndexError):
+            except (ValueError, IndexError) as e:
+                # A malformed token used to be skipped silently, so a decoding
+                # change upstream could silently produce an empty transcription.
+                # Count and report them instead of losing the signal.
+                skipped += 1
+                if skipped <= 5:
+                    get_logger("ear_agent").warning(
+                        "mt3_token_skipped",
+                        token=tok,
+                        detail=str(e),
+                        index=i,
+                    )
                 i += 1
+
+        if skipped:
+            get_logger("ear_agent").warning(
+                "mt3_tokens_skipped_total",
+                skipped=skipped,
+                parsed_notes=len(notes),
+            )
 
         # Close any still-active notes at end of sequence
         final_time = current_time + (min_duration * 2)

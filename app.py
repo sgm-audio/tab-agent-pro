@@ -16,15 +16,17 @@ import contextlib
 import os
 import shutil
 import signal
+import sys
 import tempfile
 import time
+import uuid
 import zipfile
 from datetime import datetime
 from pathlib import Path
 
 import gradio as gr
 
-from monitoring import health
+from monitoring import get_logger, health
 
 
 def _load_dotenv(path: str = ".env") -> None:
@@ -42,15 +44,19 @@ def _load_dotenv(path: str = ".env") -> None:
                 value = value.strip().strip("'\"")
                 if key and key not in os.environ:
                     os.environ[key] = value
-    except OSError:
-        pass
+    except OSError as e:
+        print(f"⚠️  Could not read {path}: {e}", file=sys.stderr)
 
 
 _load_dotenv()
 
 # Import Tab Agent modules
 from agents import EarAgent, SplitterAgent, TabAgent  # noqa: E402
-from main import export_tab_to_json, export_tab_to_txt  # noqa: E402
+from main import (  # noqa: E402
+    export_tab_to_json,
+    export_tab_to_txt,
+    validate_thresholds,
+)
 from suno_postprocessor import SunoNotePostprocessor, process_suno_audio  # noqa: E402
 
 # Zero GPU support: the decorator only reserves a GPU on ZeroGPU Spaces. On CPU
@@ -79,6 +85,15 @@ BASS_TUNING = [23, 28, 33, 38, 43]  # B0-E1-A1-D2-G2
 MAX_FILE_SIZE_MB = 50
 MAX_DURATION_SEC = 300  # 5 minutes
 ALLOWED_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aiff"}
+
+# A single transcription holds Demucs + a Basic Pitch model in memory, so the
+# queue must be bounded: an unbounded queue turns a busy Space into an OOM kill
+# instead of a fast "busy" signal. One worker by default (each request is
+# CPU-bound and already uses multiple threads internally).
+MAX_CONCURRENT_REQUESTS = max(1, int(os.getenv("MAX_CONCURRENT_REQUESTS", "1") or "1"))
+QUEUE_MAX_SIZE = int(os.getenv("QUEUE_MAX_SIZE", "32") or "32")
+# Uploads older than this are removed on each request (seconds).
+UPLOAD_TTL_SEC = int(os.getenv("UPLOAD_TTL_SEC", "900") or "900")
 
 # PyTorch device for the transcription agent ("auto", "cpu", "cuda", "mps")
 DEVICE = os.getenv("DEVICE", "auto")
@@ -154,7 +169,16 @@ def _validate_audio(audio_path: Path) -> str | None:
         if duration > MAX_DURATION_SEC:
             return f"Audio too long: {duration:.0f}s (max {MAX_DURATION_SEC}s)"
     except Exception as e:
-        return f"Cannot read audio: {e}"
+        # Many decoder failures stringify to "": always name the error type so
+        # the user gets an actionable message instead of "Cannot read audio: ".
+        detail = str(e).strip() or type(e).__name__
+        get_logger("app").warning(
+            "audio_validation_failed",
+            file=audio_path.name,
+            error_type=type(e).__name__,
+            detail=detail,
+        )
+        return f"Cannot read audio ({audio_path.suffix or 'no extension'}): {detail}"
     return None
 
 
@@ -172,8 +196,12 @@ def _load_saved_config() -> dict:
             data = json.load(f)
         if isinstance(data, dict) and isinstance(data.get("config"), dict):
             return dict(data["config"])
-    except (OSError, ValueError):
-        pass
+    except (OSError, ValueError) as e:
+        # Saved preferences are optional; report the problem and use defaults.
+        print(
+            f"⚠️  Ignoring unreadable saved preferences {prefs_path}: {e}",
+            file=sys.stderr,
+        )
     return {}
 
 
@@ -198,10 +226,12 @@ def _process_audio_impl(
         return f"❌ {error}", None
 
     try:
-        # Create unique output directory
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        session_dir = OUTPUT_DIR / f"session_{timestamp}"
-        session_dir.mkdir(exist_ok=True)
+        # Create a unique output directory. A second-resolution timestamp plus
+        # exist_ok=True let two concurrent requests share one directory, so one
+        # user's ZIP could contain another user's files and outputs were
+        # silently overwritten. mkdtemp guarantees a fresh, atomic directory.
+        cleanup_stale_uploads()
+        session_dir = Path(tempfile.mkdtemp(prefix="session_", dir=str(OUTPUT_DIR)))
 
         # Track processing time for ETA / README accuracy
         start_time = time.time()
@@ -232,8 +262,14 @@ def _process_audio_impl(
         # Adjust thresholds for AI-generated audio (saved profile takes precedence)
         default_onset = 0.6 if is_suno else 0.5
         default_frame = 0.4 if is_suno else 0.3
-        onset_threshold = float(user_config.get("onset_threshold", default_onset))
-        frame_threshold = float(user_config.get("frame_threshold", default_frame))
+        try:
+            onset_threshold, frame_threshold = validate_thresholds(
+                float(user_config.get("onset_threshold", default_onset)),
+                float(user_config.get("frame_threshold", default_frame)),
+            )
+        except ValueError as e:
+            # A corrupt user_preferences.json must not silently degrade output.
+            return f"❌ Invalid saved configuration: {e}", None
 
         # Initialize agents
         splitter = SplitterAgent(output_dir=str(session_dir / "stems"))
@@ -391,9 +427,23 @@ def _process_audio_impl(
     except Exception as e:
         from monitoring import get_logger
 
-        get_logger("app").error("transcription_failed", exc=e)
+        # Full detail (type + message) goes to the structured log; the web user
+        # gets a correlation-friendly message without internal paths or
+        # library internals.
+        error_ref = uuid.uuid4().hex[:8]
+        get_logger("app").error(
+            "transcription_failed",
+            exc=e,
+            error_ref=error_ref,
+            file=Path(audio_file).name,
+        )
         health.record_request(success=False, details=f"transcribe: {Path(audio_file).name}")
-        error_msg = f"❌ **Transcription failed:** {e}"
+        error_msg = (
+            "❌ **Transcription failed.**\n\n"
+            f"Error reference: `{error_ref}` (quote this in a bug report). "
+            "The server log has the full traceback. Check `/health` → "
+            "`components` to confirm a transcription backend is available."
+        )
         return error_msg, None
 
 
@@ -528,13 +578,37 @@ def create_app() -> gr.Blocks:
     from fastapi import FastAPI
 
     demo = create_ui()
-    demo.queue()
+    # Bounded queue: refuse work beyond MAX_CONCURRENT_REQUESTS + QUEUE_MAX_SIZE
+    # rather than accepting unlimited jobs and exhausting memory.
+    demo.queue(
+        default_concurrency_limit=MAX_CONCURRENT_REQUESTS,
+        max_size=QUEUE_MAX_SIZE,
+    )
 
     parent_app = FastAPI()
 
     @parent_app.get("/health")
     async def health_endpoint():
+        """Liveness + component detail. Always 200 while the process serves."""
         return health.as_dict()
+
+    @parent_app.get("/ready")
+    async def ready_endpoint():
+        """
+        Readiness probe: 200 only when a usable transcription backend exists.
+
+        Liveness (/health) answers "is the process alive"; readiness answers
+        "can it actually do its job". Conflating them is what let an image with
+        no working backend pass its container healthcheck.
+        """
+        from fastapi.responses import JSONResponse
+
+        payload = {
+            "ready": health.is_ready(),
+            "status": health.effective_status(),
+            "components": health.component_health(),
+        }
+        return JSONResponse(status_code=200 if payload["ready"] else 503, content=payload)
 
     @parent_app.get("/health/metrics")
     async def metrics_endpoint():
@@ -566,17 +640,59 @@ def handle_signal(sig, frame) -> None:
 atexit.register(cleanup_temp_dirs)
 
 
-def cleanup_stale_sessions(max_age_hours: int = 1) -> None:
+def cleanup_stale_sessions(max_age_hours: float = 1) -> None:
     """Remove session directories older than max_age_hours."""
     if not OUTPUT_DIR.exists():
         return
     now = datetime.now()
     for d in OUTPUT_DIR.iterdir():
         if d.is_dir():
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(OSError):
                 age = now - datetime.fromtimestamp(d.stat().st_mtime)
                 if age.total_seconds() > max_age_hours * 3600:
                     shutil.rmtree(d, ignore_errors=True)
+
+
+def _now_timestamp() -> float:
+    """Wall-clock seconds, isolated so datetime patching cannot affect pruning."""
+    import datetime as _dt
+
+    return _dt.datetime.now().timestamp()
+
+
+def cleanup_stale_uploads(max_age_sec: int = UPLOAD_TTL_SEC) -> int:
+    """
+    Delete uploaded files Gradio has finished with but left on disk.
+
+    Gradio writes each upload to a temp directory and never removes it, so a
+    long-lived Space accumulates every audio file ever submitted. Only files
+    inside the Gradio temp root are touched, and only once they are older than
+    ``max_age_sec`` so in-flight requests are not disturbed. Returns the number
+    of entries removed.
+    """
+    removed = 0
+    root = Path(tempfile.gettempdir()) / "gradio"
+    if not root.is_dir():
+        return 0
+    # Use a real clock so tests (or callers) that patch app.datetime cannot
+    # turn pruning into a no-op or delete live uploads.
+    cutoff = _now_timestamp() - max_age_sec
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return 0
+    for entry in entries:
+        with contextlib.suppress(OSError):
+            if entry.stat().st_mtime >= cutoff:
+                continue
+            if entry.is_dir():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                entry.unlink(missing_ok=True)
+            removed += 1
+    if removed:
+        get_logger("app").info("uploads_pruned", count=removed, ttl_s=max_age_sec)
+    return removed
 
 
 def serve() -> None:

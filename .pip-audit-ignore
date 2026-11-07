@@ -1,0 +1,111 @@
+# Accepted-risk advisories for the shipped dependency set.
+#
+# Format:  <ADVISORY-ID>  <EXPIRY YYYY-MM-DD>  <reason>
+#
+# Enforced by tools/check_vulns.py in CI. An entry that passes its expiry date
+# fails the build, so nothing can be swept under the rug indefinitely. Do not
+# add entries without a concrete reason and a reviewer.
+
+# --- torch 2.5.1 -------------------------------------------------------------
+# Dockerfile pins torch==2.5.1 from the CPU-only index. demucs 4.1.0 requires
+# torch>=2.1 and basic-pitch's ONNX runtime is validated against the 2.5 line.
+#
+# Exposure analysis for this project:
+#   * No user-supplied model files. The only torch.load() call loads the
+#     YourMT3+ checkpoint, with weights_only=True, from a revision that can be
+#     pinned via YOURMT3_REVISION (see agents.py; YOURMT3_REQUIRE_PINNED_REVISION=1
+#     makes an unpinned download a hard failure).
+#   * No torch.jit / torch.compile / inductor usage in the codebase, which is
+#     what most of these advisories target.
+#   * The web UI is the only untrusted-input surface, and audio never reaches a
+#     deserialiser.
+# Upgrading past 2.5 is a deliberate, tested change (CUDA/ONNX compatibility),
+# tracked as the Q1 dependency-refresh item.
+PYSEC-2025-41  2027-01-31  torch<2.6 torch.load RCE: not reachable (weights_only + pinned revision, no user model files)
+PYSEC-2025-189 2027-01-31  torch auto-grad/tensor API issue; not reachable from this pipeline's fixed call graph
+PYSEC-2025-190 2027-01-31  torch issue in training-only code paths; this project only runs inference
+PYSEC-2025-191 2027-01-31  torch 2.6.0 issue affects training paths; inference-only usage
+PYSEC-2025-193 2027-01-31  torch critical advisory in a torch.jit-adjacent path; torch.jit is never imported here
+PYSEC-2025-192 2027-01-31  torch critical advisory in torch.jit; torch.jit is never imported here
+PYSEC-2025-194 2027-01-31  torch.jit.script advisory; torch.jit is never imported here
+PYSEC-2025-195 2027-01-31  torch critical advisory tied to a function not used by this pipeline
+PYSEC-2025-198 2027-01-31  nn.PairwiseDistance numerical bug; not used by the transcription models
+PYSEC-2025-203 2027-01-31  torch.linalg.lu DoS; not called by this pipeline
+PYSEC-2025-204 2027-01-31  torch.rot90 advisory; not called by this pipeline
+PYSEC-2025-205 2027-01-31  proxy_tensor DoS; not used (no torch.compile)
+PYSEC-2025-206 2027-01-31  nan_to_num integer overflow; not called by this pipeline
+PYSEC-2025-207 2027-01-31  cummin + inductor bug; inductor is not used
+PYSEC-2025-208 2027-01-31  Conv2d buffer overflow; the audio models are 1-D/transformers
+PYSEC-2025-209 2027-01-31  Tensor DoS advisory; not reachable from this pipeline
+PYSEC-2026-139 2027-01-31  torch advisory with no upstream fix version yet; inference-only usage
+PYSEC-2026-1856 2027-01-31  weights_only unpickler bypass: mitigated by revision pinning + no user-supplied checkpoints
+PYSEC-2026-1970 2027-01-31  torch function-level advisory in a path this pipeline does not call
+PYSEC-2026-2286 2027-01-31  torch advisory fixed in 2.10; blocked by the demucs/ONNX compatibility line
+PYSEC-2026-1970 2027-01-31  duplicate advisory identifier reported by two feeds
+PYSEC-2025-191 2027-01-31  duplicate listing (torch training path)
+PYSEC-2025-41  2027-01-31  duplicate listing (torch.load RCE)
+
+# --- pillow 12.3.0 -----------------------------------------------------------
+# pillow is NOT a declared dependency: it reaches the environment transitively
+# through the TensorFlow chain that basic-pitch declares and this project does
+# not install (basic-pitch is installed --no-deps; the ONNX backend needs no
+# image library). It is not imported by any module here — there is no
+# `import PIL` / `from PIL` anywhere in the source tree.
+# Recorded rather than removed so a future dependency that really does need
+# pillow is an explicit, reviewed decision.
+PYSEC-2026-4326 2027-01-31  pillow: not imported by this project and absent from the shipped image
+PYSEC-2026-4327 2027-01-31  pillow: not imported by this project and absent from the shipped image
+PYSEC-2026-4328 2027-01-31  pillow: not imported by this project and absent from the shipped image
+PYSEC-2026-4329 2027-01-31  pillow: not imported by this project and absent from the shipped image
+PYSEC-2026-4330 2027-01-31  pillow: not imported by this project and absent from the shipped image
+PYSEC-2026-4331 2027-01-31  pillow: not imported by this project and absent from the shipped image
+PYSEC-2026-4332 2027-01-31  pillow: not imported by this project and absent from the shipped image
+PYSEC-2026-4333 2027-01-31  pillow: not imported by this project and absent from the shipped image
+PYSEC-2026-4334 2027-01-31  pillow: not imported by this project and absent from the shipped image
+PYSEC-2026-4335 2027-01-31  pillow: not imported by this project and absent from the shipped image
+PYSEC-2026-4336 2027-01-31  pillow: not imported by this project and absent from the shipped image
+PYSEC-2026-4337 2027-01-31  pillow: not imported by this project and absent from the shipped image
+PYSEC-2026-4338 2027-01-31  pillow: not imported by this project and absent from the shipped image
+PYSEC-2026-4339 2027-01-31  pillow: not imported by this project and absent from the shipped image
+PYSEC-2026-4340 2027-01-31  pillow: not imported by this project and absent from the shipped image
+PYSEC-2026-4341 2027-01-31  pillow: not imported by this project and absent from the shipped image
+PYSEC-2026-4342 2027-01-31  pillow: not imported by this project and absent from the shipped image
+PYSEC-2026-4343 2027-01-31  pillow: not imported by this project and absent from the shipped image
+CVE-2026-112390 2027-01-31  pillow: not imported by this project and absent from the shipped image
+CVE-2026-112391 2027-01-31  pillow: not imported by this project and absent from the shipped image
+CVE-2026-112392 2027-01-31  pillow: not imported by this project and absent from the shipped image
+CVE-2026-112393 2027-01-31  pillow: not imported by this project and absent from the shipped image
+CVE-2026-112395 2027-01-31  pillow: not imported by this project and absent from the shipped image
+CVE-2026-112399 2027-01-31  pillow: not imported by this project and absent from the shipped image
+CVE-2026-112400 2027-01-31  pillow: not imported by this project and absent from the shipped image
+CVE-2026-112401 2027-01-31  pillow: not imported by this project and absent from the shipped image
+CVE-2026-112404 2027-01-31  pillow: not imported by this project and absent from the shipped image
+CVE-2026-112406 2027-01-31  pillow: not imported by this project and absent from the shipped image
+CVE-2026-112891 2027-01-31  pillow: not imported by this project and absent from the shipped image
+CVE-2026-112892 2027-01-31  pillow: not imported by this project and absent from the shipped image
+CVE-2026-112893 2027-01-31  pillow: not imported by this project and absent from the shipped image
+CVE-2026-112894 2027-01-31  pillow: not imported by this project and absent from the shipped image
+CVE-2026-112895 2027-01-31  pillow: not imported by this project and absent from the shipped image
+CVE-2026-112897 2027-01-31  pillow: not imported by this project and absent from the shipped image
+CVE-2026-112899 2027-01-31  pillow: not imported by this project and absent from the shipped image
+CVE-2026-112900 2027-01-31  pillow: not imported by this project and absent from the shipped image
+CVE-2026-96638  2027-01-31  pillow: not imported by this project and absent from the shipped image
+CVE-2026-96640  2027-01-31  pillow: not imported by this project and absent from the shipped image
+CVE-2026-96778  2027-01-31  pillow: not imported by this project and absent from the shipped image
+GHSA-78g4-xqwv-q3g8 2027-01-31 pillow: not imported by this project and absent from the shipped image
+
+# --- setuptools 66.x/80.x (<81) ---------------------------------------------
+# The pin is load-bearing: pretty_midi 0.2.10 does `import pkg_resources`, which
+# setuptools removed in 81. Verified in an isolated venv that setuptools 84.1.0
+# makes `import pretty_midi` fail, which breaks the Basic Pitch transcription
+# fallback entirely (see SECURITY.md, "setuptools is pinned deliberately").
+# All three advisories target package-installation code paths
+# (package_index / sdist building), which this project never runs at runtime.
+PYSEC-2025-49   2027-01-31  setuptools package_index path traversal: install-time only, never runs in the image
+PYSEC-2026-1918 2027-01-31  setuptools package_index RCE: install-time only, never runs in the image
+PYSEC-2026-3447 2027-01-31  setuptools sdist build advisory: this project builds wheels only, not sdists
+GHSA-xmj3-9gf7-h52w 2027-01-31 setuptools Windows wheel .dist-info advisory; image is Linux and never installs wheels at runtime
+
+# --- black 26.5.1 ------------------------------------------------------------
+# Development-only formatter, not installed in the image (pyproject dev extra).
+CVE-2026-114134 2027-01-31  black: dev-only formatter, not present in the deployed image

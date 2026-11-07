@@ -18,11 +18,27 @@ Usage:
 from __future__ import annotations
 
 import datetime as dt
+import subprocess  # nosec B404
 import sys
 import xml.etree.ElementTree as ET  # nosec B405
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# ReaPack::Index::Source::SECTIONS (reapack-index lib/reapack/index/source.rb).
+# The `main` attribute selects which Action List section(s) a script appears in.
+ACTION_LIST_SECTIONS = {
+    "main",
+    "midi_editor",
+    "midi_inlineeditor",
+    "midi_eventlisteditor",
+    "mediaexplorer",
+    "crossfade_editor",
+    "all",
+    "windows",
+    "darwin",
+    "linux",
+}
 
 
 def _tag(element: ET.Element) -> str:
@@ -36,6 +52,29 @@ def _children(element: ET.Element) -> list[ET.Element]:
 
 def _findall(element: ET.Element, tag: str) -> list[ET.Element]:
     return [child for child in _children(element) if _tag(child) == tag]
+
+
+def _commit_exists(sha: str) -> bool:
+    """
+    True when ``sha`` resolves to an object in the local git repository.
+
+    Skips (returns True) when git or a git repository is unavailable, so the
+    check never produces a false failure in a source tarball or in CI checkouts
+    that were exported without history.
+    """
+    try:
+        result = subprocess.run(  # nosec B603, B607
+            ["git", "-C", str(ROOT), "cat-file", "-t", sha],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    if result.returncode != 0:
+        # Outside a git checkout the sha cannot be resolved: do not fail.
+        return "not a git repository" in (result.stderr or "").lower()
+    return result.stdout.strip() in {"commit", "tree", "tag"}
 
 
 def check_index(path: Path) -> list[str]:
@@ -60,6 +99,13 @@ def check_index(path: Path) -> list[str]:
     commit = root.get("commit") or ""
     if len(commit) != 40 or any(c not in "0123456789abcdef" for c in commit.lower()):
         problems.append("root is missing a 40-character commit sha (written by reapack-index)")
+    elif not _commit_exists(commit):
+        # ReaPack resolves every <source> against this sha over raw GitHub, so a
+        # stale/unreachable sha means the install silently 404s for end users.
+        problems.append(
+            f"commit {commit[:8]} does not exist in this repository — every <source> "
+            "URL would 404 for ReaPack clients (regenerate the index at release time)"
+        )
 
     for category in _findall(root, "category"):
         # The published format only has <reapack> packages inside a category;
@@ -113,10 +159,33 @@ def check_index(path: Path) -> list[str]:
                 if not target:
                     problems.append(f"{name} {vname}: empty <source>")
                     continue
-                if source.get("main") is None and source.get("file") is None:
+                # `file` names the filename the package is installed as and is
+                # written unconditionally by reapack-index (source.rb: FILE =
+                # 'file'). `main` is the *Action List section*, not a filename:
+                # its value must be one of SECTIONS or a platform list.
+                # Validating only "main or file" is what let a broken index
+                # (no file=, main=<filename>) pass this check before.
+                if not source.get("file"):
                     problems.append(
-                        f"{name} {vname}: <source> needs a main= or file= attribute "
-                        "(the installed filename)"
+                        f"{name} {vname}: <source> needs a file= attribute naming the "
+                        "installed filename (reapack-index always writes it)"
+                    )
+                else:
+                    filename = source.get("file") or ""
+                    if package.get("type") == "script" and not filename.endswith(".lua"):
+                        problems.append(
+                            f"{name} {vname}: file={filename!r} is not a .lua script name"
+                        )
+                    if "/" in filename or "\\" in filename:
+                        problems.append(
+                            f"{name} {vname}: file={filename!r} must be a bare filename"
+                        )
+                section = source.get("main")
+                if section is not None and section not in ACTION_LIST_SECTIONS:
+                    problems.append(
+                        f"{name} {vname}: main={section!r} is not an Action List section "
+                        f"({', '.join(sorted(ACTION_LIST_SECTIONS))}); the installed "
+                        "filename belongs in file="
                     )
                 # The body must be a downloadable location: an absolute URL, or a
                 # repo-relative path that exists next to the index.

@@ -1,7 +1,6 @@
 """Coverage tests for app.py."""
 
 import asyncio
-from datetime import datetime as _real_dt
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -28,12 +27,36 @@ def test_create_app_health() -> None:
     resp = asyncio.run(_test())
     assert resp.status_code == 200
     data = resp.json()
-    assert data["status"] == "up"
+    # /health is liveness: always 200, and the status must be *derived* from
+    # component health (never hard-coded to "up").
+    assert data["status"] in {"up", "degraded", "down", "starting"}
+    assert isinstance(data["ready"], bool)
     assert "uptime_s" in data
     assert "components" in data
     assert "requests" in data
     assert "python_version" in data
     assert "platform" in data
+
+
+def test_ready_endpoint_reports_backend_availability() -> None:
+    """/ready must be 200 only when a usable transcription backend exists."""
+    app = _import_app()
+    from httpx import ASGITransport, AsyncClient
+
+    from monitoring import health
+
+    fastapi_app = app.create_app()
+    transport = ASGITransport(app=fastapi_app)
+
+    async def _probe():
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.get("/ready"), health.is_ready()
+
+    resp, ready = asyncio.run(_probe())
+    assert resp.status_code == (200 if ready else 503)
+    body = resp.json()
+    assert body["ready"] is ready
+    assert set(body["components"]) == {"basic_pitch"}
 
 
 def test_create_app_metrics() -> None:
@@ -183,37 +206,41 @@ def test_process_audio_impl_suno_true() -> None:
 
 
 def test_process_audio_impl_zip_with_files() -> None:
+    """
+    A real run writes its artifacts into a fresh session directory.
+
+    The directory name used to be `session_<second-resolution timestamp>`, so
+    two requests in the same second shared it; it is now a unique tempdir.
+    """
     app = _import_app()
 
-    fixed = _real_dt(2024, 6, 15, 10, 30, 0)
-    with patch("app.datetime") as mock_dt:
-        mock_dt.now.return_value = fixed
+    before = {p.name for p in app.OUTPUT_DIR.iterdir() if p.is_dir()}
+    mock_progress = MagicMock()
+    with (
+        patch("app.process_suno_audio", return_value=("/tmp/test.wav", False, {})),
+        patch("app._validate_audio", return_value=None),
+        patch("app.SplitterAgent") as sc,
+        patch("app.EarAgent") as ec,
+        patch("app.SunoNotePostprocessor") as sgc,
+        patch("app.TabAgent") as tc,
+        patch("app.export_tab_to_txt"),
+        patch("app.export_tab_to_json"),
+    ):
+        sc.return_value.separate_stems.return_value = {"guitar": "/tmp/g.wav"}
+        sc.return_value.process_guitars.return_value = _make_mock_stems()
+        ec.return_value.transcribe_stem.return_value = _mock_notes()
+        ec.return_value.humanize_and_clean.return_value = _mock_notes()
+        sgc.return_value.process.return_value = _mock_notes()
+        tc.return_value.generate_tab.return_value = [
+            {"string": 0, "fret": 3, "technique": "pick", "start_time": 0.0}
+        ]
 
-        ts = "20240615_103000"
-        session_dir = app.OUTPUT_DIR / f"session_{ts}"
-        session_dir.mkdir(parents=True, exist_ok=True)
-        (session_dir / "test_output.mid").write_text("fake midi")
+        msg, _zp = app._process_audio_impl("d.wav", "Guitar", True, True, True, mock_progress)
 
-        mock_progress = MagicMock()
-        with (
-            patch("app.process_suno_audio", return_value=("/tmp/test.wav", False, {})),
-            patch("app._validate_audio", return_value=None),
-            patch("app.SplitterAgent") as sc,
-        ):
-            sc.return_value.separate_stems.return_value = {"guitar": "/tmp/g.wav"}
-            sc.return_value.process_guitars.return_value = _make_mock_stems()
-            with patch("app.EarAgent") as ec:
-                ec.return_value.transcribe_stem.return_value = _mock_notes()
-                ec.return_value.humanize_and_clean.return_value = _mock_notes()
-                with patch("app.SunoNotePostprocessor") as sgc:
-                    sgc.return_value.process.return_value = _mock_notes()
-                    with patch("app.TabAgent") as tc:
-                        tc.return_value.generate_tab.return_value = [
-                            {"string": 0, "fret": 3, "technique": "pick", "start_time": 0.0}
-                        ]
-                        with patch("app.export_tab_to_txt"), patch("app.export_tab_to_json"):
-                            msg, _zp = app._process_audio_impl(
-                                "d.wav", "Guitar", True, True, True, mock_progress
-                            )
-        assert "Complete!" in msg
-        assert session_dir.exists()
+    assert "Complete!" in msg
+    after = {p.name for p in app.OUTPUT_DIR.iterdir() if p.is_dir()}
+    created = after - before
+    assert created, "a new session directory must be created for each request"
+    assert len(created) == 1
+    # Unique, collision-resistant names (mkdtemp), not a shared timestamp.
+    assert created.pop().startswith("session_")

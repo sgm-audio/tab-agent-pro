@@ -41,12 +41,23 @@ python app.py
 > grep -v '^basic-pitch' requirements.txt > /tmp/req-nobp.txt && pip install -r /tmp/req-nobp.txt
 > ```
 
+**Reproducible install:** `requirements.lock` pins all 160 distributions that
+actually ship (including transitive ones). CI and the Docker build both fail if
+the installed environment drifts from it:
+
+```bash
+pip install -r requirements.txt
+python tools/check_lockfile.py          # verify
+python tools/check_lockfile.py --write  # regenerate after a dependency change
+```
+
 The server binds to `HOST` (default `0.0.0.0` so containers and Hugging Face
 Spaces can reach it) and listens on `PORT` (default `7860`). Both are read from
 the environment or from an optional `.env` file — see `.env.example`.
 
-Uploads are limited to 50 MB, 5 minutes, and the formats
-`.wav .mp3 .flac .ogg .m4a .aiff`; results are returned as a ZIP archive.
+The **web UI** limits uploads to 50 MB and 5 minutes and accepts
+`.wav .mp3 .flac .ogg .m4a .aiff`; results are returned as a ZIP archive. The CLI
+has no such limits — it processes whatever file you point it at, however long.
 
 ### CLI
 
@@ -80,13 +91,16 @@ Basic Pitch with its ONNX backend plus the stem-separation stack.
 ### Validation
 
 ```bash
-python -m pytest tests/            # 259 tests
+python -m pytest tests/            # 290 tests, 91% coverage
 python validate.py                 # end-to-end checklist (PASS/FAIL summary)
 
 python tools/check_index.py           # ReaPack index format
 python tools/check_env_example.py     # every documented env var is read
 python tools/check_docker_install.py  # basic-pitch pin + required deps
 python tools/check_reaper_settings.py # REAPER settings reach main.py
+python tools/check_lockfile.py        # installed env == requirements.lock
+python tools/check_vulns.py           # advisories: none unaccepted/expired
+python tools/simulate_failures.py     # failure modes still behave (15 checks)
 ```
 
 ---
@@ -124,7 +138,7 @@ graph LR
 - **Technique detection** — Slides (`s`), hammer-ons (`h`), pull-offs (`p`) annotated in output
 - **Plug-and-play presets** — 8 profiles (standard, drop D, classical, 4/5-string bass, Suno cleanup, live band) applied with `--profile`
 - **REAPER integration** — Run transcription from the DAW via ReaPack, with the settings-script values passed through as CLI flags
-- **Runs on CPU or GPU** — CPU-only by default; the Gradio app uses Hugging Face Zero GPU when deployed on a ZeroGPU Space (`spaces.GPU` is a no-op elsewhere)
+- **CPU by default, GPU optional** — the transcription stack runs on CPU out of the box. Acceleration applies only in two narrow cases and is never claimed otherwise: on a Hugging Face **ZeroGPU** Space the web handler is wrapped in `spaces.GPU` *only* when the runtime reports `SPACES_ZERO_GPU=1`, and `DEVICE=cuda` moves torch work to a local GPU. Everything else is CPU, and the default Docker image installs CPU-only torch.
 
 > **YourMT3+ status:** `agents.py` can load the YourMT3+ checkpoint from the
 > Hugging Face Hub and falls back to Basic Pitch whenever it is unavailable. The
@@ -145,6 +159,12 @@ Environment variables (all optional; `.env` is read by `app.py`, `main.py`, and 
 | `DEVICE` | `auto` | Torch device for transcription: `auto`, `cpu`, `cuda`, `mps` |
 | `CACHE_DIR` | `~/.cache/tab_agent` | Model cache (YourMT3+ checkpoint and codebase) |
 | `HF_TOKEN` | — | Hugging Face token for gated/private model repos |
+| `MAX_CONCURRENT_REQUESTS` | `1` | Transcriptions allowed in flight at once |
+| `QUEUE_MAX_SIZE` | `32` | Bounded backlog; requests beyond this are rejected |
+| `UPLOAD_TTL_SEC` | `900` | Upload temp files older than this are pruned |
+| `YOURMT3_REVISION` | — | Checkpoint commit sha. Empty = `main` **with a warning** |
+| `YOURMT3_REQUIRE_PINNED_REVISION` | — | `1` makes an unpinned checkpoint a hard error (fail closed) |
+| `SPACES_ZERO_GPU` | — | Set by Hugging Face on ZeroGPU Spaces; never set by hand |
 
 Preset profiles configure tuning, thresholds and processing behaviour. Applying a
 profile writes it to user memory so later runs (and the REAPER scripts) reuse it:
@@ -169,15 +189,18 @@ Threshold precedence: explicit CLI flag → active profile → built-in default.
 
 ### Example tablature output
 
-```
-=== Guitar - lead Tablature ===
+Produced by `python main.py examples/guitar_solo.wav` (verbatim, three of the
+nine generated files omitted):
 
-E|3 5 7 8s 10 12
-B|-
-G|-
-D|0 2
-A|-
-E|-
+```
+=== Lead Guitar Tablature ===
+
+E|-  -  -      -  -  -      -  22 -
+B|-  -  15/19h 22 24 -      20 -  -
+G|-  -  -      -  -  -      -  -  -
+D|-  -  -      -  21 24/17p 21 -  -
+A|-  -  -      -  -  -      -  -  19
+E|12 15 19     22 24 -      -  -  -
 
 Legend: s=slide, h=hammer-on, p=pull-off
 ```
@@ -213,12 +236,32 @@ is what runs.
 ├── validate.py            # End-to-end checklist
 ├── reaper/                # REAPER Lua scripts
 ├── tools/                 # Config/deployment guard scripts
-├── tests/                 # 259 tests
+├── tests/                 # 290 tests
 ├── examples/              # Demo audio
+├── docs/RUNBOOK.md        # Deploy / monitor / rollback / dependency refresh
+├── docs/ACCEPTED_RISKS.md # Every known risk, with exposure and expiry
+├── SECURITY.md            # Threat model + disclosure process
+├── requirements.lock      # 160 exact pins (what actually ships)
+├── .pip-audit-ignore      # Accepted advisories; CI fails when one expires
 ├── pyproject.toml         # Project config
-├── Dockerfile             # HF Spaces deployment
+├── Dockerfile             # HF Spaces deployment (non-root, read-only code)
 └── CHANGELOG.md           # Release history
 ```
+
+---
+
+## Security
+
+- **Reporting:** see [`SECURITY.md`](SECURITY.md) — private advisories, not public issues.
+- **Threat model:** single-tenant, unauthenticated by design; the hosting platform is the trust boundary.
+- **Known risks:** [`docs/ACCEPTED_RISKS.md`](docs/ACCEPTED_RISKS.md) lists every accepted
+  advisory with exposure analysis and an expiry date that turns CI red.
+- **Gates:** `bandit` (SAST), `gitleaks` (secrets), `pip-audit` against the installed
+  set (`tools/check_vulns.py`), and a lockfile check — all blocking in CI.
+- **Dependencies:** `setuptools<81` is pinned deliberately (81+ removes
+  `pkg_resources`, which `pretty_midi` needs) — do not "fix" it.
+- **Model provenance:** set `YOURMT3_REVISION` to a reviewed sha and
+  `YOURMT3_REQUIRE_PINNED_REVISION=1` in production.
 
 ---
 
@@ -234,9 +277,13 @@ export HF_TOKEN=hf_...
 ```
 
 This uploads the exact files the Space needs (`Dockerfile`, `requirements.txt`,
-`agents.py`, `app.py`, `main.py`, `monitoring.py`, `init_memory.py`,
-`suno_postprocessor.py`, `README.md`, `examples/`) — the file list the Docker Space runtime
-expects. Health checks are available at `/health` and `/health/metrics`.
+`requirements.lock`, `agents.py`, `app.py`, `main.py`, `monitoring.py`,
+`init_memory.py`, `suno_postprocessor.py`, `README.md`, `examples/`) — the file
+list the Docker Space runtime expects. Health checks: `/health` (liveness +
+component detail, including `degraded_components`), `/ready` (503 until a
+transcription backend is loadable — used by the container healthcheck), and
+`/health/metrics` (per-stage timings). Demucs loss degrades output quality but
+does not fail readiness, because separation has a passthrough fallback.
 
 ---
 

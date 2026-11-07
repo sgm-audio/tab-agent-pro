@@ -10,23 +10,35 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  PYTHON_VERSION: "3.10"
+  RUFF_VERSION: "0.11.5"
+  BLACK_VERSION: "26.5.1"
+  MYPY_VERSION: "2.4.0"
+  BANDIT_VERSION: "1.9.4"
+  PIP_AUDIT_VERSION: "2.10.1"
+
 jobs:
   ci:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        # tools/check_index.py verifies the index.xml commit resolves; a shallow
+        # clone of the tip is enough, but tags help when the pin is a tag.
+        fetch-depth: 0
 
-    # --- Fast-fail: cheap lint/format checks first (~15s) ---
-    - name: Set up Python 3.10
+    # --- Fast-fail: cheap static checks first (~20s, no heavy installs) ---
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
       uses: actions/setup-python@v5
       with:
-        python-version: "3.10"
+        python-version: ${{ env.PYTHON_VERSION }}
         cache: pip
 
     - name: Install lint tools
-      run: pip install "ruff==0.11.5" "black==26.5.1"
+      run: pip install "ruff==${RUFF_VERSION}" "black==${BLACK_VERSION}" "mypy==${MYPY_VERSION}" "bandit==${BANDIT_VERSION}" "pip-audit==${PIP_AUDIT_VERSION}"
 
     - name: Lint with Ruff
       run: ruff check .
@@ -34,7 +46,8 @@ jobs:
     - name: Check formatting with Black
       run: black --check .
 
-    - name: Validate ReaPack index
+    # --- Repository guards (no third-party deps needed) ---
+    - name: Validate ReaPack index (format + commit pin resolves)
       run: python tools/check_index.py
 
     - name: Check .env.example keys are honoured
@@ -43,7 +56,23 @@ jobs:
     - name: Check Docker install line
       run: python tools/check_docker_install.py
 
-    # --- Heavy installs only after lint passes ---
+    - name: Check lockfile covers the shipped dependency set
+      # Compares requirements.lock against the *declared* set; runs before the
+      # heavy install so drift fails fast.
+      run: python tools/check_lockfile.py --static
+
+    # --- Security gates (fail the build, not just report) ---
+    - name: Secret scan
+      uses: gitleaks/gitleaks-action@v2
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      continue-on-error: false
+
+    - name: Static security scan with Bandit
+      # tests/ excluded; B101 (assert) there is expected and noisy.
+      run: bandit -r . -x ./tests,./.git,./.venv -ll -f txt
+
+    # --- Heavy installs only after the cheap gates pass ---
     - name: Install system dependencies
       run: |
         sudo apt-get update
@@ -62,14 +91,28 @@ jobs:
         pip install -r /tmp/req-nobp.txt
 
     - name: Install remaining dev dependencies
-      run: pip install "mypy==2.4.0" pytest pytest-cov "bandit==1.9.4" lupa
+      run: pip install pytest pytest-cov lupa
+
+    - name: Verify lockfile matches the installed environment
+      run: python tools/check_lockfile.py
+
+    - name: Dependency vulnerability scan (shipped set)
+      # Audits the *installed environment*, i.e. what the image actually ships.
+      # Scanning requirements.txt would instead report the TensorFlow tree that
+      # basic-pitch declares but this project deliberately does not install.
+      # Accepted, documented exceptions live in .pip-audit-ignore.
+      run: |
+        pip-audit --progress-spinner off --format columns \
+          --ignore-vuln-file .pip-audit-ignore
 
     - name: Type check with mypy
-      continue-on-error: false
       run: mypy .
 
     - name: Run tests with coverage
       run: pytest tests/ -v --cov=. --cov-report=term-missing
+
+    - name: Failure-mode simulations
+      run: python tools/simulate_failures.py
 
     # Proves the shipped Docker install line produces a working backend.
     - name: Smoke test transcription backend
@@ -86,8 +129,3 @@ jobs:
 
     - name: Run validation suite (quick)
       run: python validate.py --quick
-
-    - name: Security scan with Bandit
-      # Exclude tests/; B101 (assert) there is expected and noisy.
-      run: bandit -r . -x ./tests,./.git,./.venv
-

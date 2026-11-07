@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tab-agent-pro"
-version = "1.0.1"
+version = "1.1.0"
 description = "AI-powered guitar/bass tablature transcription"
 requires-python = ">=3.10"
 dependencies = [
@@ -28,6 +28,11 @@ dependencies = [
     "IPython>=8.0,<8.30",
     "fastapi>=0.110",
     "uvicorn>=0.27",
+    "huggingface_hub[cli]>=0.23",
+    # agents.py imports torch/torchaudio at module scope; demucs requires
+    # torch>=2.1. The Dockerfile pins the CPU-only index explicitly.
+    "torch>=2.1",
+    "torchaudio>=2.1",
 ]
 
 [project.optional-dependencies]

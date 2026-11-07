@@ -17,6 +17,13 @@ set -euo pipefail
 SPACE="${1:?usage: deploy_space.sh <owner>/<space> [revision]}"
 REVISION="${2:-main}"
 
+# The `hf` CLI comes from huggingface_hub[cli]; fail with a clear message
+# instead of a bare "command not found" (docs-audit H8).
+if ! command -v hf >/dev/null 2>&1; then
+  echo "The 'hf' CLI is required: pip install 'huggingface_hub[cli]'" >&2
+  exit 1
+fi
+
 if [ -z "${HF_TOKEN:-}" ]; then
   echo "HF_TOKEN is not set. Create a write token at https://huggingface.co/settings/tokens" >&2
   exit 1
@@ -28,6 +35,7 @@ cd "$DIR"
 FILES=(
   Dockerfile
   requirements.txt
+  requirements.lock
   agents.py
   app.py
   main.py
