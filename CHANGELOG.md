@@ -20,6 +20,29 @@ the web UI or the REAPER scripts.
 - **Error references.** A failed web request returns a short `error_ref`; the
   full exception stays in the logs, matched by that reference.
 
+### Fixed — the lockfile gate could not have passed in CI
+CI failed on "Verify lockfile matches the installed environment", and it was
+right to. Three defects, all in the gate rather than the code:
+
+- The lock had been generated inside a development virtualenv, so it contained
+  lint/test/audit tooling (27 packages) that is never shipped, and it **omitted
+  `setuptools`**, which is declared and is load-bearing for `pretty_midi`.
+- It also locked the 13 NVIDIA CUDA redistributables and `triton`, which the
+  CPU-only image deliberately does not install — so `pip install -r
+  requirements.lock` would try to pull ~2.5 GB of CUDA back in.
+- The check compared lock and environment for *exact equality* while the
+  install came from *ranges*, so it could never pass. A later step also called
+  `pip-audit --ignore-vuln-file`, a flag that does not exist in pip-audit.
+
+The lock is now the runtime closure (118 packages, CPU-only, `setuptools`
+included), CI and the Docker build both **enforce** it (`pip install --no-deps
+-r requirements.lock`) and then verify the result, `tools/check_lockfile.py
+--verify` compares the closure rather than raw equality, and the vulnerability
+gate runs through `tools/check_vulns.py` as designed. Verified from a clean venv:
+145 packages install from the lock with no TensorFlow and no CUDA. The gate was
+negative-tested against a wrong pin, a removed package and an unlocked declared
+dependency.
+
 ### Fixed — sign-off finding: readiness failed a serving instance
 During the staging-equivalent live run, `/ready` returned `503` **while** the
 instance completed a full transcription: Demucs has no weights in that
@@ -49,8 +72,12 @@ checkpoint clone had been hiding every download failure.
   allocator growth, disproved by warm-up-controlled re-measurement).
 
 ### Added — supply chain and CI
-- **`requirements.lock`** — 160 exact pins for what actually ships, with the
-  two-stage Basic Pitch install documented in the header.
+- **`requirements.lock`** — 118 exact pins covering the runtime closure of the
+  declared dependencies (CPU-only: neither the TensorFlow tree nor the NVIDIA
+  CUDA redistributables are locked, because neither is installed), with the
+  two-stage Basic Pitch install documented in the header. CI and the Docker
+  build both *enforce* it (`pip install --no-deps -r requirements.lock`) and
+  then verify the result, so a range-based install cannot silently drift.
   `tools/check_lockfile.py` verifies the installed environment against it
   (`--write` regenerates, `--static` checks declared deps without installing).
 - **Vulnerability gate** — `tools/check_vulns.py` audits the *installed* set

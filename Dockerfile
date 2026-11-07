@@ -34,11 +34,13 @@ RUN pip install --no-deps "basic-pitch>=0.4.0,<0.5" "mir_eval>=0.6" "resampy>=0.
     grep -v '^basic-pitch' requirements.txt > /tmp/req-nobp.txt && \
     pip install -r /tmp/req-nobp.txt
 
-# Fail the build if a newly added dependency was not locked (keeps
-# requirements.lock an honest description of the shipped set).
+# requirements.txt is range-based, so the resolve above can drift from what was
+# tested. Re-apply the lock (--no-deps: satisfied packages are skipped and
+# TensorFlow cannot be pulled back in), then fail the build if the installed
+# set and the lock disagree.
 COPY requirements.lock pyproject.toml ./
 COPY tools ./tools
-RUN python tools/check_lockfile.py --static
+RUN pip install --no-deps -r requirements.lock && python tools/check_lockfile.py
 
 # Stage 2: Runtime — lean, no build toolchain
 FROM python:3.12-slim

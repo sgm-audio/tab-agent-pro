@@ -90,20 +90,33 @@ jobs:
         grep -v '^basic-pitch' requirements.txt > /tmp/req-nobp.txt
         pip install -r /tmp/req-nobp.txt
 
+    - name: Enforce the locked versions
+      # requirements.txt is range-based, so installing it can silently drift
+      # from what was tested and what the image ships. Re-apply the lock with
+      # --no-deps (already-satisfied packages are skipped, nothing is
+      # re-resolved, and TensorFlow cannot sneak back in).
+      run: pip install --no-deps -r requirements.lock
+
     - name: Install remaining dev dependencies
       run: pip install pytest pytest-cov lupa
 
     - name: Verify lockfile matches the installed environment
-      run: python tools/check_lockfile.py
+      # Tooling installed *after* this step (pytest, mypy, pip-audit, ruff...)
+      # is intentionally not shipped, so it is ignored explicitly (--extra).
+      # Both requirements.txt and pyproject.toml use ranges, so this compares
+      # the dependency *closure* of the declared set rather than raw equality:
+      # an exact-equality check can never pass against a range-based install.
+      run: |
+        python tools/check_lockfile.py --verify --extra pytest --extra pytest-cov
 
     - name: Dependency vulnerability scan (shipped set)
       # Audits the *installed environment*, i.e. what the image actually ships.
       # Scanning requirements.txt would instead report the TensorFlow tree that
       # basic-pitch declares but this project deliberately does not install.
       # Accepted, documented exceptions live in .pip-audit-ignore.
-      run: |
-        pip-audit --progress-spinner off --format columns \
-          --ignore-vuln-file .pip-audit-ignore
+      # pip-audit has no ignore-file flag, so tools/check_vulns.py runs the
+      # audit and enforces .pip-audit-ignore (reason + expiry per advisory).
+      run: python tools/check_vulns.py
 
     - name: Type check with mypy
       run: mypy .

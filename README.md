@@ -41,9 +41,11 @@ python app.py
 > grep -v '^basic-pitch' requirements.txt > /tmp/req-nobp.txt && pip install -r /tmp/req-nobp.txt
 > ```
 
-**Reproducible install:** `requirements.lock` pins all 160 distributions that
-actually ship (including transitive ones). CI and the Docker build both fail if
-the installed environment drifts from it:
+**Reproducible install:** `requirements.lock` pins the 118 distributions that
+actually ship — the runtime closure of the declared dependencies, including
+transitive ones, and excluding the TensorFlow tree and NVIDIA CUDA wheels that
+this project never installs. CI and the Docker build install from it and then
+fail if the environment drifts from it:
 
 ```bash
 pip install -r requirements.txt
@@ -241,7 +243,7 @@ is what runs.
 ├── docs/RUNBOOK.md        # Deploy / monitor / rollback / dependency refresh
 ├── docs/ACCEPTED_RISKS.md # Every known risk, with exposure and expiry
 ├── SECURITY.md            # Threat model + disclosure process
-├── requirements.lock      # 160 exact pins (what actually ships)
+├── requirements.lock      # 118 exact pins (runtime closure, CPU-only)
 ├── .pip-audit-ignore      # Accepted advisories; CI fails when one expires
 ├── pyproject.toml         # Project config
 ├── Dockerfile             # HF Spaces deployment (non-root, read-only code)

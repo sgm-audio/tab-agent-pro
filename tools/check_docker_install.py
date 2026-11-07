@@ -112,10 +112,17 @@ def check_hardening() -> None:
             "~2.5 GB of unusable NVIDIA CUDA packages"
         )
 
-    if "check_lockfile.py --static" not in text:
+    # The build must (a) re-apply the lock so the installed set matches what was
+    # tested, and (b) fail when the installed set and the lock disagree.
+    if "pip install --no-deps -r requirements.lock" not in text:
         failures.append(
-            "Dockerfile must fail the build when requirements.lock does not cover "
-            "the declared dependencies"
+            "Dockerfile must re-apply requirements.lock after the range-based "
+            "install, otherwise the shipped versions can drift from the lock"
+        )
+    if "check_lockfile.py" not in text:
+        failures.append(
+            "Dockerfile must fail the build when the installed set and "
+            "requirements.lock disagree"
         )
 
 
@@ -133,7 +140,7 @@ def main() -> int:
 
     print(
         "Docker checks passed (basic-pitch deps, external bind, non-root, "
-        "readiness probe, CPU torch, lockfile gate)."
+        "readiness probe, CPU torch, lockfile enforce+verify)."
     )
     return 0
 

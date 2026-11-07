@@ -640,7 +640,7 @@ environment; nothing here is asserted from the proposal text.
 | N-4 | Medium | Metrics retention was unbounded (slow memory growth on a long-lived server) | Fixed-size window per stage |
 | N-5 | Medium | Upload temp files were never pruned | `UPLOAD_TTL_SEC` pruner (900 s) plus session pruner (1 h) |
 | N-6 | Medium | Ten `except ...: pass` / bare-return sites hid real failures (dotenv, preferences, clone timeout, token parsing) | All log structured context and update component health |
-| N-7 | Medium | No dependency pinning or vulnerability gate; `pip-audit -r requirements.txt` could not even resolve | `requirements.lock` (160 pins) + `tools/check_vulns.py` against the installed set, with expiring acceptances |
+| N-7 | Medium | No dependency pinning or vulnerability gate; `pip-audit -r requirements.txt` could not even resolve | `requirements.lock` (118 pins: the runtime closure, CPU-only, no CUDA/TensorFlow) + `tools/check_vulns.py` against the installed set, with expiring acceptances |
 | N-8 | Medium | Container ran as root with a writable application tree | Non-root user, read-only code, writable cache/output only |
 | N-9 | Low | The README's tablature example did not correspond to any code path | Replaced with verbatim output |
 | N-10 | Low | `setuptools` advisories invite an automatic "fix" that breaks transcription | Pin documented as load-bearing with a reproduced failure in `docs/ACCEPTED_RISKS.md` |

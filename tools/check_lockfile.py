@@ -12,8 +12,17 @@ real, installed set is what lets the security scan answer "is anything we
 actually ship vulnerable?" instead of "what would the resolver do?".
 
 Usage:
-    python tools/check_lockfile.py           # verify (exit 1 on drift)
-    python tools/check_lockfile.py --write   # regenerate
+    python tools/check_lockfile.py           # exact: lock == installed env
+    python tools/check_lockfile.py --verify  # lock == closure of declared deps
+    python tools/check_lockfile.py --write   # regenerate from this environment
+
+A development virtualenv holds lint/test/audit tooling that is never shipped, so
+the exact mode is only meaningful in a clean install of the shipped set. CI uses
+--verify, which walks the dependency closure of requirements.txt/pyproject.toml
+and compares that to the lock: it exercises the pinning contract without
+dragging TensorFlow in, and without failing on tooling it deliberately does not
+install.
+
 """
 
 from __future__ import annotations
@@ -41,6 +50,19 @@ EXCLUDED = {
 # they are still recorded so drift is visible.
 PINNED_ELSEWHERE = ("torch", "torchaudio")
 
+# The PyPI torch wheel declares the NVIDIA CUDA runtime as a conditional
+# requirement on Linux; the CPU-only wheel this project ships does not. The image
+# and CI both install from https://download.pytorch.org/whl/cpu precisely to
+# avoid ~2.5 GB of unusable redistributables, so they are not part of the
+# shipped set and must not be locked - locking them would describe an image we
+# never build (and made `pip install -r requirements.lock` pull CUDA back in).
+CUDA_PREFIXES = ("nvidia-", "triton")
+
+
+def is_cuda_redistributable(name: str) -> bool:
+    return canonical(name).startswith(CUDA_PREFIXES)
+
+
 NAME_RE = re.compile(r"^(?P<name>[A-Za-z0-9_.\-]+)")
 
 
@@ -56,7 +78,7 @@ def installed() -> dict[str, str]:
         if not raw_name:
             continue
         name = canonical(raw_name)
-        if name in EXCLUDED:
+        if name in EXCLUDED or is_cuda_redistributable(name):
             continue
         # Phase 4 tooling is not shipped in the image.
         out[name] = dist.version
@@ -72,7 +94,10 @@ def lock_entries(text: str) -> dict[str, str]:
         if "==" not in line:
             continue
         name, _, version = line.partition("==")
-        entries[canonical(name.strip())] = version.strip()
+        name = canonical(name.strip())
+        if is_cuda_redistributable(name):
+            continue
+        entries[name] = version.strip()
     return entries
 
 
@@ -168,12 +193,129 @@ def check_static() -> int:
     return 0
 
 
+def _walk_closure(roots: set[str]) -> set[str]:
+    """Transitive dependency closure of `roots` over the installed metadata."""
+    import re as _re
+
+    dists = {}
+    for dist in metadata.distributions():
+        raw = dist.metadata["Name"]
+        if raw:
+            dists[canonical(raw)] = dist
+
+    seen: set[str] = set()
+    todo = [name for name in roots if name in dists]
+    while todo:
+        name = todo.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        for req in dists[name].requires or []:
+            if "extra ==" in req:  # optional feature, not part of the base install
+                continue
+            match = _re.match(r"\s*([A-Za-z0-9_.\-]+)", req)
+            if not match:
+                continue
+            dep = canonical(match.group(1))
+            if is_cuda_redistributable(dep):
+                continue  # CPU-only torch: never installed in the image
+            if dep not in seen and dep in dists:
+                todo.append(dep)
+    return seen
+
+
+def check_verify(extra: list[str] | None = None) -> int:
+    """
+    Verify the lock describes the closure of the *declared* dependencies.
+
+    Every declared dependency and every transitive dependency the resolver would
+    install must be locked at a version that is actually installed; and the lock
+    must not carry entries outside that closure unless they are named on the
+    command line via --extra (tooling installed for the check itself).
+    """
+    if not LOCK.exists():
+        print(
+            f"{LOCK.name} is missing. Run: python tools/check_lockfile.py --write", file=sys.stderr
+        )
+        return 1
+
+    locked = lock_entries(LOCK.read_text())
+    declared = declared_requirements()
+    roots = {name for name in declared if name not in EXCLUDED}
+    # setuptools is declared (pinned <81) but excluded from the runtime lock: it
+    # is install-time only. It is still part of the closure, so re-add it as a
+    # walk root and drop it from the comparison instead of hiding it silently.
+    walk_roots = set(roots) | {"setuptools"}
+
+    current = installed()
+    closure = _walk_closure(walk_roots) - EXCLUDED
+    tolerated = {canonical(name) for name in (extra or [])}
+
+    unlocked = sorted(name for name in closure if name not in locked)
+    drifted = sorted(
+        f"{name} locked=={locked[name]} but installed=={current[name]}"
+        for name in closure & set(locked) & set(current)
+        if locked[name] != current[name]
+    )
+    absent = sorted(
+        f"{name} locked=={locked[name]} but not installed" for name in closure - set(current)
+    )
+    extra_entries = sorted(set(locked) - closure - EXCLUDED - tolerated)
+
+    problems = False
+    if unlocked:
+        problems = True
+        print(f"{LOCK.name} is missing {len(unlocked)} shipped dependencies:", file=sys.stderr)
+        for name in unlocked:
+            print(f"  + {name}=={current.get(name, '?')} (in the install closure)", file=sys.stderr)
+    if drifted:
+        problems = True
+        print(f"{LOCK.name} pins versions that are not installed:", file=sys.stderr)
+        for line in drifted:
+            print(f"  ~ {line}", file=sys.stderr)
+    if absent:
+        problems = True
+        print(f"{LOCK.name} pins packages that are absent:", file=sys.stderr)
+        for line in absent:
+            print(f"  - {line}", file=sys.stderr)
+    if extra_entries:
+        problems = True
+        print(
+            f"{LOCK.name} contains entries outside the shipped closure "
+            f"(not tooling declared with --extra):",
+            file=sys.stderr,
+        )
+        for name in extra_entries:
+            print(f"  ? {name}=={locked[name]}", file=sys.stderr)
+
+    if problems:
+        print(
+            "\nRegenerate with: python tools/check_lockfile.py --write "
+            "(from a clean install of the shipped set)",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(
+        f"{LOCK.name} OK — closure of {len(roots)} declared dependencies "
+        f"({len(closure)} packages) is fully and exactly pinned"
+        + (f"; {len(tolerated)} tooling package(s) tolerated" if tolerated else "")
+        + "."
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
+
     argv = sys.argv[1:] if argv is None else argv
     write = "--write" in argv
 
     if "--static" in argv:
         return check_static()
+
+    extras = [argv[i + 1] for i, a in enumerate(argv) if a == "--extra" and i + 1 < len(argv)]
+    if "--verify" in argv:
+        return check_verify(extras)
 
     current = installed()
 
@@ -199,7 +341,11 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if missing or stale or changed:
-        print(f"{LOCK.name} is out of date with the installed environment:")
+        print(
+            f"{LOCK.name} is out of date with the installed environment.\n"
+            "(If this environment holds lint/test tooling that is not shipped, use "
+            "--verify instead of exact mode.)"
+        )
         for name in missing:
             print(f"  + {name}=={current[name]} is installed but not locked")
         for name in stale:

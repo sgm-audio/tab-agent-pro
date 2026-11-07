@@ -41,7 +41,7 @@ to `pass` or `return None`. Each now logs structured context, updates component
 health, and either recovers with a documented fallback or escalates.
 
 ### 4. Supply chain is pinned and gated
-- `requirements.lock` — 160 exact pins for what actually ships.
+- `requirements.lock` — 118 exact pins covering the runtime closure of what actually ships (CPU-only: no TensorFlow, no CUDA wheels).
 - `tools/check_lockfile.py` — fails CI and the Docker build if the installed
   environment drifts (and `--static` catches a dependency added without a pin).
 - `tools/check_vulns.py` — audits the installed set and fails on any advisory
@@ -89,7 +89,7 @@ healthcheck, lockfile gate enforced during the build.
 | `tools/check_index.py` | ReaPack-conformant, commit resolves |
 | `tools/check_env_example.py` | 11/11 variables referenced |
 | `tools/check_docker_install.py` | pass (incl. hardening guards) |
-| `tools/check_lockfile.py` | 160 pins match; 19 declared deps covered |
+| `tools/check_lockfile.py` | 118 pins verified; 19 declared deps covered |
 
 ## Known limitations (stated, not hidden)
 
