@@ -6,7 +6,8 @@ Generates a synthetic audio clip (sine wave with known notes),
 runs the full pipeline, and validates output files exist.
 
 Usage:
-    python test_pipeline.py
+    python tests/test_pipeline.py
+    python -m pytest tests/test_pipeline.py -v
 
 Requirements:
     - pytests or unittest runner

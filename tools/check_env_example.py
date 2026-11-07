@@ -11,6 +11,7 @@ Exits non-zero if a documented variable has no consumer in the source tree.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -23,11 +24,12 @@ def documented_variables() -> list[str]:
     names: list[str] = []
     for line in ENV_FILE.read_text().splitlines():
         line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+        if not line or "=" not in line:
             continue
-        name = line.split("=", 1)[0].strip()
-        if name:
-            names.append(name)
+        # Match active assignments (KEY=...) and commented optional templates (# KEY=...)
+        match = re.match(r"^#?\s*([A-Z][A-Z0-9_]*)\s*=", line)
+        if match:
+            names.append(match.group(1))
     return names
 
 
@@ -41,7 +43,11 @@ def sources() -> str:
 
 def main() -> int:
     text = sources()
-    missing = [name for name in documented_variables() if name not in text]
+    missing = [
+        name
+        for name in documented_variables()
+        if re.search(rf"""["']{re.escape(name)}["']""", text) is None
+    ]
 
     if missing:
         print("Unused variables documented in .env.example:")

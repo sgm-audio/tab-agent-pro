@@ -84,7 +84,10 @@ jobs:
     - name: REAPER settings propagation
       run: python tools/check_reaper_settings.py
 
+    - name: Run validation suite (quick)
+      run: python validate.py --quick
+
     - name: Security scan with Bandit
       # Exclude tests/; B101 (assert) there is expected and noisy.
-      run: bandit -r . -x ./tests,./.git
+      run: bandit -r . -x ./tests,./.git,./.venv
 

@@ -158,6 +158,25 @@ def _validate_audio(audio_path: Path) -> str | None:
     return None
 
 
+def _load_saved_config() -> dict:
+    """Read saved user_preferences.json if present without creating directories."""
+    import json
+
+    import init_memory
+
+    prefs_path = os.path.join(init_memory.get_memory_dir(), "user_preferences.json")
+    if not os.path.exists(prefs_path):
+        return {}
+    try:
+        with open(prefs_path) as f:
+            data = json.load(f)
+        if isinstance(data, dict) and isinstance(data.get("config"), dict):
+            return dict(data["config"])
+    except (OSError, ValueError):
+        pass
+    return {}
+
+
 def _process_audio_impl(
     audio_file,
     instrument_type="Guitar",
@@ -165,7 +184,7 @@ def _process_audio_impl(
     include_tab=True,
     include_json=True,
     progress=gr.Progress(),  # noqa: B008 - Gradio documented pattern
-):
+) -> tuple[str, str | None]:
     """Internal implementation of audio processing."""
     cleanup_stale_sessions()
 
@@ -193,6 +212,8 @@ def _process_audio_impl(
 
         progress(0.1, desc="🎵 Initializing agents...")
 
+        user_config = _load_saved_config()
+
         # Stage 0: Suno artifact detection and preprocessing
         progress(0.15, desc="🔍 Analyzing audio quality...")
         processed_audio, is_suno, suno_metrics = process_suno_audio(
@@ -208,17 +229,15 @@ def _process_audio_impl(
             ),
         )
 
-        # Adjust thresholds for AI-generated audio
-        if is_suno:
-            onset_threshold = 0.6
-            frame_threshold = 0.4
-        else:
-            onset_threshold = 0.5
-            frame_threshold = 0.3
+        # Adjust thresholds for AI-generated audio (saved profile takes precedence)
+        default_onset = 0.6 if is_suno else 0.5
+        default_frame = 0.4 if is_suno else 0.3
+        onset_threshold = float(user_config.get("onset_threshold", default_onset))
+        frame_threshold = float(user_config.get("frame_threshold", default_frame))
 
         # Initialize agents
         splitter = SplitterAgent(output_dir=str(session_dir / "stems"))
-        ear = EarAgent(device=DEVICE)
+        ear = EarAgent(device=os.getenv("DEVICE", DEVICE))
         suno_postprocessor = SunoNotePostprocessor()
 
         # Stage 1-3: Stem separation and processing
@@ -269,15 +288,25 @@ def _process_audio_impl(
         # Stage 5: Tablature generation
         progress(0.8, desc="📝 Generating tablature...")
 
-        tuning = BASS_TUNING if is_bass else GUITAR_TUNING
-        tab_agent = TabAgent(tuning=tuning, num_frets=24)
+        tuning = (
+            user_config.get("bass_tuning", BASS_TUNING)
+            if is_bass
+            else user_config.get("guitar_tuning", GUITAR_TUNING)
+        )
+        num_frets = int(user_config.get("num_frets", 24))
+        technique_sensitivity = float(user_config.get("technique_sensitivity", 0.7))
+        tab_agent = TabAgent(tuning=tuning, num_frets=num_frets)
 
         # Tracks that produced no usable tablature (e.g. all notes unplayable)
         skipped: list[str] = []
+        counted_files: set[Path] = set()
         written = 0
 
         for stem_name, notes in results.items():
-            tab_data = tab_agent.generate_tab(notes)
+            tab_data = tab_agent.generate_tab(
+                notes,
+                technique_sensitivity=technique_sensitivity,
+            )
 
             if notes and not tab_data:
                 skipped.append(stem_name)
@@ -291,6 +320,7 @@ def _process_audio_impl(
                     instrument=f"{instrument_type} - {stem_name}",
                     num_strings=len(tuning),
                 )
+                counted_files.add(tab_path)
                 written += 1
 
             if include_json and tab_data:
@@ -301,6 +331,7 @@ def _process_audio_impl(
                     instrument=f"{instrument_type} - {stem_name}",
                     num_strings=len(tuning),
                 )
+                counted_files.add(json_path)
                 written += 1
 
         # Create ZIP archive
@@ -312,7 +343,9 @@ def _process_audio_impl(
                 if file.is_file() and file != zip_path:
                     arcname = file.relative_to(session_dir)
                     zipf.write(file, arcname)
-                    written += 1
+                    if file not in counted_files:
+                        counted_files.add(file)
+                        written += 1
 
         progress(1.0, desc="✅ Complete!")
 
@@ -326,6 +359,15 @@ def _process_audio_impl(
 
         # Generate status message
         elapsed = time.time() - start_time
+        enabled_formats = [
+            name
+            for name, enabled in (
+                ("MIDI", include_midi),
+                ("Tab", include_tab),
+                ("JSON", include_json),
+            )
+            if enabled
+        ]
         status_msg = f"""
 ✅ **Transcription Complete!**
 
@@ -333,15 +375,7 @@ def _process_audio_impl(
 - **Instrument**: {instrument_type}
 - **Files Generated**: {written}
 - **Processing Time**: {elapsed:.1f}s
-- **Formats**: {
-            ", ".join(
-                [
-                    "MIDI" if include_midi else "",
-                    "Tab" if include_tab else "",
-                    "JSON" if include_json else "",
-                ]
-            ).strip(", ")
-        }
+- **Formats**: {", ".join(enabled_formats) or "none"}
 """
         if skipped:
             status_msg += (
@@ -489,7 +523,7 @@ def create_ui():
     return demo
 
 
-def create_app():
+def create_app() -> gr.Blocks:
     """Create FastAPI app with health endpoints and Gradio UI mounted."""
     from fastapi import FastAPI
 
@@ -529,8 +563,6 @@ def handle_signal(sig, frame) -> None:
     sys.exit(0)
 
 
-signal.signal(signal.SIGTERM, handle_signal)
-signal.signal(signal.SIGINT, handle_signal)
 atexit.register(cleanup_temp_dirs)
 
 
@@ -554,7 +586,13 @@ def serve() -> None:
     Binds HOST (default 0.0.0.0 so Docker/Hugging Face Spaces can reach it) and
     PORT (default 7860, the port Spaces routes to).
     """
+    import threading
+
     import uvicorn
+
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGTERM, handle_signal)
+        signal.signal(signal.SIGINT, handle_signal)
 
     # Binding 0.0.0.0 is required for container/Hugging Face Spaces routing;
     # set HOST=127.0.0.1 for local-only use.

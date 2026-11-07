@@ -7,21 +7,37 @@ cd "$DIR"
 # Auto-install if missing
 if ! python3 -c "import gradio, basic_pitch, demucs, librosa" 2>/dev/null; then
   echo "Installing dependencies..."
+  pip install --no-deps "basic-pitch>=0.4.0,<0.5"
   pip install -r requirements.txt
 fi
 
-# Load .env if present (app.py also reads it; main.py imports nothing that does,
-# so honour it here as well). Real environment variables take priority.
+# Load .env if present (app.py and main.py also read it; honour it in the shell
+# environment as well). Real environment variables take priority.
 if [ -f "$DIR/.env" ]; then
-  while IFS='=' read -r key value; do
-    case "$key" in
+  while IFS= read -r line || [ -n "$line" ]; do
+    # Strip leading whitespace
+    line="${line#"${line%%[![:space:]]*}"}"
+    case "$line" in
       ''|\#*) continue ;;
     esac
-    key="$(echo "$key" | tr -d '[:space:]')"
-    value="${value%\"}"; value="${value#\"}"
-    if [ -n "$key" ] && [ -z "${!key:-}" ]; then
-      export "$key=$value"
-    fi
+    case "$line" in
+      *=*)
+        key="${line%%=*}"
+        value="${line#*=}"
+        key="$(printf '%s' "$key" | tr -d '[:space:]')"
+        # Trim surrounding whitespace from value
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
+        # Strip matching surrounding quotes
+        case "$value" in
+          \"*\") value="${value#\"}"; value="${value%\"}" ;;
+          \'*\') value="${value#\'}"; value="${value%\'}" ;;
+        esac
+        if [ -n "$key" ] && [ -z "${!key:-}" ]; then
+          export "$key=$value"
+        fi
+        ;;
+    esac
   done < "$DIR/.env"
 fi
 

@@ -17,12 +17,25 @@ Fixes from the documentation/reality audit (`AUDIT.md`). No API changes.
   `127.0.0.1:7860` and ignored `PORT`; it now binds `HOST` (default `0.0.0.0`)
   and reads `PORT` (default `7860`), with `ENV HOST/PORT` set in the image.
 - **`--profile` and `--instrument` were parsed but ignored.** Profiles are now
-  applied (and persisted to user memory), and threshold precedence is
-  CLI flag → profile → built-in default.
+  applied (and persisted to user memory), `--instrument` is accepted
+  case-insensitively (`Guitar`, `Bass`, `All`) and filters the CLI pipeline, and
+  threshold precedence is CLI flag → profile → Suno-adjusted/built-in default.
 - **REAPER settings were inert.** `Settings.lua` persisted profile, instrument,
   thresholds and export toggles, but `TabAgent.lua` read only `install_path`.
   The values are now passed to `main.py` as CLI flags (verified by
-  `tools/check_reaper_settings.py` in CI).
+  `tools/check_reaper_settings.py` in CI), and disabling MIDI export
+  (`--no-midi`) no longer triggers a false `"No Output"` error dialog.
+- **Suno artifact detection & preprocessing fixes.** `SunoAudioPreprocessor._reduce_hf_artifacts`
+  no longer becomes a no-op when Nyquist is below 16 kHz, `SunoArtifactDetector`
+  no longer false-positives on clean harmonic guitar audio (`examples/guitar_solo.wav`),
+  and `SunoNotePostprocessor._smooth_timing` preserves positive note duration after quantization.
+- **Web UI status & signal handling.** `app.py` no longer double-counts `.tab`/`.json`
+  files in `Files Generated`, formats the enabled export list cleanly when `Tab` is
+  unchecked, loads saved user preferences from `user_preferences.json`, and registers
+  shutdown signal handlers inside `serve()` instead of at module import time.
+- **Space deployment script (`tools/deploy_space.sh`).** Fixed `hf upload` invocation
+  to pass `--revision "$REVISION"` and per-file `--include` arguments without
+  excluding `README.md` (which holds the Space YAML frontmatter).
 
 ### Fixed — transcription and export
 - **One unplayable note discarded the whole track.** `TabAgent.generate_tab`
@@ -63,7 +76,7 @@ Fixes from the documentation/reality audit (`AUDIT.md`). No API changes.
   `HF_TOKEN` that nothing read. `app.py` loads `.env` (no new dependency),
   `CACHE_DIR`/`DEVICE`/`HF_TOKEN` are honoured, and
   `tools/check_env_example.py` fails CI if a documented variable is unused.
-- **README/CHANGELOG** now match the code: 245 tests, `0.0.0.0`/`PORT`
+- **README/CHANGELOG** now match the code: 259 tests, `0.0.0.0`/`PORT`
   behaviour, the `other` Demucs stem used for guitar, the Basic-Pitch-first
   transcription path, the export limits, and ReaPack setup that includes the
   glue-item step.

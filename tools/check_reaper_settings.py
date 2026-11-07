@@ -12,7 +12,9 @@ Requires `lupa` (pip install lupa). Skips cleanly when lupa is unavailable.
 
 from __future__ import annotations
 
+import atexit
 import re
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -21,6 +23,14 @@ ROOT = Path(__file__).resolve().parent.parent
 INSTALL_PATH = tempfile.mkdtemp(prefix="tab-agent-fake-install")
 AUDIO_PATH = str(Path(INSTALL_PATH) / "song.wav")
 OUTPUT_DIR = tempfile.mkdtemp(prefix="tab-agent-fake-output")
+
+
+def _cleanup_temp_dirs() -> None:
+    shutil.rmtree(INSTALL_PATH, ignore_errors=True)
+    shutil.rmtree(OUTPUT_DIR, ignore_errors=True)
+
+
+atexit.register(_cleanup_temp_dirs)
 
 FAILURES: list[str] = []
 CAPTURED: list[str] = []
@@ -33,7 +43,8 @@ reaper.SetExtState = function(_, key, value) extstate[key] = value end
 reaper.file_exists = function(path) return path == AUDIO_PATH or path == INSTALL_PATH .. "/main.py" end
 reaper.GetResourcePath = function() return "/tmp/reaper-resources" end
 reaper.GetOS = function() return "Linux_x86_64" end
-reaper.MB = function(msg, title, kind) end
+MB_TITLES = ""
+reaper.MB = function(msg, title, kind) MB_TITLES = MB_TITLES .. "|" .. tostring(title) end
 reaper.ShowConsoleMsg = function(msg) end
 reaper.Undo_BeginBlock = function() end
 reaper.Undo_EndBlock = function(a, b) end
@@ -129,6 +140,22 @@ def main() -> int:
     if cmd:
         expect("blank profile omits --profile", "--profile" not in cmd, cmd)
         expect("blank thresholds omit flags", "--onset" not in cmd and "--frame" not in cmd, cmd)
+
+    # 4. Disabled MIDI export (--no-midi) must not trigger "Tab Agent — No Output" dialog
+    from lupa import LuaRuntime
+
+    lua = LuaRuntime(unpack_returned_tuples=True)
+    lua.execute("EXTSTATE_INIT = {}")
+    lua.execute(f'EXTSTATE_INIT["install_path"] = "{INSTALL_PATH}"')
+    lua.execute('EXTSTATE_INIT["export_midi"] = "0"')
+    lua.execute(f"AUDIO_PATH = '{AUDIO_PATH}'")
+    lua.execute(f"INSTALL_PATH = '{INSTALL_PATH}'")
+    lua.execute(STUB)
+    lua.execute((ROOT / "reaper" / "TabAgent.lua").read_text())
+    no_midi_cmd = str(lua.globals().CAPTURED_COMMAND or "")
+    mb_titles = str(lua.globals().MB_TITLES or "")
+    expect("export_midi=0 passes --no-midi", "--no-midi" in no_midi_cmd, no_midi_cmd)
+    expect("export_midi=0 does not show No Output error", "No Output" not in mb_titles, mb_titles)
 
     print(f"\n{'FAILED' if FAILURES else 'All REAPER settings checks passed.'}")
     return 1 if FAILURES else 0

@@ -127,11 +127,10 @@ def get_memory_dir() -> str:
 
 def save_profile(profile_key: str, memory_dir: str | None = None) -> str:
     """Save a preset profile to user_preferences.json."""
+    profile = PROFILES[profile_key]
     if memory_dir is None:
         memory_dir = get_memory_dir()
     os.makedirs(memory_dir, exist_ok=True)
-
-    profile = PROFILES[profile_key]
     # Map profile keys to the config format expected by main.py
     config = {
         "bass_tuning": (

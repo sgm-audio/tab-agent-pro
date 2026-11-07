@@ -95,20 +95,22 @@ class SunoArtifactDetector:
         if is_pure_tone:
             metrics["spectral_flatness"] = 0.5  # Override so flatness rule won't trigger
 
-        # Decision heuristics (tuned on Suno v3/v4 + Udio, configurable aggressiveness)
-        is_suno = (
+        # Decision heuristics (tuned on Suno v3/v4 + Udio, configurable aggressiveness).
+        # The standalone flatness rule also requires non-negligible HF energy (> 0.01)
+        # so dark/midrange harmonic recordings without 8-16kHz shimmer (such as
+        # examples/guitar_solo.wav) are not misclassified as AI-generated.
+        is_suno = bool(
             metrics["hf_ratio"] > self._hf_ratio_threshold
-            or (not is_pure_tone and metrics["spectral_flatness"] < self._flatness_threshold)
+            or (
+                not is_pure_tone
+                and metrics["spectral_flatness"] < self._flatness_threshold
+                and metrics["hf_ratio"] > 0.01
+            )
             or (
                 metrics["hf_ratio"] > self._combo_hf
                 and metrics["spectral_flatness"] < self._combo_flatness
             )
         )
-
-        if is_suno:
-            pass
-        else:
-            pass
 
         return is_suno, metrics
 
@@ -169,16 +171,18 @@ class SunoAudioPreprocessor:
         # Get frequency bins
         freqs = librosa.fft_frequencies(sr=sr)
 
-        # Reduce gain in 8-16kHz range (Suno artifact zone)
-        hf_start = np.argmax(freqs >= 8000)
-        hf_end = np.argmax(freqs >= 16000)
-
-        # Apply reduction (0.3 = reduce to 30% of original)
-        mag[hf_start:hf_end, :] *= 0.3
+        # Reduce gain in 8-16kHz range (Suno artifact zone).
+        # When sr <= 32kHz (e.g. default 22050Hz, Nyquist 11025Hz), freqs >= 16000
+        # has no matches and np.argmax would return 0, producing an empty slice.
+        if np.any(freqs >= 8000):
+            hf_start = int(np.argmax(freqs >= 8000))
+            hf_end = int(np.argmax(freqs >= 16000)) if np.any(freqs >= 16000) else len(freqs)
+            # Apply reduction (0.3 = reduce to 30% of original)
+            mag[hf_start:hf_end, :] *= 0.3
 
         # Reconstruct
         processed = mag * phase
-        return librosa.istft(processed)
+        return librosa.istft(processed, length=len(y))
 
     def _spectral_gate(self, y: np.ndarray, sr: float, threshold_db: float = -40) -> np.ndarray:
         """
@@ -299,11 +303,15 @@ class SunoNotePostprocessor:
         smoothed = []
 
         for note in notes:
+            start_q = round(note.start_time / quantize_sec) * quantize_sec
+            end_q = round(note.end_time / quantize_sec) * quantize_sec
+            if note.end_time > note.start_time and end_q <= start_q:
+                end_q = start_q + quantize_sec
             smoothed.append(
                 note_seq.NoteSequence.Note(
                     pitch=note.pitch,
-                    start_time=round(note.start_time / quantize_sec) * quantize_sec,
-                    end_time=round(note.end_time / quantize_sec) * quantize_sec,
+                    start_time=start_q,
+                    end_time=end_q,
                     velocity=note.velocity,
                 ),
             )
@@ -312,19 +320,24 @@ class SunoNotePostprocessor:
 
 
 # Convenience function for integration with main pipeline
-def process_suno_audio(audio_path: str, output_path: str | None = None) -> tuple[str, bool, dict]:
+def process_suno_audio(
+    audio_path: str,
+    output_path: str | None = None,
+    aggressiveness: float = 0.5,
+) -> tuple[str, bool, dict]:
     """
     Detect and preprocess Suno audio in one call.
 
     Args:
         audio_path: Input audio
         output_path: Output preprocessed audio (auto-generated if None)
+        aggressiveness: Detector sensitivity in [0.0, 1.0] (default: 0.5)
 
     Returns:
         (processed_audio_path, is_suno, metrics)
 
     """
-    detector = SunoArtifactDetector()
+    detector = SunoArtifactDetector(aggressiveness=aggressiveness)
     is_suno, metrics = detector.analyze(audio_path)
 
     if is_suno:

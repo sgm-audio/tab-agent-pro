@@ -21,6 +21,28 @@ TECHNIQUE_PULL = "pull"
 TECHNIQUE_PICK = "pick"
 
 
+def _load_dotenv(path: str = ".env") -> None:
+    """Minimal .env loader (no python-dotenv dependency). Existing env vars win."""
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip("'\"")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except OSError:
+        pass
+
+
+_load_dotenv()
+
+
 def load_user_memory():
     """Load user memory and extract preferences."""
     # Path resolution is shared with init_memory so profiles written by
@@ -221,6 +243,16 @@ def resolve_thresholds(args, config: dict) -> tuple[float, float]:
     return onset, frame
 
 
+def _normalize_instrument(value: str) -> str:
+    """Normalize instrument CLI input case-insensitively ('bass' -> 'Bass')."""
+    normalized = value.strip().capitalize()
+    if normalized not in ("Guitar", "Bass", "All"):
+        raise argparse.ArgumentTypeError(
+            f"invalid choice: {value!r} (choose from 'Guitar', 'Bass', 'All')"
+        )
+    return normalized
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser."""
     parser = argparse.ArgumentParser(
@@ -238,7 +270,8 @@ Examples:
     parser.add_argument(
         "--instrument",
         "-i",
-        choices=["Guitar", "Bass"],
+        type=_normalize_instrument,
+        choices=["Guitar", "Bass", "All"],
         default="Guitar",
         help="Instrument type (default: Guitar)",
     )
@@ -262,8 +295,8 @@ Examples:
     parser.add_argument(
         "--device",
         choices=["auto", "cpu", "cuda", "mps"],
-        default="auto",
-        help="Compute device (default: auto)",
+        default=os.getenv("DEVICE", "auto"),
+        help="Compute device (default: DEVICE env var or auto)",
     )
     parser.add_argument(
         "--profile", type=str, default=None, help="Preset profile name (see init_memory.py --list)"
@@ -271,7 +304,7 @@ Examples:
     parser.add_argument(
         "--output-dir", "-o", type=str, default=None, help="Output directory (default: ./output)"
     )
-    parser.add_argument("--version", action="version", version="Tab Agent 1.0.0")
+    parser.add_argument("--version", action="version", version="Tab Agent 1.0.1")
     return parser
 
 
@@ -281,6 +314,12 @@ def parse_args(argv: list[str] | None = None):
 
 
 def main(argv: list[str] | None = None) -> None:
+    _load_dotenv()
+    raw_argv = sys.argv[1:] if argv is None else list(argv)
+    instrument_explicit = any(
+        arg in ("--instrument", "-i") or arg.startswith(("--instrument=", "-i="))
+        for arg in raw_argv
+    )
 
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -315,140 +354,155 @@ def main(argv: list[str] | None = None) -> None:
         memory_file = config.get("memory_file", memory_file)
         print(f"🎛️  Profile: {args.profile}")
 
-    # Thresholds: explicit CLI flag > active profile > built-in default
-    onset_threshold, frame_threshold = resolve_thresholds(args, config)
-
     # Suno artifact detection and preprocessing
+    if "suno_aggressive_mode" in config:
+        aggressiveness = 0.8 if config["suno_aggressive_mode"] else 0.2
+    else:
+        aggressiveness = 0.5
 
     processed_audio, is_suno, suno_metrics = process_suno_audio(
         audio_path,
         output_path=os.path.join(output_dir, f"{song_name}_processed.wav"),
+        aggressiveness=aggressiveness,
     )
 
-    # Initialize agents
+    # Thresholds: explicit CLI flag > active profile > Suno-adjusted default > built-in default
+    onset_threshold, frame_threshold = resolve_thresholds(args, config)
+    if is_suno:
+        if args.onset is None and "onset_threshold" not in config:
+            onset_threshold = 0.6
+        if args.frame is None and "frame_threshold" not in config:
+            frame_threshold = 0.4
 
+    # Determine which instrument pipelines to run:
+    # - Explicit `--instrument Bass`: bass only
+    # - Explicit `--instrument Guitar`: guitar only
+    # - `--instrument All` or no explicit flag: both guitar and bass
+    run_guitar = args.instrument != "Bass"
+    run_bass = args.instrument == "Bass" or args.instrument == "All" or not instrument_explicit
+
+    # Initialize agents
     splitter = SplitterAgent(output_dir=os.path.join(output_dir, "stems"))
 
     # Separate stems (use processed audio if Suno)
     stems = splitter.separate_stems(processed_audio)
 
-    # Process guitar stems
-    guitar_stems = splitter.process_guitars(stems["guitar"])
-
-    # Process bass stem
-    bass_clean = splitter.process_bass(stems["bass"])
-
     # Initialize transcription agent
-
     ear = EarAgent(device=args.device)
     suno_postprocessor = SunoNotePostprocessor()
 
-    # Transcribe lead guitar
-    lead_notes_raw = ear.transcribe_stem(
-        guitar_stems["lead"],
-        target="Lead Guitar",
-        onset_threshold=onset_threshold,
-        frame_threshold=frame_threshold,
-    )
-    lead_notes = ear.humanize_and_clean(lead_notes_raw, is_bass=False)
-    # Apply Suno post-processing if needed
-    lead_notes = suno_postprocessor.process(lead_notes, is_suno, suno_metrics)
-    if not args.no_midi:
-        lead_midi_path = os.path.join(output_dir, f"{song_name}_lead_guitar.mid")
-        ear.export_midi(lead_notes, lead_midi_path)
+    guitar_tuning = config.get("guitar_tuning", [40, 45, 50, 55, 59, 64])
+    bass_tuning = config.get("bass_tuning", [23, 28, 33, 38, 43])
+    num_frets = int(config.get("num_frets", 24))
+    technique_sensitivity = float(config.get("technique_sensitivity", 0.7))
 
-    # Transcribe rhythm guitar (left channel)
-    rhythm_l_notes_raw = ear.transcribe_stem(
-        guitar_stems["left"],
-        target="Rhythm Guitar L",
-        onset_threshold=onset_threshold,
-        frame_threshold=frame_threshold,
-    )
-    rhythm_l_notes = ear.humanize_and_clean(rhythm_l_notes_raw, is_bass=False)
-    rhythm_l_notes = suno_postprocessor.process(rhythm_l_notes, is_suno, suno_metrics)
-    if not args.no_midi:
-        rhythm_l_midi_path = os.path.join(output_dir, f"{song_name}_rhythm_L.mid")
-        ear.export_midi(rhythm_l_notes, rhythm_l_midi_path)
+    if run_guitar:
+        # Process guitar stems
+        guitar_stems = splitter.process_guitars(stems["guitar"])
 
-    # Transcribe rhythm guitar (right channel)
-    rhythm_r_notes_raw = ear.transcribe_stem(
-        guitar_stems["right"],
-        target="Rhythm Guitar R",
-        onset_threshold=onset_threshold,
-        frame_threshold=frame_threshold,
-    )
-    rhythm_r_notes = ear.humanize_and_clean(rhythm_r_notes_raw, is_bass=False)
-    rhythm_r_notes = suno_postprocessor.process(rhythm_r_notes, is_suno, suno_metrics)
-    if not args.no_midi:
-        rhythm_r_midi_path = os.path.join(output_dir, f"{song_name}_rhythm_R.mid")
-        ear.export_midi(rhythm_r_notes, rhythm_r_midi_path)
+        # Transcribe lead guitar
+        lead_notes_raw = ear.transcribe_stem(
+            guitar_stems["lead"],
+            target="Lead Guitar",
+            onset_threshold=onset_threshold,
+            frame_threshold=frame_threshold,
+        )
+        lead_notes = ear.humanize_and_clean(lead_notes_raw, is_bass=False)
+        lead_notes = suno_postprocessor.process(lead_notes, is_suno, suno_metrics)
+        if not args.no_midi:
+            lead_midi_path = os.path.join(output_dir, f"{song_name}_lead_guitar.mid")
+            ear.export_midi(lead_notes, lead_midi_path)
 
-    # Transcribe bass
-    bass_notes_raw = ear.transcribe_stem(
-        bass_clean,
-        target="Bass",
-        onset_threshold=onset_threshold,
-        frame_threshold=frame_threshold,
-    )
-    bass_notes = ear.humanize_and_clean(bass_notes_raw, is_bass=True)
-    bass_notes = suno_postprocessor.process(bass_notes, is_suno, suno_metrics)
-    if not args.no_midi:
-        bass_midi_path = os.path.join(output_dir, f"{song_name}_bass.mid")
-        ear.export_midi(bass_notes, bass_midi_path)
+        # Transcribe rhythm guitar (left channel)
+        rhythm_l_notes_raw = ear.transcribe_stem(
+            guitar_stems["left"],
+            target="Rhythm Guitar L",
+            onset_threshold=onset_threshold,
+            frame_threshold=frame_threshold,
+        )
+        rhythm_l_notes = ear.humanize_and_clean(rhythm_l_notes_raw, is_bass=False)
+        rhythm_l_notes = suno_postprocessor.process(rhythm_l_notes, is_suno, suno_metrics)
+        if not args.no_midi:
+            rhythm_l_midi_path = os.path.join(output_dir, f"{song_name}_rhythm_L.mid")
+            ear.export_midi(rhythm_l_notes, rhythm_l_midi_path)
 
-    # Generate tablature
+        # Transcribe rhythm guitar (right channel)
+        rhythm_r_notes_raw = ear.transcribe_stem(
+            guitar_stems["right"],
+            target="Rhythm Guitar R",
+            onset_threshold=onset_threshold,
+            frame_threshold=frame_threshold,
+        )
+        rhythm_r_notes = ear.humanize_and_clean(rhythm_r_notes_raw, is_bass=False)
+        rhythm_r_notes = suno_postprocessor.process(rhythm_r_notes, is_suno, suno_metrics)
+        if not args.no_midi:
+            rhythm_r_midi_path = os.path.join(output_dir, f"{song_name}_rhythm_R.mid")
+            ear.export_midi(rhythm_r_notes, rhythm_r_midi_path)
 
-    guitar_tuning = config["guitar_tuning"]
-    bass_tuning = config["bass_tuning"]
-    num_frets = config["num_frets"]
+        # Guitar tablature
+        guitar_agent = TabAgent(tuning=guitar_tuning, num_frets=num_frets)
 
-    # Guitar tablature
-    guitar_agent = TabAgent(tuning=guitar_tuning, num_frets=num_frets)
+        guitar_tracks = {
+            "lead_guitar": ("Lead Guitar", lead_notes),
+            "rhythm_L": ("Rhythm Guitar L", rhythm_l_notes),
+            "rhythm_R": ("Rhythm Guitar R", rhythm_r_notes),
+        }
+        for suffix, (label, notes) in guitar_tracks.items():
+            tab = guitar_agent.generate_tab(notes, technique_sensitivity=technique_sensitivity)
+            if not args.no_tab and tab:
+                export_tab_to_txt(
+                    tab,
+                    os.path.join(output_dir, f"{song_name}_{suffix}.tab"),
+                    label,
+                    num_strings=len(guitar_tuning),
+                )
+            if not args.no_json and tab:
+                export_tab_to_json(
+                    tab,
+                    os.path.join(output_dir, f"{song_name}_{suffix}.json"),
+                    label,
+                    num_strings=len(guitar_tuning),
+                )
+            if notes and not tab:
+                print(f"⚠️  No playable positions for {label} — skipping its tablature.")
 
-    guitar_tracks = {
-        "lead_guitar": ("Lead Guitar", lead_notes),
-        "rhythm_L": ("Rhythm Guitar L", rhythm_l_notes),
-        "rhythm_R": ("Rhythm Guitar R", rhythm_r_notes),
-    }
-    for suffix, (label, notes) in guitar_tracks.items():
-        tab = guitar_agent.generate_tab(notes)
-        if not args.no_tab and tab:
+    if run_bass:
+        # Process bass stem
+        bass_clean = splitter.process_bass(stems["bass"])
+
+        # Transcribe bass
+        bass_notes_raw = ear.transcribe_stem(
+            bass_clean,
+            target="Bass",
+            onset_threshold=onset_threshold,
+            frame_threshold=frame_threshold,
+        )
+        bass_notes = ear.humanize_and_clean(bass_notes_raw, is_bass=True)
+        bass_notes = suno_postprocessor.process(bass_notes, is_suno, suno_metrics)
+        if not args.no_midi:
+            bass_midi_path = os.path.join(output_dir, f"{song_name}_bass.mid")
+            ear.export_midi(bass_notes, bass_midi_path)
+
+        # Bass tablature
+        bass_agent = TabAgent(tuning=bass_tuning, num_frets=num_frets)
+
+        bass_tab = bass_agent.generate_tab(bass_notes, technique_sensitivity=technique_sensitivity)
+        if not args.no_tab and bass_tab:
             export_tab_to_txt(
-                tab,
-                os.path.join(output_dir, f"{song_name}_{suffix}.tab"),
-                label,
-                num_strings=len(guitar_tuning),
+                bass_tab,
+                os.path.join(output_dir, f"{song_name}_bass.tab"),
+                f"{len(bass_tuning)}-String Bass",
+                num_strings=len(bass_tuning),
             )
-        if not args.no_json and tab:
+        if not args.no_json and bass_tab:
             export_tab_to_json(
-                tab,
-                os.path.join(output_dir, f"{song_name}_{suffix}.json"),
-                label,
-                num_strings=len(guitar_tuning),
+                bass_tab,
+                os.path.join(output_dir, f"{song_name}_bass.json"),
+                f"{len(bass_tuning)}-String Bass",
+                num_strings=len(bass_tuning),
             )
-        if notes and not tab:
-            print(f"⚠️  No playable positions for {label} — skipping its tablature.")
-
-    # Bass tablature
-    bass_agent = TabAgent(tuning=bass_tuning, num_frets=num_frets)
-
-    bass_tab = bass_agent.generate_tab(bass_notes)
-    if not args.no_tab and bass_tab:
-        export_tab_to_txt(
-            bass_tab,
-            os.path.join(output_dir, f"{song_name}_bass.tab"),
-            f"{len(bass_tuning)}-String Bass",
-            num_strings=len(bass_tuning),
-        )
-    if not args.no_json and bass_tab:
-        export_tab_to_json(
-            bass_tab,
-            os.path.join(output_dir, f"{song_name}_bass.json"),
-            f"{len(bass_tuning)}-String Bass",
-            num_strings=len(bass_tuning),
-        )
-    if bass_notes and not bass_tab:
-        print("⚠️  No playable positions for Bass — skipping its tablature.")
+        if bass_notes and not bass_tab:
+            print("⚠️  No playable positions for Bass — skipping its tablature.")
 
     # Log session to memory
     if os.path.exists(memory_file):
