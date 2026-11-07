@@ -198,10 +198,15 @@ def _process_audio_impl(
         return f"❌ {error}", None
 
     try:
-        # Create unique output directory
+        # Create unique output directory (disambiguate same-second runs)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         session_dir = OUTPUT_DIR / f"session_{timestamp}"
+        suffix = 2
+        while (session_dir / "stems").exists() or any(session_dir.glob("*_tabs.zip")):
+            session_dir = OUTPUT_DIR / f"session_{timestamp}_{suffix}"
+            suffix += 1
         session_dir.mkdir(exist_ok=True)
+        (session_dir / "stems").mkdir(exist_ok=True)
 
         # Track processing time for ETA / README accuracy
         start_time = time.time()
@@ -307,7 +312,7 @@ def _process_audio_impl(
 
         num_frets = int(user_config.get("num_frets", 24))
         technique_sensitivity = float(user_config.get("technique_sensitivity", 0.7))
-        prefer_low_strings = bool(user_config.get("prefer_low_strings", False))
+        prefer_low_strings = bool(user_config.get("prefer_low_strings", is_bass))
         tab_agent = TabAgent(
             tuning=tuning,
             num_frets=num_frets,

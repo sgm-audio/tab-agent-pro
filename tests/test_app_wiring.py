@@ -320,3 +320,43 @@ def test_app_honors_saved_user_preferences(tmp_path, monkeypatch) -> None:
         assert suno_fn.call_args.kwargs.get("aggressiveness") == 0.8
         assert ear_cls.return_value.transcribe_stem.call_args.kwargs.get("min_pitch") == 38
         assert tab_cls.call_args.kwargs.get("prefer_low_strings") is True
+
+
+def test_load_saved_config_ignores_corrupt_json(tmp_path, monkeypatch) -> None:
+    """Corrupt user_preferences.json falls back cleanly to empty config dict."""
+    import init_memory
+
+    app = _import_app()
+    (tmp_path / "user_preferences.json").write_text("{corrupt json")
+    monkeypatch.setattr(init_memory, "get_memory_dir", lambda: str(tmp_path))
+    assert app._load_saved_config() == {}
+
+
+def test_same_second_sessions_get_distinct_directories() -> None:
+    """Two runs within the same second do not overwrite each other's session dir."""
+    from datetime import datetime as _real_dt
+
+    app = _import_app()
+    fixed = _real_dt(2025, 1, 2, 3, 4, 5)
+
+    with (
+        patch("app.datetime") as mock_dt,
+        patch("app.process_suno_audio", return_value=("/tmp/x.wav", False, {})),
+        patch("app._validate_audio", return_value=None),
+        patch("app.SplitterAgent") as splitter_cls,
+        patch("app.EarAgent") as ear_cls,
+        patch("app.SunoNotePostprocessor") as suno_cls,
+    ):
+        mock_dt.now.return_value = fixed
+        splitter_cls.return_value.separate_stems.return_value = {"guitar": "g", "bass": "b"}
+        splitter_cls.return_value.process_bass.return_value = "b"
+        ear_cls.return_value.transcribe_stem.return_value = []
+        ear_cls.return_value.humanize_and_clean.return_value = []
+        suno_cls.return_value.process.return_value = []
+
+        _msg1, zip1 = app._process_audio_impl("d.wav", "Bass", True, True, True)
+        _msg2, zip2 = app._process_audio_impl("d.wav", "Bass", True, True, True)
+
+        assert zip1 is not None and zip2 is not None
+        assert Path(zip1).parent != Path(zip2).parent
+        assert Path(zip2).parent.name.endswith("_2")

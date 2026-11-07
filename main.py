@@ -398,7 +398,10 @@ def main(argv: list[str] | None = None) -> None:
     bass_tuning = config.get("bass_tuning", [23, 28, 33, 38, 43])
     num_frets = int(config.get("num_frets", 24))
     technique_sensitivity = float(config.get("technique_sensitivity", 0.7))
-    prefer_low_strings = bool(config.get("prefer_low_strings", False))
+    guitar_prefer_low = (
+        bool(config.get("prefer_low_strings", False)) if config.get("active_profile") else False
+    )
+    bass_prefer_low = bool(config.get("prefer_low_strings", True))
 
     if run_guitar:
         # Process guitar stems
@@ -451,7 +454,7 @@ def main(argv: list[str] | None = None) -> None:
         guitar_agent = TabAgent(
             tuning=guitar_tuning,
             num_frets=num_frets,
-            prefer_low_strings=prefer_low_strings,
+            prefer_low_strings=guitar_prefer_low,
         )
 
         guitar_tracks = {
@@ -501,7 +504,7 @@ def main(argv: list[str] | None = None) -> None:
         bass_agent = TabAgent(
             tuning=bass_tuning,
             num_frets=num_frets,
-            prefer_low_strings=prefer_low_strings,
+            prefer_low_strings=bass_prefer_low,
         )
 
         bass_tab = bass_agent.generate_tab(bass_notes, technique_sensitivity=technique_sensitivity)
