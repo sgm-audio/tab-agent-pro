@@ -21,7 +21,7 @@
   repository, then update the commit attribute; tools/check_index.py reports
   mismatches.
 -->
-<index version="1" commit="e7cd693fa48566c9657d40015f22d8f33025e749" name="Tab Agent Pro">
+<index version="1" commit="4061696bc2438002dbb3b5f1689385d87665e8b1" name="Tab Agent Pro">
   <category name="Transcription">
     <reapack name="Tab Agent" type="script" desc="AI-powered audio-to-tablature transcription">
       <version name="1.0.1" author="Scott Mills" time="2026-10-04T00:00:00Z">

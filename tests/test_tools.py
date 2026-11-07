@@ -57,6 +57,19 @@ class TestDockerInstallGuard:
         assert "mir_eval" in text and "resampy" in text
         assert "HOST=0.0.0.0" in text
 
+    def test_in_process_main_and_failure_paths(self, tmp_path, monkeypatch) -> None:
+        guard = _load("check_docker_install")
+        assert guard.main() == 0
+
+        # Simulate broken Dockerfile / requirements / app host binding in tmp_path
+        (tmp_path / "Dockerfile").write_text("RUN pip install basic-pitch>=0.4.0\n")
+        (tmp_path / "requirements.txt").write_text("numpy\n")
+        (tmp_path / "app.py").write_text('os.getenv("HOST", "127.0.0.1")\n')
+        monkeypatch.setattr(guard, "ROOT", tmp_path)
+        monkeypatch.setattr(guard, "failures", [])
+        assert guard.main() == 1
+        assert len(guard.failures) >= 3
+
 
 # ---------------------------------------------------------------------------
 # tools/check_env_example.py  (P2-1)
@@ -80,6 +93,14 @@ class TestEnvExampleGuard:
         sources = guard.sources()
         missing = [name for name in vars_found if name not in sources]
         assert missing == []
+        assert guard.main() == 0
+
+    def test_detects_unused_env_var(self, tmp_path, monkeypatch) -> None:
+        guard = _load("check_env_example")
+        env_file = tmp_path / ".env.example"
+        env_file.write_text("NEVER_USED_VAR_XYZ=1\n")
+        monkeypatch.setattr(guard, "ENV_FILE", env_file)
+        assert guard.main() == 1
 
 
 class TestDeploySpaceScript:
@@ -133,6 +154,8 @@ class TestReaPackIndex:
         assert any("version" in p for p in problems)
         assert "commit" in joined
         assert "<reaper>" in joined or "no <reapack> packages" in joined
+        assert guard.main([str(ROOT / "index.xml")]) == 0
+        assert guard.main([str(legacy)]) == 1
 
 
 # ---------------------------------------------------------------------------

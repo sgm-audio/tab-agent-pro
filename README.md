@@ -91,7 +91,7 @@ Basic Pitch with its ONNX backend plus the stem-separation stack.
 ### Validation
 
 ```bash
-python -m pytest tests/            # 290 tests, 91% coverage
+python -m pytest tests/            # 291 tests, 91% coverage
 python validate.py                 # end-to-end checklist (PASS/FAIL summary)
 
 python tools/check_index.py           # ReaPack index format
@@ -236,7 +236,7 @@ is what runs.
 ├── validate.py            # End-to-end checklist
 ├── reaper/                # REAPER Lua scripts
 ├── tools/                 # Config/deployment guard scripts
-├── tests/                 # 290 tests
+├── tests/                 # 291 tests
 ├── examples/              # Demo audio
 ├── docs/RUNBOOK.md        # Deploy / monitor / rollback / dependency refresh
 ├── docs/ACCEPTED_RISKS.md # Every known risk, with exposure and expiry

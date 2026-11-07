@@ -1,5 +1,7 @@
 # Tab Agent Pro — Documentation & Claims Audit
 
+> **Status Note:** All P0, P1, and P2 findings in this historical audit (targeting commit `c503e0b` on 2026-10-04) have been resolved in release **v1.0.1** and PR #6 (`e7cd693`). See [`CHANGELOG.md`](CHANGELOG.md) for the complete list of fixes.
+
 **Subject:** `sgm-audio/tab-agent-pro` @ `c503e0b` (`fix: clear all 57 mypy errors on the hardened gate`)
 **Audit date:** 2026-10-04
 **Method:** every claim in `README.md`, `CHANGELOG.md`, `index.xml`, `pyproject.toml`, `Dockerfile`, `.env.example`, `run.sh`, CI/pre-commit config, and the module docstrings was checked against the code, against a

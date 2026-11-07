@@ -423,7 +423,10 @@ def main(argv: list[str] | None = None) -> None:
     run_bass = args.instrument == "Bass" or args.instrument == "All"
 
     # Initialize agents
-    splitter = SplitterAgent(output_dir=os.path.join(output_dir, "stems"))
+    splitter = SplitterAgent(
+        output_dir=os.path.join(output_dir, "stems"),
+        device=args.device,
+    )
 
     # Separate stems (use processed audio if Suno)
     stems = splitter.separate_stems(processed_audio)
@@ -436,10 +439,15 @@ def main(argv: list[str] | None = None) -> None:
     bass_tuning = config.get("bass_tuning", [23, 28, 33, 38, 43])
     num_frets = int(config.get("num_frets", 24))
     technique_sensitivity = float(config.get("technique_sensitivity", 0.7))
+    guitar_prefer_low = (
+        bool(config.get("prefer_low_strings", False)) if config.get("active_profile") else False
+    )
+    bass_prefer_low = bool(config.get("prefer_low_strings", True))
 
     if run_guitar:
         # Process guitar stems
         guitar_stems = splitter.process_guitars(stems["guitar"])
+        guitar_min_pitch = min(guitar_tuning) if guitar_tuning else 40
 
         # Transcribe lead guitar
         lead_notes_raw = ear.transcribe_stem(
@@ -447,6 +455,7 @@ def main(argv: list[str] | None = None) -> None:
             target="Lead Guitar",
             onset_threshold=onset_threshold,
             frame_threshold=frame_threshold,
+            min_pitch=guitar_min_pitch,
         )
         lead_notes = ear.humanize_and_clean(lead_notes_raw, is_bass=False)
         lead_notes = suno_postprocessor.process(lead_notes, is_suno, suno_metrics)
@@ -460,6 +469,7 @@ def main(argv: list[str] | None = None) -> None:
             target="Rhythm Guitar L",
             onset_threshold=onset_threshold,
             frame_threshold=frame_threshold,
+            min_pitch=guitar_min_pitch,
         )
         rhythm_l_notes = ear.humanize_and_clean(rhythm_l_notes_raw, is_bass=False)
         rhythm_l_notes = suno_postprocessor.process(rhythm_l_notes, is_suno, suno_metrics)
@@ -473,6 +483,7 @@ def main(argv: list[str] | None = None) -> None:
             target="Rhythm Guitar R",
             onset_threshold=onset_threshold,
             frame_threshold=frame_threshold,
+            min_pitch=guitar_min_pitch,
         )
         rhythm_r_notes = ear.humanize_and_clean(rhythm_r_notes_raw, is_bass=False)
         rhythm_r_notes = suno_postprocessor.process(rhythm_r_notes, is_suno, suno_metrics)
@@ -481,7 +492,11 @@ def main(argv: list[str] | None = None) -> None:
             ear.export_midi(rhythm_r_notes, rhythm_r_midi_path)
 
         # Guitar tablature
-        guitar_agent = TabAgent(tuning=guitar_tuning, num_frets=num_frets)
+        guitar_agent = TabAgent(
+            tuning=guitar_tuning,
+            num_frets=num_frets,
+            prefer_low_strings=guitar_prefer_low,
+        )
 
         guitar_tracks = {
             "lead_guitar": ("Lead Guitar", lead_notes),
@@ -510,6 +525,7 @@ def main(argv: list[str] | None = None) -> None:
     if run_bass:
         # Process bass stem
         bass_clean = splitter.process_bass(stems["bass"])
+        bass_min_pitch = min(bass_tuning) if bass_tuning else 23
 
         # Transcribe bass
         bass_notes_raw = ear.transcribe_stem(
@@ -517,6 +533,7 @@ def main(argv: list[str] | None = None) -> None:
             target="Bass",
             onset_threshold=onset_threshold,
             frame_threshold=frame_threshold,
+            min_pitch=bass_min_pitch,
         )
         bass_notes = ear.humanize_and_clean(bass_notes_raw, is_bass=True)
         bass_notes = suno_postprocessor.process(bass_notes, is_suno, suno_metrics)
@@ -525,7 +542,11 @@ def main(argv: list[str] | None = None) -> None:
             ear.export_midi(bass_notes, bass_midi_path)
 
         # Bass tablature
-        bass_agent = TabAgent(tuning=bass_tuning, num_frets=num_frets)
+        bass_agent = TabAgent(
+            tuning=bass_tuning,
+            num_frets=num_frets,
+            prefer_low_strings=bass_prefer_low,
+        )
 
         bass_tab = bass_agent.generate_tab(bass_notes, technique_sensitivity=technique_sensitivity)
         if not args.no_tab and bass_tab:

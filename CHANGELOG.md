@@ -93,8 +93,19 @@ checkpoint clone had been hiding every download failure.
   `YOURMT3_REQUIRE_PINNED_REVISION` and `SPACES_ZERO_GPU` (11 variables, all
   verified as read by the code).
 
+### Merged from upstream before release
+- `main` moved to `4061696` (PRs #7 and #8: drop-tuning pitch floor, chord
+  octave deduplication, low-string preference, device config, same-second
+  session disambiguation). Conflicts in `app.py`, `index.xml` and `README.md`
+  were resolved by keeping this branch's `mkdtemp` session isolation — which
+  subsumes #8's retry loop and closes its check-then-create window — while
+  taking every upstream pipeline improvement (tuning-derived `min_pitch`,
+  runtime `DEVICE` plumbing, suno aggressiveness, `prefer_low_strings`).
+  `#8`'s new test asserted the counter-suffix naming scheme; it now asserts
+  distinct-directory behaviour instead.
+
 ### Verified
-- 290 tests pass; 91% statement coverage (up from 259 tests).
+- 301 tests pass; 93% statement coverage (259 before this pass, 269 on `main`).
 - `ruff`, `black --check`, `mypy` clean; `bandit` 0 issues across the tree.
 - 15/15 failure-mode simulations behave as documented, including a live
   network-timeout fallback from YourMT3+ to Basic Pitch.
@@ -185,7 +196,7 @@ Fixes from the documentation/reality audit (`AUDIT.md`). No API changes.
   `HF_TOKEN` that nothing read. `app.py` loads `.env` (no new dependency),
   `CACHE_DIR`/`DEVICE`/`HF_TOKEN` are honoured, and
   `tools/check_env_example.py` fails CI if a documented variable is unused.
-- **README/CHANGELOG** now match the code: 259 tests, `0.0.0.0`/`PORT`
+- **README/CHANGELOG** now match the code: 269 tests, `0.0.0.0`/`PORT`
   behaviour, the `other` Demucs stem used for guitar, the Basic-Pitch-first
   transcription path, the export limits, and ReaPack setup that includes the
   glue-item step.

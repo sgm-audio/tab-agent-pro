@@ -274,3 +274,93 @@ def test_import_does_not_hijack_sigint() -> None:
         assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
     finally:
         signal.signal(signal.SIGINT, prev)
+
+
+def test_app_honors_saved_user_preferences(tmp_path, monkeypatch) -> None:
+    """Web UI loads saved user_preferences.json (suno_aggressive_mode, tuning, min_pitch)."""
+    import json
+
+    import init_memory
+
+    app = _import_app()
+    prefs_file = tmp_path / "user_preferences.json"
+    prefs_file.write_text(
+        json.dumps(
+            {
+                "config": {
+                    "guitar_tuning": [38, 45, 50, 55, 59, 64],
+                    "suno_aggressive_mode": True,
+                    "prefer_low_strings": True,
+                }
+            }
+        )
+    )
+    monkeypatch.setattr(init_memory, "get_memory_dir", lambda: str(tmp_path))
+
+    with (
+        patch("app.process_suno_audio", return_value=("/tmp/x.wav", False, {})) as suno_fn,
+        patch("app._validate_audio", return_value=None),
+        patch("app.SplitterAgent") as splitter_cls,
+        patch("app.EarAgent") as ear_cls,
+        patch("app.TabAgent") as tab_cls,
+        patch("app.SunoNotePostprocessor") as suno_cls,
+    ):
+        splitter_cls.return_value.separate_stems.return_value = {"guitar": "g", "bass": "b"}
+        splitter_cls.return_value.process_guitars.return_value = {
+            "lead": "l",
+            "left": "l",
+            "right": "r",
+        }
+        ear_cls.return_value.transcribe_stem.return_value = []
+        ear_cls.return_value.humanize_and_clean.return_value = []
+        suno_cls.return_value.process.return_value = []
+
+        app._process_audio_impl("d.wav", "Guitar", True, True, True)
+
+        assert suno_fn.call_args.kwargs.get("aggressiveness") == 0.8
+        assert ear_cls.return_value.transcribe_stem.call_args.kwargs.get("min_pitch") == 38
+        assert tab_cls.call_args.kwargs.get("prefer_low_strings") is True
+
+
+def test_load_saved_config_ignores_corrupt_json(tmp_path, monkeypatch) -> None:
+    """Corrupt user_preferences.json falls back cleanly to empty config dict."""
+    import init_memory
+
+    app = _import_app()
+    (tmp_path / "user_preferences.json").write_text("{corrupt json")
+    monkeypatch.setattr(init_memory, "get_memory_dir", lambda: str(tmp_path))
+    assert app._load_saved_config() == {}
+
+
+def test_same_second_sessions_get_distinct_directories() -> None:
+    """Two runs within the same second do not overwrite each other's session dir."""
+    app = _import_app()
+
+    # No clock patch: session directory names come from tempfile.mkdtemp, and
+    # patching app.datetime breaks the epoch arithmetic in cleanup_stale_uploads
+    # (MagicMock > int). Two back-to-back calls are "the same second" in the
+    # only sense that matters here - nothing about the name is time-derived.
+    with (
+        patch("app.process_suno_audio", return_value=("/tmp/x.wav", False, {})),
+        patch("app._validate_audio", return_value=None),
+        patch("app.SplitterAgent") as splitter_cls,
+        patch("app.EarAgent") as ear_cls,
+        patch("app.SunoNotePostprocessor") as suno_cls,
+    ):
+        splitter_cls.return_value.separate_stems.return_value = {"guitar": "g", "bass": "b"}
+        splitter_cls.return_value.process_bass.return_value = "b"
+        ear_cls.return_value.transcribe_stem.return_value = []
+        ear_cls.return_value.humanize_and_clean.return_value = []
+        suno_cls.return_value.process.return_value = []
+
+        _msg1, zip1 = app._process_audio_impl("d.wav", "Bass", True, True, True)
+        _msg2, zip2 = app._process_audio_impl("d.wav", "Bass", True, True, True)
+
+        assert zip1 is not None and zip2 is not None
+        assert Path(zip1).parent != Path(zip2).parent
+        # Assert the behaviour, not the naming scheme: this branch replaces the
+        # same-second retry loop with tempfile.mkdtemp, which is atomic and so
+        # also closes the race between the loop's existence check and mkdir.
+        # Both directories must exist and be unique.
+        assert Path(zip1).parent.is_dir() and Path(zip2).parent.is_dir()
+        assert Path(zip1).parent.name != Path(zip2).parent.name
