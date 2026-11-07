@@ -180,11 +180,12 @@ class TestCliProfileWiring(unittest.TestCase):
         self._run([])  # must not raise
 
     def test_session_log_is_valid_json_after_run(self) -> None:
-        self._run(["--profile", "rock_drop_d"])
+        ear, _tab = self._run(["--profile", "rock_drop_d", "--instrument", "Guitar"])
         path = os.path.join(self.tmp, "user_memory", "user_preferences.json")
         with open(path) as f:
             saved = json.load(f)
         assert saved["sessions"], "session was not logged"
+        assert ear.transcribe_stem.call_args.kwargs.get("min_pitch") == 38
 
 
 class TestCliErgonomics(unittest.TestCase):

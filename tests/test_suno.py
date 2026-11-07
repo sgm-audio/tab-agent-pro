@@ -147,6 +147,25 @@ class TestSunoNotePostprocessor(unittest.TestCase):
         assert len(result) == 1
         assert result[0].pitch == 60  # lower kept
 
+    def test_remove_octave_errors_in_three_note_chord(self) -> None:
+        """Octave doubling separated by a 5th in a simultaneous chord is still removed."""
+        notes = [
+            make_note(40, 0.0),  # E2
+            make_note(47, 0.005),  # B2 (fifth)
+            make_note(52, 0.01),  # E3 (octave of E2)
+        ]
+        result = self.postprocessor._remove_octave_errors(notes)
+        assert [n.pitch for n in result] == [40, 47]
+
+    def test_remove_octave_errors_when_upper_octave_comes_first(self) -> None:
+        """Simultaneous octave where upper note appears first still keeps only lower note."""
+        notes = [
+            make_note(72, 0.0),  # upper octave first
+            make_note(60, 0.01),  # lower octave second
+        ]
+        result = self.postprocessor._remove_octave_errors(notes)
+        assert [n.pitch for n in result] == [60]
+
     def test_remove_spurious_high_notes(self) -> None:
         """Ultra-high notes (>30% ratio) are removed."""
         notes = [

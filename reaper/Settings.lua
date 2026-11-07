@@ -99,7 +99,7 @@ local function show_gui()
   local s = load_settings()
 
   local fields = "Profile number (see console after saving),Install path," ..
-    "Instrument (Guitar/Bass),Onset threshold (blank=profile)," ..
+    "Instrument (Guitar/Bass/All),Onset threshold (blank=profile)," ..
     "Frame threshold (blank=profile),Output dir (blank=repo/output)," ..
     "Export MIDI (1=yes),Export Tab (1=yes),Export JSON (1=yes)"
 

@@ -216,9 +216,14 @@ def _process_audio_impl(
 
         # Stage 0: Suno artifact detection and preprocessing
         progress(0.15, desc="🔍 Analyzing audio quality...")
+        suno_kwargs: dict = {
+            "output_path": str(session_dir / f"{song_name}_processed.wav"),
+        }
+        if "suno_aggressive_mode" in user_config:
+            suno_kwargs["aggressiveness"] = 0.8 if user_config["suno_aggressive_mode"] else 0.2
         processed_audio, is_suno, suno_metrics = process_suno_audio(
             str(audio_path),
-            output_path=str(session_dir / f"{song_name}_processed.wav"),
+            **suno_kwargs,
         )
         health.set_component(
             "suno_detector",
@@ -236,8 +241,12 @@ def _process_audio_impl(
         frame_threshold = float(user_config.get("frame_threshold", default_frame))
 
         # Initialize agents
-        splitter = SplitterAgent(output_dir=str(session_dir / "stems"))
-        ear = EarAgent(device=os.getenv("DEVICE", DEVICE))
+        runtime_device = os.getenv("DEVICE", DEVICE)
+        splitter = SplitterAgent(
+            output_dir=str(session_dir / "stems"),
+            device=runtime_device,
+        )
+        ear = EarAgent(device=runtime_device)
         suno_postprocessor = SunoNotePostprocessor()
 
         # Stage 1-3: Stem separation and processing
@@ -257,6 +266,13 @@ def _process_audio_impl(
             bass_clean = splitter.process_bass(stems["bass"])
             processed_stems = {"bass": bass_clean}
 
+        tuning = (
+            user_config.get("bass_tuning", BASS_TUNING)
+            if is_bass
+            else user_config.get("guitar_tuning", GUITAR_TUNING)
+        )
+        min_pitch = min(tuning) if tuning else None
+
         # Stage 4: Transcription
         progress(0.5, desc="🎸 Transcribing to MIDI...")
 
@@ -273,6 +289,7 @@ def _process_audio_impl(
                 target=instrument_type,
                 onset_threshold=onset_threshold,
                 frame_threshold=frame_threshold,
+                min_pitch=min_pitch,
             )
             notes_clean = ear.humanize_and_clean(notes_raw, is_bass=is_bass)
             # Apply Suno post-processing if needed
@@ -288,14 +305,14 @@ def _process_audio_impl(
         # Stage 5: Tablature generation
         progress(0.8, desc="📝 Generating tablature...")
 
-        tuning = (
-            user_config.get("bass_tuning", BASS_TUNING)
-            if is_bass
-            else user_config.get("guitar_tuning", GUITAR_TUNING)
-        )
         num_frets = int(user_config.get("num_frets", 24))
         technique_sensitivity = float(user_config.get("technique_sensitivity", 0.7))
-        tab_agent = TabAgent(tuning=tuning, num_frets=num_frets)
+        prefer_low_strings = bool(user_config.get("prefer_low_strings", False))
+        tab_agent = TabAgent(
+            tuning=tuning,
+            num_frets=num_frets,
+            prefer_low_strings=prefer_low_strings,
+        )
 
         # Tracks that produced no usable tablature (e.g. all notes unplayable)
         skipped: list[str] = []

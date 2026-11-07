@@ -92,8 +92,9 @@ class SplitterAgent:
     stem so the pipeline doesn't crash.
     """
 
-    def __init__(self, output_dir="separated_stems") -> None:
+    def __init__(self, output_dir="separated_stems", device: str | None = None) -> None:
         self.output_dir = output_dir
+        self.device: str = device if device is not None else os.getenv("DEVICE", "auto")
         self.log = get_logger("splitter")
         os.makedirs(output_dir, exist_ok=True)
 
@@ -138,9 +139,13 @@ class SplitterAgent:
 
     def _separate_with_api(self, audio_path, song_name):
         """Use Demucs Python API for stem separation."""
+        if self.device == "auto":
+            resolved_device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            resolved_device = self.device
         separator = demucs_api.Separator(
             model="htdemucs",
-            device="cuda" if torch.cuda.is_available() else "cpu",
+            device=resolved_device,
             shifts=1,
             overlap=0.25,
             split=True,
@@ -232,9 +237,9 @@ class SplitterAgent:
         Process bass stem with frequency-domain filtering.
 
         Bass processing:
-        - Preserve low frequencies (fundamental tones)
-        - Reduce high frequencies (fret noise, harmonics)
-        - Optional: Future upgrade to butterworth filters
+        - Preserve low frequencies (fundamental tones below 200 Hz)
+        - Reduce high frequencies (fret noise, harmonics above 200 Hz)
+        - Uses 4th-order Butterworth low-pass and high-pass filters
         """
         y, sr = librosa.load(bass_stem_path, mono=False, sr=None)
 
@@ -746,6 +751,7 @@ class EarAgent:
         onset_threshold: float = 0.5,
         frame_threshold: float = 0.3,
         min_note_duration: float = 0.05,
+        min_pitch: int | None = None,
     ) -> list[note_seq.NoteSequence.Note]:
         """
         Transcribe audio to MIDI notes with fallback chain:
@@ -770,6 +776,7 @@ class EarAgent:
                         onset_threshold,
                         frame_threshold,
                         min_note_duration,
+                        min_pitch=min_pitch,
                     )
                 log.info(
                     "transcribe_done",
@@ -791,6 +798,7 @@ class EarAgent:
                         onset_threshold,
                         frame_threshold,
                         min_note_duration,
+                        min_pitch=min_pitch,
                     )
                 log.info(
                     "transcribe_done",
@@ -820,6 +828,7 @@ class EarAgent:
         onset_threshold: float,
         frame_threshold: float,
         min_note_duration: float,
+        min_pitch: int | None = None,
     ) -> list[note_seq.NoteSequence.Note]:
         """
         Transcribe using Basic Pitch (Spotify's proven model).
@@ -845,7 +854,7 @@ class EarAgent:
             )
 
             notes = self._convert_prettymidi_to_noteseq(midi_data)
-            notes = self._filter_by_instrument_range(notes, target)
+            notes = self._filter_by_instrument_range(notes, target, min_pitch=min_pitch)
 
             health.set_component("basic_pitch", "loaded")
             log.info("basic_pitch_done", note_count=len(notes), target=target)
@@ -874,6 +883,7 @@ class EarAgent:
         onset_threshold: float,
         frame_threshold: float,
         min_note_duration: float,
+        min_pitch: int | None = None,
     ) -> list[note_seq.NoteSequence.Note]:
         """
         Transcribe using YourMT3+ custom PyTorch Lightning model.
@@ -951,7 +961,7 @@ class EarAgent:
                 ),
             )
 
-        notes = self._filter_by_instrument_range(notes, target)
+        notes = self._filter_by_instrument_range(notes, target, min_pitch=min_pitch)
         log.info("yourmt3_transcribed", note_count=len(notes), target=target)
         return notes
 
@@ -1162,22 +1172,25 @@ class EarAgent:
         self,
         notes: list[note_seq.NoteSequence.Note],
         target: str,
+        min_pitch: int | None = None,
     ) -> list[note_seq.NoteSequence.Note]:
         """
         Filter notes by valid instrument range.
 
         Standard ranges:
         - Bass (5-string): B0 (23) to G4 (67)
-        - Guitar (6-string): E2 (40) to E6 (88)
+        - Guitar (6-string): E2 (40) to E6 (88), or lower when drop-tuned
+          (e.g. Drop D passes min_pitch=38)
         """
         target_lower = target.lower()
 
         if "bass" in target_lower:
-            min_pitch, max_pitch = 23, 67  # 5-string bass range
+            default_min, max_pitch = 23, 67  # 5-string bass range
         else:  # Guitar
-            min_pitch, max_pitch = 40, 88  # Standard guitar range
+            default_min, max_pitch = 40, 88  # Standard guitar range
 
-        filtered = [note for note in notes if min_pitch <= note.pitch <= max_pitch]
+        low_bound = default_min if min_pitch is None else min_pitch
+        filtered = [note for note in notes if low_bound <= note.pitch <= max_pitch]
 
         removed_count = len(notes) - len(filtered)
         if removed_count > 0:
@@ -1265,7 +1278,12 @@ class TabAgent:
     ``last_skipped_notes``) instead of discarding the whole track.
     """
 
-    def __init__(self, tuning: list[int], num_frets: int = 24) -> None:
+    def __init__(
+        self,
+        tuning: list[int],
+        num_frets: int = 24,
+        prefer_low_strings: bool = False,
+    ) -> None:
         """
         Initialize tablature generator.
 
@@ -1273,11 +1291,13 @@ class TabAgent:
             tuning: List of MIDI note numbers for open strings
                 Example: [23, 28, 33, 38, 43] for 5-string bass (B-E-A-D-G)
             num_frets: Maximum fret number on instrument
+            prefer_low_strings: Penalize high-fret positions on upper strings
 
         """
         self.tuning = tuning
         self.num_frets = num_frets
         self.num_strings = len(tuning)
+        self.prefer_low_strings = prefer_low_strings
         self.last_skipped_notes: list[int] = []
 
     def get_valid_positions(self, midi_note: int) -> list[dict]:
@@ -1332,11 +1352,15 @@ class TabAgent:
                 # String skip on fast run = awkward
                 cost += 5.0  # Penalize
 
-        # 5-string bass preference: avoid high frets on low strings
-        # (Low strings on bass have better tone for low notes)
+        # 5-string bass heuristic: slight penalty for low fretted notes (1-4)
+        # on the lowest strings (B0/E1, indices 0-1)
         if self.num_strings == 5 and curr["string"] < 2 and 0 < curr["fret"] < 5:
             # Low B and E strings (indices 0-1)
             cost += 1.0  # Slight penalty for low frets on low strings
+
+        # When prefer_low_strings is enabled, discourage high frets on upper strings
+        if self.prefer_low_strings and curr["string"] >= 2 and curr["fret"] >= 10:
+            cost += 1.0
 
         return cost
 

@@ -274,3 +274,49 @@ def test_import_does_not_hijack_sigint() -> None:
         assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
     finally:
         signal.signal(signal.SIGINT, prev)
+
+
+def test_app_honors_saved_user_preferences(tmp_path, monkeypatch) -> None:
+    """Web UI loads saved user_preferences.json (suno_aggressive_mode, tuning, min_pitch)."""
+    import json
+
+    import init_memory
+
+    app = _import_app()
+    prefs_file = tmp_path / "user_preferences.json"
+    prefs_file.write_text(
+        json.dumps(
+            {
+                "config": {
+                    "guitar_tuning": [38, 45, 50, 55, 59, 64],
+                    "suno_aggressive_mode": True,
+                    "prefer_low_strings": True,
+                }
+            }
+        )
+    )
+    monkeypatch.setattr(init_memory, "get_memory_dir", lambda: str(tmp_path))
+
+    with (
+        patch("app.process_suno_audio", return_value=("/tmp/x.wav", False, {})) as suno_fn,
+        patch("app._validate_audio", return_value=None),
+        patch("app.SplitterAgent") as splitter_cls,
+        patch("app.EarAgent") as ear_cls,
+        patch("app.TabAgent") as tab_cls,
+        patch("app.SunoNotePostprocessor") as suno_cls,
+    ):
+        splitter_cls.return_value.separate_stems.return_value = {"guitar": "g", "bass": "b"}
+        splitter_cls.return_value.process_guitars.return_value = {
+            "lead": "l",
+            "left": "l",
+            "right": "r",
+        }
+        ear_cls.return_value.transcribe_stem.return_value = []
+        ear_cls.return_value.humanize_and_clean.return_value = []
+        suno_cls.return_value.process.return_value = []
+
+        app._process_audio_impl("d.wav", "Guitar", True, True, True)
+
+        assert suno_fn.call_args.kwargs.get("aggressiveness") == 0.8
+        assert ear_cls.return_value.transcribe_stem.call_args.kwargs.get("min_pitch") == 38
+        assert tab_cls.call_args.kwargs.get("prefer_low_strings") is True

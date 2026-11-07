@@ -100,6 +100,17 @@ class TestEarAgentInstrumentFilter(unittest.TestCase):
         assert len(result) == 3
         assert 70 not in [n.pitch for n in result]
 
+    def test_guitar_drop_d_min_pitch_preserves_low_d2(self) -> None:
+        """Drop D min_pitch=38 preserves D2 (38) and D#2 (39) while filtering below 38."""
+        notes = [
+            self._make_note(36),  # below D2
+            self._make_note(38),  # D2 — valid in Drop D
+            self._make_note(39),  # D#2 — valid in Drop D
+            self._make_note(64),  # E4 — valid
+        ]
+        result = self.ear._filter_by_instrument_range(notes, "Guitar", min_pitch=38)
+        assert [n.pitch for n in result] == [38, 39, 64]
+
 
 class TestEarAgentHumanize(unittest.TestCase):
     """Tests for humanize_and_clean."""

@@ -76,7 +76,7 @@ Fixes from the documentation/reality audit (`AUDIT.md`). No API changes.
   `HF_TOKEN` that nothing read. `app.py` loads `.env` (no new dependency),
   `CACHE_DIR`/`DEVICE`/`HF_TOKEN` are honoured, and
   `tools/check_env_example.py` fails CI if a documented variable is unused.
-- **README/CHANGELOG** now match the code: 259 tests, `0.0.0.0`/`PORT`
+- **README/CHANGELOG** now match the code: 265 tests, `0.0.0.0`/`PORT`
   behaviour, the `other` Demucs stem used for guitar, the Basic-Pitch-first
   transcription path, the export limits, and ReaPack setup that includes the
   glue-item step.
