@@ -82,7 +82,7 @@ jobs:
         sudo apt-get install -y ffmpeg libsndfile1 build-essential git
 
     - name: Install PyTorch CPU
-      run: pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+      run: pip install torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu
 
     - name: Install project dependencies
       run: |
