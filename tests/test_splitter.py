@@ -126,6 +126,26 @@ class TestSplitterAgent(unittest.TestCase):
         after_errors = default_metrics.stage_errors.get("demucs_cli", 0)
         assert after_errors == before_errors + 1
 
+    def test_separate_with_api_honors_explicit_device(self) -> None:
+        """SplitterAgent(device='cpu') passes device='cpu' to demucs_api.Separator."""
+        from unittest.mock import MagicMock, patch
+
+        import agents as _a
+
+        sp = SplitterAgent(output_dir=self.tmpdir, device="cpu")
+        mock_api = MagicMock()
+        mock_sep = MagicMock()
+        mock_sep.separate_audio_file.return_value = (None, {})
+        mock_api.Separator.return_value = mock_sep
+
+        with (
+            patch.object(_a, "demucs_api", mock_api, create=True),
+            patch("agents.torch.cuda.is_available", return_value=True),
+        ):
+            sp._separate_with_api("/tmp/song.wav", "song")
+
+        assert mock_api.Separator.call_args.kwargs["device"] == "cpu"
+
 
 if __name__ == "__main__":
     unittest.main()

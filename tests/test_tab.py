@@ -76,6 +76,17 @@ class TestTabAgentPositions(unittest.TestCase):
         cost = self.agent.calculate_cost(prev, curr, time_delta=-0.5)
         assert cost > 0.0
 
+    def test_prefer_low_strings_penalizes_high_frets_on_upper_strings(self) -> None:
+        """prefer_low_strings=True adds penalty for high frets (>=10) on upper strings (>=2)."""
+        agent_pref = TabAgent(tuning=BASS_TUNING, num_frets=24, prefer_low_strings=True)
+        agent_default = TabAgent(tuning=BASS_TUNING, num_frets=24, prefer_low_strings=False)
+        prev = {"string": 2, "fret": 8}
+        curr = {"string": 3, "fret": 12}
+        assert (
+            agent_pref.calculate_cost(prev, curr, time_delta=0.5)
+            == agent_default.calculate_cost(prev, curr, time_delta=0.5) + 1.0
+        )
+
 
 class TestTabAgentGenerateTab(unittest.TestCase):
     """Tests for the full generate_tab pipeline."""

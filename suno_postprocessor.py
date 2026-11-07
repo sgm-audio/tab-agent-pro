@@ -242,29 +242,32 @@ class SunoNotePostprocessor:
         """
         Remove octave doubling errors (common in Suno transcriptions).
 
-        Suno's metallic shimmer often causes false harmonics.
+        Suno's metallic shimmer often causes false harmonics. Checks all
+        simultaneous notes (within 50ms) so octave doublings inside 3+ note
+        chords are also caught, keeping the lower note of each octave pair.
         """
         cleaned = []
-        i = 0
+        skip_indices: set[int] = set()
 
-        while i < len(notes):
-            note = notes[i]
+        for i, note in enumerate(notes):
+            if i in skip_indices:
+                continue
 
-            # Check if next note is octave above/below at same time
-            if i + 1 < len(notes):
-                next_note = notes[i + 1]
-                time_diff = abs(next_note.start_time - note.start_time)
-                pitch_diff = abs(next_note.pitch - note.pitch)
-
-                # If notes are simultaneous and exactly 12 semitones apart
-                if time_diff < 0.05 and pitch_diff == 12:
-                    # Keep the lower note (usually correct)
-                    cleaned.append(note if note.pitch < next_note.pitch else next_note)
-                    i += 2  # Skip both
+            is_upper_octave = False
+            for j, other in enumerate(notes):
+                if i == j or j in skip_indices:
                     continue
+                if abs(other.start_time - note.start_time) < 0.05:
+                    if note.pitch - other.pitch == 12:
+                        # `note` is an octave above simultaneous `other` -> drop `note`
+                        is_upper_octave = True
+                        break
+                    if other.pitch - note.pitch == 12:
+                        # `other` is an octave above simultaneous `note` -> drop `other`
+                        skip_indices.add(j)
 
-            cleaned.append(note)
-            i += 1
+            if not is_upper_octave:
+                cleaned.append(note)
 
         return cleaned
 
