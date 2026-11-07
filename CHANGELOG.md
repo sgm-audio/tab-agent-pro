@@ -131,6 +131,25 @@ checkpoint clone had been hiding every download failure.
   `#8`'s new test asserted the counter-suffix naming scheme; it now asserts
   distinct-directory behaviour instead.
 
+### New gate — `check_lockfile.py --interpreter`
+Added after CI's second failure: the lock installed fine on 3.11 (where it was
+generated) but 16 of its pins declare `requires-python >= 3.11`, so the 3.10 CI
+runner could not install it at all, while the image (3.12) was unaffected. The
+check queries each pin's `requires-python` and fails with the offending list;
+verified negative by forcing the interpreter down to 3.10, which reproduced
+exactly the CI error. It runs in CI before the install and first thing in the
+Docker build.
+
+### Changed — Python floor is now 3.11
+The pinned dependency set requires it: 16 of the 118 pins declare
+`requires-python >= 3.11` (numpy, scipy, onnxruntime, pandas, starlette,
+scikit-learn, tornado, ...). The image has always been `python:3.12-slim`, but
+CI ran 3.10 and `pyproject.toml` advertised 3.10+, so the locked set could not
+actually be installed on the documented minimum. CI now runs 3.12 (the shipped
+interpreter), `requires-python` is `>=3.11`, and
+`tools/check_lockfile.py --interpreter` fails the build when any pin cannot
+install on the running Python.
+
 ### Verified
 - 301 tests pass; 93% statement coverage (259 before this pass, 269 on `main`).
 - `ruff`, `black --check`, `mypy` clean; `bandit` 0 issues across the tree.

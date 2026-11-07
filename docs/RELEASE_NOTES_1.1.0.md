@@ -71,7 +71,9 @@ healthcheck, lockfile gate enforced during the build.
 - **`setuptools<81` stays.** Do not apply pip-audit's suggested upgrade: 81+
   removes `pkg_resources`, which `pretty_midi` imports (reproduced failure in
   `docs/ACCEPTED_RISKS.md` §R-2).
-- **Python 3.10+** unchanged. Basic Pitch still installs `--no-deps` on Linux;
+- **Python 3.11+** (was 3.10+). The pinned set requires it — 16 pins declare
+  `requires-python >= 3.11` — and CI now runs 3.12 to match the image. Basic
+  Pitch still installs `--no-deps` on Linux;
   the Dockerfile and CI both encode the two-stage install.
 
 ## Verification at release

@@ -37,10 +37,13 @@ RUN pip install --no-deps "basic-pitch>=0.4.0,<0.5" "mir_eval>=0.6" "resampy>=0.
 # requirements.txt is range-based, so the resolve above can drift from what was
 # tested. Re-apply the lock (--no-deps: satisfied packages are skipped and
 # TensorFlow cannot be pulled back in), then fail the build if the installed
-# set and the lock disagree.
+# set and the lock disagree. The interpreter check runs first so a lock that
+# cannot install on this Python fails immediately.
 COPY requirements.lock pyproject.toml ./
 COPY tools ./tools
-RUN pip install --no-deps -r requirements.lock && python tools/check_lockfile.py
+RUN python tools/check_lockfile.py --interpreter && \
+    pip install --no-deps -r requirements.lock && \
+    python tools/check_lockfile.py
 
 # Stage 2: Runtime — lean, no build toolchain
 FROM python:3.12-slim

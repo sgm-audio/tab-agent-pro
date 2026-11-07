@@ -26,7 +26,7 @@ import sys
 import threading
 import time
 from collections import deque
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 # ============================================================================
@@ -43,7 +43,7 @@ class PipelineLogger:
 
     def _emit(self, level: str, event: str, **kwargs) -> None:
         record = {
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "ts": datetime.now(UTC).isoformat(),
             "level": level,
             "module": self.module,
             "event": event,

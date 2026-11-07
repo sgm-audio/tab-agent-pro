@@ -15,6 +15,8 @@ Usage:
     python tools/check_lockfile.py           # exact: lock == installed env
     python tools/check_lockfile.py --verify  # lock == closure of declared deps
     python tools/check_lockfile.py --write   # regenerate from this environment
+    python tools/check_lockfile.py --interpreter [--offline]
+                                             # every pin installs on *this* Python
 
 A development virtualenv holds lint/test/audit tooling that is never shipped, so
 the exact mode is only meaningful in a clean install of the shipped set. CI uses
@@ -193,6 +195,73 @@ def check_static() -> int:
     return 0
 
 
+PYPI_TIMEOUT = 12
+
+
+def _requires_python(name: str, version: str) -> str | None:
+    """PEP 503 `requires_python` for one pin, or None when offline/unknown."""
+    import json as _json
+    import urllib.request
+
+    try:
+        url = f"https://pypi.org/pypi/{name}/{version}/json"
+        with urllib.request.urlopen(url, timeout=PYPI_TIMEOUT) as resp:  # nosec B310 - fixed host
+            return _json.load(resp)["info"].get("requires_python") or ""
+    except Exception:
+        return None
+
+
+def check_interpreter(skip_network: bool = False) -> int:
+    """
+    Every pin must install on the interpreter the image actually runs.
+
+    This exists because a lock generated on one Python can be silently
+    uninstallable on another: 16 of this lock's pins require >=3.11, which made
+    `pip install -r requirements.lock` fail on a 3.10 CI runner while the image
+    (3.12) was fine. Without this check the mismatch only shows up as a red
+    build after a multi-minute install.
+    """
+    import re as _re
+
+    if not LOCK.exists():
+        print(f"{LOCK.name} is missing.", file=sys.stderr)
+        return 1
+
+    locked = lock_entries(LOCK.read_text())
+    target = f"{sys.version_info.major}.{sys.version_info.minor}"
+    print(f"checking {len(locked)} pins against Python {target}")
+
+    unknown = 0
+    incompatible: list[str] = []
+    for name, version in sorted(locked.items()):
+        spec = None if skip_network else _requires_python(name, version)
+        if spec is None:
+            unknown += 1
+            continue
+        if not spec:
+            continue
+        match = _re.search(r">=\s*([0-9]+)\.([0-9]+)", spec)
+        if match:
+            floor = (int(match.group(1)), int(match.group(2)))
+            if floor > sys.version_info[:2]:
+                incompatible.append(f"{name}=={version} requires Python {spec}")
+
+    if incompatible:
+        print("These pins cannot install on the running interpreter:", file=sys.stderr)
+        for line in incompatible:
+            print(f"  ✗ {line}", file=sys.stderr)
+        print(
+            "\nAlign the CI runner with the image (Dockerfile) or regenerate the "
+            "lock on the shipped interpreter.",
+            file=sys.stderr,
+        )
+        return 1
+
+    note = f" ({unknown} unverified: no PyPI metadata / offline)" if unknown else ""
+    print(f"All {len(locked) - unknown} verifiable pins install on Python {target}{note}.")
+    return 0
+
+
 def _walk_closure(roots: set[str]) -> set[str]:
     """Transitive dependency closure of `roots` over the installed metadata."""
     import re as _re
@@ -241,14 +310,18 @@ def check_verify(extra: list[str] | None = None) -> int:
 
     locked = lock_entries(LOCK.read_text())
     declared = declared_requirements()
+    # Exact pins in requirements.txt (e.g. `IPython>=8.0,<8.30`) are walk roots
+    # too: they describe installed packages whose own extra requirements are
+    # part of the shipped set even when nothing else declares them.
     roots = {name for name in declared if name not in EXCLUDED}
+    exact = {name for name, version in declared.items() if version and name not in EXCLUDED}
     # setuptools is declared (pinned <81) but excluded from the runtime lock: it
     # is install-time only. It is still part of the closure, so re-add it as a
     # walk root and drop it from the comparison instead of hiding it silently.
     walk_roots = set(roots) | {"setuptools"}
 
     current = installed()
-    closure = _walk_closure(walk_roots) - EXCLUDED
+    closure = _walk_closure(walk_roots | exact) - EXCLUDED
     tolerated = {canonical(name) for name in (extra or [])}
 
     unlocked = sorted(name for name in closure if name not in locked)
@@ -316,6 +389,9 @@ def main(argv: list[str] | None = None) -> int:
     extras = [argv[i + 1] for i, a in enumerate(argv) if a == "--extra" and i + 1 < len(argv)]
     if "--verify" in argv:
         return check_verify(extras)
+
+    if "--interpreter" in argv:
+        return check_interpreter(skip_network="--offline" in argv)
 
     current = installed()
 

@@ -119,6 +119,11 @@ def check_hardening() -> None:
             "Dockerfile must re-apply requirements.lock after the range-based "
             "install, otherwise the shipped versions can drift from the lock"
         )
+    if "check_lockfile.py --interpreter" not in text:
+        failures.append(
+            "Dockerfile must verify that every locked pin installs on the image's "
+            "own interpreter before installing them"
+        )
     if "check_lockfile.py" not in text:
         failures.append(
             "Dockerfile must fail the build when the installed set and "

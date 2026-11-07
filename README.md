@@ -9,7 +9,7 @@ license: mit
 ---
 
 [![CI](https://github.com/sgm-audio/tab-agent-pro/actions/workflows/ci.yml/badge.svg)](https://github.com/sgm-audio/tab-agent-pro/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 # 🎸 Tab Agent
@@ -32,13 +32,15 @@ python app.py
 # Open http://localhost:7860
 ```
 
-> **Linux / Python 3.12+ note:** Basic Pitch's default Linux dependency set pulls
-> TensorFlow `<2.15.1` (which has no Python 3.12+ wheels and is unused by the ONNX
-> backend). On Linux with Python 3.12+, install Basic Pitch without dependencies
-> before installing `requirements.txt` (matching `Dockerfile` and `.github/workflows/ci.yml`):
+> **Linux note (which is most installs, and the image):** Basic Pitch's default
+> Linux dependency set pulls TensorFlow `<2.15.1`, which has no Python 3.12+
+> wheels and is unused by the ONNX backend. Install Basic Pitch without
+> dependencies, then the rest. This is what `Dockerfile` and CI do, and it is
+> the supported path — **Python 3.11+ is required**, and the image runs 3.12:
 > ```bash
 > pip install --no-deps "basic-pitch>=0.4.0,<0.5"
 > grep -v '^basic-pitch' requirements.txt > /tmp/req-nobp.txt && pip install -r /tmp/req-nobp.txt
+> pip install --no-deps -r requirements.lock   # exact, tested versions
 > ```
 
 **Reproducible install:** `requirements.lock` pins the 118 distributions that
