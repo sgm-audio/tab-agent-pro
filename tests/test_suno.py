@@ -69,6 +69,14 @@ class TestSunoArtifactDetector(unittest.TestCase):
         is_suno, _ = self.detector.analyze(path)
         assert not is_suno
 
+    def test_bundled_examples_not_flagged_as_suno(self) -> None:
+        """Bundled clean example WAVs must not false-positive as Suno AI."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for name in ("guitar_solo.wav", "bass_groove.wav"):
+            wav_path = os.path.join(root, "examples", name)
+            is_suno, metrics = self.detector.analyze(wav_path)
+            assert not is_suno, f"{name} misclassified as Suno AI: {metrics}"
+
 
 class TestSunoAudioPreprocessor(unittest.TestCase):
     """Tests for audio preprocessing pipeline."""
@@ -106,6 +114,14 @@ class TestSunoAudioPreprocessor(unittest.TestCase):
         filtered = self.preprocessor._highpass_filter(signal, sr, cutoff=40)
         # Filtered signal should have lower amplitude (attenuated)
         assert np.max(np.abs(filtered)) < np.max(np.abs(signal))
+
+    def test_reduce_hf_artifacts_when_nyquist_below_16khz(self) -> None:
+        """_reduce_hf_artifacts attenuates 12-15kHz even when Nyquist < 16kHz (sr=30000)."""
+        sr = 30000  # Nyquist = 15000 Hz (< 16000 Hz)
+        t = np.linspace(0, 1, sr, endpoint=False)
+        tone_14k = np.sin(2 * np.pi * 14000 * t).astype(np.float32)
+        out = self.preprocessor._reduce_hf_artifacts(tone_14k, sr)
+        assert np.sqrt(np.mean(out**2)) < np.sqrt(np.mean(tone_14k**2)) * 0.8
 
 
 class TestSunoNotePostprocessor(unittest.TestCase):
@@ -171,6 +187,27 @@ class TestSunoNotePostprocessor(unittest.TestCase):
                 places=5,
                 msg=f"start_time {note.start_time} not quantized to 50ms",
             )
+
+    def test_smooth_timing_prevents_zero_duration_notes(self) -> None:
+        """Short notes that quantize to identical start/end keep positive duration."""
+        notes = [make_note(60, 0.101, 0.119)]
+        result = self.postprocessor._smooth_timing(notes, quantize_ms=50)
+        assert len(result) == 1
+        assert result[0].end_time > result[0].start_time
+
+    def test_process_suno_audio_forwards_aggressiveness(self) -> None:
+        """process_suno_audio passes aggressiveness to SunoArtifactDetector."""
+        from unittest.mock import patch
+
+        from suno_postprocessor import process_suno_audio
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            wav = os.path.join(tmpdir, "in.wav")
+            sf.write(wav, np.zeros(22050, dtype=np.float32), 22050)
+            with patch("suno_postprocessor.SunoArtifactDetector") as det_cls:
+                det_cls.return_value.analyze.return_value = (False, {"hf_ratio": 0.0})
+                process_suno_audio(wav, aggressiveness=0.9)
+                det_cls.assert_called_once_with(aggressiveness=0.9)
 
 
 if __name__ == "__main__":

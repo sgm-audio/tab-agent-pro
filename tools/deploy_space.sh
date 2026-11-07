@@ -37,23 +37,22 @@ FILES=(
   README.md
 )
 
+INCLUDE_ARGS=()
 for f in "${FILES[@]}"; do
   [ -f "$f" ] || { echo "missing $f" >&2; exit 1; }
+  INCLUDE_ARGS+=("--include" "$f")
 done
 
 echo "Uploading ${#FILES[@]} files + examples/ to $SPACE ($REVISION) ..."
-hf upload "$SPACE" . "$REVISION" \
+hf upload "$SPACE" . . \
   --repo-type space \
-  --exclude ".git/*" \
-  --exclude "tests/*" \
-  --exclude "tools/*" \
-  --exclude "reaper/*" \
-  --exclude "*.md" \
-  --include "README.md" \
-  --include "${FILES[@]}" \
-  --include "examples/*"
+  --revision "$REVISION" \
+  "${INCLUDE_ARGS[@]}" \
+  --include "examples/*" \
+  --exclude "__pycache__/*" \
+  --exclude "*.pyc"
 
-host="$(echo "$SPACE" | tr '/_' '--')"
+host="$(printf '%s' "$SPACE" | tr '/_' '--' | tr '[:upper:]' '[:lower:]')"
 echo
 echo "Uploaded. Check the build at https://huggingface.co/spaces/$SPACE"
 echo "Health:   https://${host}.hf.space/health"

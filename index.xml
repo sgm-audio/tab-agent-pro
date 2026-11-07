@@ -16,10 +16,10 @@
   repository, then update the commit attribute; tools/check_index.py reports
   mismatches.
 -->
-<index version="1" commit="c503e0b3fcd3cb3de77ddc5283cbe176bbcb7add" name="Tab Agent Pro">
+<index version="1" commit="892f3f01f8dad9f063adaa202ed1f32a69234e6a" name="Tab Agent Pro">
   <category name="Transcription">
     <reapack name="Tab Agent" type="script" desc="AI-powered audio-to-tablature transcription">
-      <version name="1.0.0" author="Scott Mills" time="2026-10-04T00:00:00Z">
+      <version name="1.0.1" author="Scott Mills" time="2026-10-04T00:00:00Z">
         <source main="TabAgent.lua">reaper/TabAgent.lua</source>
         <changelog><![CDATA[
 Initial release: Basic Pitch + YourMT3+ transcription, Demucs stem separation,
@@ -30,7 +30,7 @@ Settings from "Tab Agent Settings" are passed through to main.py.
     </reapack>
 
     <reapack name="Tab Agent Settings" type="script" desc="Configure Tab Agent Pro profiles and exports">
-      <version name="1.0.0" author="Scott Mills" time="2026-10-04T00:00:00Z">
+      <version name="1.0.1" author="Scott Mills" time="2026-10-04T00:00:00Z">
         <source main="Settings.lua">reaper/Settings.lua</source>
         <changelog><![CDATA[
 Initial release: 8 preset profiles, instrument selection, install path,

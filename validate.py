@@ -11,26 +11,29 @@ Usage:
 """
 
 import argparse
+import atexit
 import importlib
 import os
 import shutil
-import subprocess  # nosec B404
+import subprocess  # nosec: B404
 import sys
 import tempfile
 
 PASS = 0
 FAIL = 0
 SKIP = 0
-RESULTS: list = []
+RESULTS: list[str] = []
 QUICK = False
 TMP_DIR = tempfile.mkdtemp(prefix="tab-agent-validate-")
+atexit.register(lambda: shutil.rmtree(TMP_DIR, ignore_errors=True))
 
 
 def _tmp(name: str) -> str:
+    os.makedirs(TMP_DIR, exist_ok=True)
     return os.path.join(TMP_DIR, name)
 
 
-def check(name, condition, detail="") -> None:
+def check(name: str, condition: object, detail: str = "") -> None:
     global PASS, FAIL
     if condition:
         RESULTS.append(f"  ✅ {name}")
@@ -40,7 +43,7 @@ def check(name, condition, detail="") -> None:
         FAIL += 1
 
 
-def check_skip(name, condition, detail="") -> None:
+def check_skip(name: str, condition: object, detail: str = "") -> None:
     global PASS, SKIP
     if condition:
         RESULTS.append(f"  ⏭️  {name} — {detail}")
@@ -50,7 +53,7 @@ def check_skip(name, condition, detail="") -> None:
         PASS += 1
 
 
-def check_import(name) -> None:
+def check_import(name: str) -> None:
     """Verify a module really imports (an ImportError must fail the check)."""
     try:
         module = importlib.import_module(name)
@@ -68,7 +71,7 @@ def check_docker_build() -> None:
         check_skip("Docker build", True, "install docker or podman")
     else:
         try:
-            result = subprocess.run(  # nosec B603 B607
+            result = subprocess.run(  # nosec B603
                 [docker_tool, "build", "-t", "tab-agent-pro:validate", "."],
                 capture_output=True,
                 text=True,
@@ -85,13 +88,20 @@ def check_docker_build() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     global PASS, FAIL, SKIP, QUICK
+    PASS = 0
+    FAIL = 0
+    SKIP = 0
+    RESULTS.clear()
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--quick", action="store_true", help="skip slow checks")
     args = parser.parse_args(argv)
     QUICK = args.quick
 
+    orig_cwd = os.getcwd()
     root = os.path.dirname(os.path.abspath(__file__))
     os.chdir(root)
+    os.makedirs(TMP_DIR, exist_ok=True)
 
     # ── 1. FILE EXISTENCE ──────────────────────────────────────────────
 
@@ -125,9 +135,12 @@ def main(argv: list[str] | None = None) -> int:
     # input/ and output/ are gitignored working directories, so their absence in a
     # fresh clone is expected; only check that the output dir can be created.
     check("Directory: examples/", os.path.isdir("examples"))
+    output_existed = os.path.exists("output")
     try:
         os.makedirs("output", exist_ok=True)
         writable = os.access("output", os.W_OK)
+        if not output_existed and os.path.isdir("output") and not os.listdir("output"):
+            os.rmdir("output")
     except OSError as e:
         writable = False
         RESULTS.append(f"  info: could not create output/: {e}")
@@ -403,8 +416,6 @@ def main(argv: list[str] | None = None) -> int:
             not basic_pitch_ok,
             "no backend importable — install basic-pitch with mir_eval + resampy",
         )
-        if basic_pitch_ok:
-            check("Transcription backend available (Basic Pitch)", True)
     except Exception as e:
         check("Transcription backend check", False, str(e))
 
@@ -491,7 +502,7 @@ def main(argv: list[str] | None = None) -> int:
     # ── 8. GIT CLEANLINESS ─────────────────────────────────────────────
 
     try:
-        result = subprocess.run(  # nosec B603 B607
+        result = subprocess.run(  # nosec: B603, B607
             ["git", "status", "--porcelain"],
             capture_output=True,
             text=True,
@@ -507,6 +518,9 @@ def main(argv: list[str] | None = None) -> int:
     check_docker_build()
 
     # ── SUMMARY ────────────────────────────────────────────────────────
+
+    shutil.rmtree(TMP_DIR, ignore_errors=True)
+    os.chdir(orig_cwd)
 
     print("\n".join(RESULTS))
     print(f"\n{'=' * 60}")

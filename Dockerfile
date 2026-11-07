@@ -54,10 +54,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /venv /venv
 ENV PATH="/venv/bin:$PATH"
 
-RUN groupadd -r tabagent && useradd -r -g tabagent -d /app -s /sbin/nologin tabagent \
-    && chown -R tabagent:tabagent /app
+RUN groupadd -r tabagent && useradd -r -g tabagent -d /app -s /sbin/nologin tabagent
 
-COPY . .
+COPY --chown=tabagent:tabagent . .
+RUN chown -R tabagent:tabagent /app
 
 USER tabagent
 

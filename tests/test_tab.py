@@ -69,6 +69,13 @@ class TestTabAgentPositions(unittest.TestCase):
         cost_other = self.agent.calculate_cost(prev, other, time_delta=0.1)
         assert cost < cost_other
 
+    def test_cost_non_negative_on_negative_time_delta(self) -> None:
+        """Unsorted notes with negative time_delta must not produce negative fret penalties."""
+        prev = {"string": 0, "fret": 1}
+        curr = {"string": 0, "fret": 12}
+        cost = self.agent.calculate_cost(prev, curr, time_delta=-0.5)
+        assert cost > 0.0
+
 
 class TestTabAgentGenerateTab(unittest.TestCase):
     """Tests for the full generate_tab pipeline."""

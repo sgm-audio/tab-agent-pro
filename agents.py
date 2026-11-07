@@ -11,7 +11,7 @@ Improvements from Basic Pitch:
 """
 
 import os
-import subprocess  # nosec B404 - used only for a fixed demucs CLI invocation, no shell=True
+import subprocess  # nosec B404
 import sys
 
 import librosa
@@ -103,14 +103,14 @@ class SplitterAgent:
         self.log.info("demucs_start", file=file)
 
         if DEMUCS_API_AVAILABLE:
-            with metrics.track_stage("demucs_separation"):
-                try:
+            try:
+                with metrics.track_stage("demucs_separation"):
                     result = self._separate_with_api(audio_path, file)
                     health.set_component("demucs", "loaded")
                     return result
-                except Exception as e:
-                    self.log.warning("demucs_api_failed", file=file, error=str(e))
-                    health.set_component("demucs", "degraded (API failed)")
+            except Exception as e:
+                self.log.warning("demucs_api_failed", file=file, error=str(e))
+                health.set_component("demucs", "degraded (API failed)")
 
         # Try CLI fallback
         try:
@@ -179,11 +179,15 @@ class SplitterAgent:
                 check=True,
                 capture_output=True,
                 text=True,
-            )  # nosec B603 — hardcoded cmd, no user input
+            )  # nosec B603
         except subprocess.CalledProcessError:
             raise
 
         base_path = os.path.join(self.output_dir, "htdemucs", song_name)
+        stem_dir = os.path.splitext(song_name)[0]
+        alt_base = os.path.join(self.output_dir, "htdemucs", stem_dir)
+        if not os.path.exists(base_path) and os.path.exists(alt_base):
+            base_path = alt_base
         return {
             "guitar": os.path.join(base_path, "other.wav"),
             "bass": os.path.join(base_path, "bass.wav"),
@@ -269,10 +273,10 @@ class EarAgent:
 
     YourMT3+ is a custom PyTorch Lightning model (not a standard transformers
     model). It requires:
-      1. The codebase from https://github.com/mimbres/YourMT3 (auto-cloned)
+      1. The codebase from https://huggingface.co/spaces/mimbres/YourMT3-cpu (auto-cloned)
       2. The checkpoint from https://huggingface.co/mimbres/YourMT3 (auto-downloaded)
 
-    Loading is automatic with resume support for downloads. Falls back
+    Loading is automatic with cached downloads. Falls back
     gracefully to Basic Pitch if either component is unavailable.
 
     Primary model: YourMT3+ (custom Lightning)
@@ -320,6 +324,14 @@ class EarAgent:
         self.model_id = model_id
         self.model = None
         self.processor = None
+        self.YOURMT3_CACHE = os.path.join(
+            os.path.expanduser(os.getenv("CACHE_DIR", "~/.cache/tab_agent")),
+            "yourmt3",
+        )
+        health.set_component(
+            "basic_pitch",
+            "available" if BASIC_PITCH_AVAILABLE else "unavailable",
+        )
 
         # Attempt YourMT3+ load (with resume + graceful fallback)
         if prefer_yourmt3:
@@ -336,11 +348,11 @@ class EarAgent:
 
     def _load_yourmt3_model(self, model_id) -> None:
         """
-        Download and load YourMT3+ model with resume and graceful fallback.
+        Download and load YourMT3+ model with graceful fallback.
 
         Steps:
-          1. Download checkpoint from HuggingFace Hub (resume via snapshot_download)
-          2. Clone/update the YourMT3 codebase from GitHub (resume via git fetch)
+          1. Download checkpoint from HuggingFace Hub (via snapshot_download)
+          2. Clone/update the YourMT3 codebase from HuggingFace Space (via git fetch)
           3. Import the custom YourMT3 class and load the checkpoint
           4. If any step fails, self.model stays None (graceful fallback)
         """
@@ -371,15 +383,17 @@ class EarAgent:
         if not HF_HUB_AVAILABLE:
             return None
 
+        cache_root = os.path.expanduser(os.getenv("CACHE_DIR", "~/.cache/tab_agent"))
         try:
             # Only the checkpoint the loader actually opens is fetched: the repo
             # holds several multi-GB checkpoints.
             return snapshot_download(
-                repo_id=model_id,  # nosec B615 - revision="main" is the published default
+                repo_id=model_id,  # nosec B615
                 revision="main",
                 local_files_only=False,
                 max_workers=4,
                 token=os.getenv("HF_TOKEN") or None,
+                cache_dir=cache_root,
                 allow_patterns=[f"logs/2024/{YOURMT3_EXP_ID}/*"],
             )
         except Exception as e:
@@ -414,7 +428,7 @@ class EarAgent:
             os.makedirs(self.YOURMT3_CACHE, exist_ok=True)
 
             if os.path.exists(os.path.join(self.YOURMT3_CACHE, ".git")):
-                result = subprocess.run(  # nosec B603 B607 — hardcoded git cmd
+                result = subprocess.run(  # nosec B603, B607
                     [
                         "git",
                         "-C",
@@ -430,7 +444,7 @@ class EarAgent:
                     timeout=60,
                 )
                 if result.returncode == 0:
-                    subprocess.run(  # nosec B603 B607 — hardcoded git cmd
+                    subprocess.run(  # nosec B603, B607
                         [
                             "git",
                             "-C",
@@ -449,7 +463,7 @@ class EarAgent:
                         returncode=result.returncode,
                     )
             else:
-                result = subprocess.run(  # nosec B603 B607 — hardcoded git cmd
+                result = subprocess.run(  # nosec B603, B607
                     [
                         "git",
                         "clone",
@@ -734,9 +748,9 @@ class EarAgent:
         min_note_duration: float = 0.05,
     ) -> list[note_seq.NoteSequence.Note]:
         """
-        Transcribe audio to MIDI notes with full graceful fallback chain:
+        Transcribe audio to MIDI notes with fallback chain:
 
-        YourMT3+ → Basic Pitch → empty list (with warning, pipeline continues)
+        YourMT3+ → Basic Pitch → raises RuntimeError when no backend succeeds.
 
         Every failure is logged with structured metadata so operators can
         diagnose issues from logs alone.
@@ -748,8 +762,8 @@ class EarAgent:
 
         # ── Try YourMT3+ ──────────────────────────────────────────────
         if self.model is not None:
-            with metrics.track_stage("yourmt3_transcription"):
-                try:
+            try:
+                with metrics.track_stage("yourmt3_transcription"):
                     result = self._transcribe_with_yourmt3(
                         audio_path,
                         target,
@@ -757,20 +771,20 @@ class EarAgent:
                         frame_threshold,
                         min_note_duration,
                     )
-                    log.info(
-                        "transcribe_done",
-                        file=file,
-                        model="yourmt3",
-                        note_count=len(result),
-                    )
-                    return result
-                except Exception as e:
-                    log.warning("yourmt3_fell_back", file=file, error=str(e))
+                log.info(
+                    "transcribe_done",
+                    file=file,
+                    model="yourmt3",
+                    note_count=len(result),
+                )
+                return result
+            except Exception as e:
+                log.warning("yourmt3_fell_back", file=file, error=str(e))
 
         # ── Try Basic Pitch ───────────────────────────────────────────
         if BASIC_PITCH_AVAILABLE:
-            with metrics.track_stage("basic_pitch_transcription"):
-                try:
+            try:
+                with metrics.track_stage("basic_pitch_transcription"):
                     result = self._transcribe_with_basic_pitch(
                         audio_path,
                         target,
@@ -778,15 +792,15 @@ class EarAgent:
                         frame_threshold,
                         min_note_duration,
                     )
-                    log.info(
-                        "transcribe_done",
-                        file=file,
-                        model="basic_pitch",
-                        note_count=len(result),
-                    )
-                    return result
-                except Exception as e:
-                    log.warning("basic_pitch_failed", file=file, error=str(e))
+                log.info(
+                    "transcribe_done",
+                    file=file,
+                    model="basic_pitch",
+                    note_count=len(result),
+                )
+                return result
+            except Exception as e:
+                log.warning("basic_pitch_failed", file=file, error=str(e))
 
         # ── Nothing worked: raise error ──────────────────────────────
         log.error("transcribe_all_failed", file=file, target=target)
@@ -833,12 +847,14 @@ class EarAgent:
             notes = self._convert_prettymidi_to_noteseq(midi_data)
             notes = self._filter_by_instrument_range(notes, target)
 
+            health.set_component("basic_pitch", "loaded")
             log.info("basic_pitch_done", note_count=len(notes), target=target)
             return notes
 
         except ModuleNotFoundError as e:
             # e.g. mir_eval/resampy missing because basic-pitch was installed with
             # --no-deps (see Dockerfile). Report the missing module plainly.
+            health.set_component("basic_pitch", f"error: missing {e.name}")
             log.error(
                 "basic_pitch_dependency_missing",
                 exc=e,
@@ -847,6 +863,7 @@ class EarAgent:
             )
             raise
         except Exception as e:
+            health.set_component("basic_pitch", f"error: {type(e).__name__}")
             log.error("basic_pitch_error", exc=e, file=os.path.basename(audio_path))
             raise
 
@@ -1307,7 +1324,7 @@ class TabAgent:
         cost = (fret_distance * 1.5) + (string_distance * 2.0)
 
         # Legato/slide detection
-        if time_delta < 0.2:  # Fast transition
+        if 0 <= time_delta < 0.2:  # Fast transition
             if string_distance == 0:
                 # Same string = likely slide/hammer/pull
                 cost -= 5.0  # Encourage this path
@@ -1431,6 +1448,7 @@ class TabAgent:
         final_tab: list = []
         technique_window = 0.05 + technique_sensitivity * 0.25  # maps 0.5→0.175s, 0.9→0.275s
         for i, pos in enumerate(best_path):
+            pos = dict(pos)
             technique = "pick"
 
             if i > 0:
@@ -1438,7 +1456,7 @@ class TabAgent:
                 time_delta = notes[i]["start"] - notes[i - 1]["start"]
                 fret_diff_abs = abs(pos["fret"] - prev["fret"])
 
-                if prev["string"] == pos["string"] and time_delta < technique_window:
+                if prev["string"] == pos["string"] and 0 <= time_delta < technique_window:
                     # Slide: 1-2 frets apart (priority over hammer/pull)
                     if 1 <= fret_diff_abs <= 2:
                         technique = "slide"

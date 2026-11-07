@@ -84,6 +84,48 @@ class TestSplitterAgent(unittest.TestCase):
         result = self.splitter.process_bass(bass_path)
         assert os.path.exists(result)
 
+    def test_separate_with_subprocess_resolves_extensionless_demucs_dir(self) -> None:
+        """_separate_with_subprocess finds Demucs stems under htdemucs/<stem_without_ext>/."""
+        from unittest.mock import MagicMock, patch
+
+        # Demucs creates htdemucs/song/ even when song_name is "song.wav"
+        demucs_dir = os.path.join(self.tmpdir, "htdemucs", "song")
+        os.makedirs(demucs_dir, exist_ok=True)
+        for s in ("other", "bass", "drums", "vocals"):
+            open(os.path.join(demucs_dir, f"{s}.wav"), "wb").close()
+
+        with patch("agents.subprocess.run", return_value=MagicMock(returncode=0)):
+            stems = self.splitter._separate_with_subprocess("/tmp/song.wav", "song.wav")
+        assert stems["guitar"].endswith(os.path.join("htdemucs", "song", "other.wav"))
+
+    def test_separate_stems_failure_records_failed_metric(self) -> None:
+        """When Demucs separation fails, default_metrics.stage_errors records the failure."""
+        from unittest.mock import patch
+
+        from monitoring import default_metrics
+
+        before_errors = default_metrics.stage_errors.get("demucs_cli", 0)
+        with (
+            patch.object(
+                self.splitter,
+                "_separate_with_api",
+                side_effect=RuntimeError("demucs failed"),
+            ),
+            patch.object(
+                self.splitter,
+                "_separate_with_subprocess",
+                side_effect=RuntimeError("demucs cli failed"),
+            ),
+            patch.object(
+                self.splitter,
+                "_raw_audio_fallback",
+                return_value={"guitar": "g.wav", "bass": "b.wav"},
+            ),
+        ):
+            self.splitter.separate_stems("bad.wav")
+        after_errors = default_metrics.stage_errors.get("demucs_cli", 0)
+        assert after_errors == before_errors + 1
+
 
 if __name__ == "__main__":
     unittest.main()

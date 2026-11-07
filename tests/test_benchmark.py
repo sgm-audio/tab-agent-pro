@@ -2,10 +2,11 @@
 Tab Agent Pro — Pipeline Benchmark.
 
 Generates synthetic audio clips at known durations (10s, 30s, 60s),
-runs EarAgent transcription (mocked), and reports wall-clock time.
+runs Suno analysis, EarAgent transcription/humanization (mocked backend),
+and TabAgent Viterbi DP tablature generation, and records wall-clock time.
 
 Usage:
-    python -m pytest tests/test_benchmark.py -v --benchmark
+    python -m pytest tests/test_benchmark.py -v
 """
 
 import os
@@ -19,10 +20,11 @@ import soundfile as sf
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from agents import EarAgent
+from agents import EarAgent, TabAgent
+from suno_postprocessor import SunoArtifactDetector
 
 
-def generate_sine_sweep(duration_sec, sr=22050):
+def generate_sine_sweep(duration_sec: int, sr: int = 22050) -> np.ndarray:
     """Generate a frequency sweep from 100Hz to 800Hz."""
     t = np.linspace(0, duration_sec, int(sr * duration_sec), endpoint=False)
     freq = 100 + 700 * (t / duration_sec)  # 100→800 Hz sweep
@@ -51,7 +53,7 @@ class TestBenchmark(unittest.TestCase):
 
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
-    def _bench(self, label, duration_sec) -> None:
+    def _bench(self, label: str, duration_sec: int) -> None:
         import note_seq
 
         path = os.path.join(self.tmpdir, f"{label}.wav")
@@ -59,24 +61,30 @@ class TestBenchmark(unittest.TestCase):
         sf.write(path, signal, 22050)
 
         ear = EarAgent(device="cpu", prefer_yourmt3=False)
+        detector = SunoArtifactDetector()
+        tab_agent = TabAgent(tuning=[40, 45, 50, 55, 59, 64], num_frets=24)
         mock_notes = [
             note_seq.NoteSequence.Note(pitch=64, start_time=0.0, end_time=0.4, velocity=80),
             note_seq.NoteSequence.Note(pitch=67, start_time=0.5, end_time=0.9, velocity=80),
         ]
-        ear.transcribe_stem = lambda *a, **kw: mock_notes  # type: ignore[method-assign]
+        ear._transcribe_with_basic_pitch = lambda *a, **kw: mock_notes  # type: ignore[method-assign]
 
         t0 = time.time()
+        detector.analyze(path)
         notes = ear.transcribe_stem(
             path,
             target="Guitar",
             onset_threshold=0.3,
             frame_threshold=0.2,
         )
+        cleaned = ear.humanize_and_clean(notes)
+        tab = tab_agent.generate_tab(cleaned)
         elapsed = time.time() - t0
 
-        TestBenchmark.results[label] = (f"{duration_sec}s", elapsed, len(notes))
+        TestBenchmark.results[label] = (f"{duration_sec}s", elapsed, len(tab))
 
         assert isinstance(notes, list)
+        assert len(tab) == len(cleaned)
 
     def test_10s_clip(self) -> None:
         self._bench("10s", 10)

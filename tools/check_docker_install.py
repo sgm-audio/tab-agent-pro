@@ -38,10 +38,17 @@ def _unquoted_specifier(line: str) -> str | None:
 def check_dockerfile() -> None:
     text = (ROOT / "Dockerfile").read_text()
 
+    found_basic_pitch = False
     for line in text.splitlines():
         stripped = line.strip()
         if "pip install" not in stripped or "basic-pitch" not in stripped:
             continue
+
+        found_basic_pitch = True
+        if "--no-deps" not in stripped:
+            failures.append(
+                f"basic-pitch must be installed with --no-deps in Dockerfile: {stripped}"
+            )
 
         # Unquoted "basic-pitch>=0.4.0" is a shell redirection: the pin is lost.
         offending = _unquoted_specifier(stripped)
@@ -58,6 +65,9 @@ def check_dockerfile() -> None:
                         f"'{dep}' is not installed anywhere in the Dockerfile, but "
                         "--no-deps basic-pitch needs it at import time"
                     )
+
+    if not found_basic_pitch:
+        failures.append("Dockerfile does not install basic-pitch in any pip install line")
 
 
 def check_requirements() -> None:

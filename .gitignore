@@ -59,6 +59,7 @@ separated_stems/
 *.flac
 *.ogg
 *.m4a
+*.aiff
 *.mid
 *.midi
 *.tab

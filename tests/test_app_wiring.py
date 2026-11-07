@@ -222,3 +222,55 @@ def test_no_notes_produces_warning_not_success() -> None:
 
     assert "No notes were transcribed" in msg
     assert zip_path is not None  # the (mostly empty) ZIP is still downloadable
+
+
+def test_files_generated_not_double_counted_and_formats_clean() -> None:
+    """Files Generated matches actual ZIP entries and Formats has no empty commas."""
+    import zipfile
+
+    import note_seq
+
+    app = _import_app()
+    fake_note = note_seq.NoteSequence.Note(pitch=40, start_time=0.0, end_time=0.5, velocity=80)
+
+    with (
+        patch("app.process_suno_audio", return_value=("/tmp/x.wav", False, {})),
+        patch("app._validate_audio", return_value=None),
+        patch("app.SplitterAgent") as splitter_cls,
+        patch("app.EarAgent") as ear_cls,
+        patch("app.SunoNotePostprocessor") as suno_cls,
+    ):
+        splitter_cls.return_value.separate_stems.return_value = {"guitar": "g", "bass": "b"}
+        splitter_cls.return_value.process_bass.return_value = "b"
+        ear_cls.return_value.transcribe_stem.return_value = [fake_note]
+        ear_cls.return_value.humanize_and_clean.return_value = [fake_note]
+        suno_cls.return_value.process.return_value = [fake_note]
+
+        def _write_midi(_notes, path):
+            Path(path).write_bytes(b"MThd")
+
+        ear_cls.return_value.export_midi.side_effect = _write_midi
+
+        # Uncheck Tab (middle option) to test both format string and file count
+        msg, zip_path = app._process_audio_impl("d.wav", "Bass", True, False, True)
+
+        assert zip_path is not None
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            num_entries = len(zf.namelist())
+        assert f"**Files Generated**: {num_entries}" in msg
+        assert "**Formats**: MIDI, JSON" in msg
+        assert ", ," not in msg
+
+
+def test_import_does_not_hijack_sigint() -> None:
+    """Importing/reloading app must not replace the process SIGINT handler outside serve()."""
+    import importlib
+    import signal
+
+    app = _import_app()
+    prev = signal.signal(signal.SIGINT, signal.default_int_handler)
+    try:
+        importlib.reload(app)
+        assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
+    finally:
+        signal.signal(signal.SIGINT, prev)

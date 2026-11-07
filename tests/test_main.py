@@ -159,5 +159,54 @@ class TestTechniqueConstants(unittest.TestCase):
         assert TECHNIQUE_PICK == "pick"
 
 
+class TestInstrumentCLIFiltering(unittest.TestCase):
+    """Tests for case-insensitive --instrument parsing and pipeline filtering."""
+
+    def test_parser_accepts_case_insensitive_instrument(self) -> None:
+        from main import build_parser
+
+        parser = build_parser()
+        for raw, expected in [
+            ("guitar", "Guitar"),
+            ("GUITAR", "Guitar"),
+            ("bass", "Bass"),
+            ("BASS", "Bass"),
+            ("all", "All"),
+        ]:
+            args = parser.parse_args(["song.wav", "--instrument", raw])
+            assert args.instrument == expected
+
+    def test_main_instrument_bass_skips_guitar(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        import note_seq
+
+        from main import main
+
+        fake_note = note_seq.NoteSequence.Note(pitch=40, start_time=0.0, end_time=0.5, velocity=80)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            wav = os.path.join(tmpdir, "song.wav")
+            open(wav, "wb").close()
+            out_dir = os.path.join(tmpdir, "out")
+            with (
+                patch("main.process_suno_audio", return_value=(wav, False, {})),
+                patch("main.SplitterAgent") as sp_cls,
+                patch("main.EarAgent") as ear_cls,
+                patch("main.load_user_memory", return_value=(os.path.join(tmpdir, "p.json"), {})),
+            ):
+                sp = sp_cls.return_value
+                sp.separate_stems.return_value = {"guitar": wav, "bass": wav}
+                sp.process_bass.return_value = wav
+                ear = ear_cls.return_value
+                ear.transcribe_stem.return_value = [fake_note]
+                ear.humanize_and_clean.return_value = [fake_note]
+                ear.export_midi = MagicMock()
+
+                main([wav, "--instrument", "bass", "--output-dir", out_dir])
+
+                sp.process_guitars.assert_not_called()
+                sp.process_bass.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

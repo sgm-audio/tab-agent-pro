@@ -62,17 +62,15 @@ local function load_settings()
 end
 
 local function save_settings(s)
-  reaper.SetExtState(EXSTATE_KEY, "profile",     s.profile, true)
-  reaper.SetExtState(EXSTATE_KEY, "instrument",  s.instrument, true)
-  reaper.SetExtState(EXSTATE_KEY, "onset",       s.onset or "", true)
-  reaper.SetExtState(EXSTATE_KEY, "frame",       s.frame or "", true)
-  reaper.SetExtState(EXSTATE_KEY, "output_dir",  s.output_dir or "", true)
-  reaper.SetExtState(EXSTATE_KEY, "export_midi", s.export_midi and "1" or "0", true)
-  reaper.SetExtState(EXSTATE_KEY, "export_tab",  s.export_tab and "1" or "0", true)
-  reaper.SetExtState(EXSTATE_KEY, "export_json", s.export_json and "1" or "0", true)
-  if s.install_path and s.install_path ~= "" then
-    reaper.SetExtState(EXSTATE_KEY, "install_path", s.install_path, true)
-  end
+  reaper.SetExtState(EXSTATE_KEY, "profile",      s.profile, true)
+  reaper.SetExtState(EXSTATE_KEY, "instrument",   s.instrument, true)
+  reaper.SetExtState(EXSTATE_KEY, "onset",        s.onset or "", true)
+  reaper.SetExtState(EXSTATE_KEY, "frame",        s.frame or "", true)
+  reaper.SetExtState(EXSTATE_KEY, "output_dir",   s.output_dir or "", true)
+  reaper.SetExtState(EXSTATE_KEY, "export_midi",  s.export_midi and "1" or "0", true)
+  reaper.SetExtState(EXSTATE_KEY, "export_tab",   s.export_tab and "1" or "0", true)
+  reaper.SetExtState(EXSTATE_KEY, "export_json",  s.export_json and "1" or "0", true)
+  reaper.SetExtState(EXSTATE_KEY, "install_path", s.install_path or "", true)
 end
 
 -- ============================================================================
@@ -125,11 +123,17 @@ local function show_gui()
   local prof_idx = tonumber(parts[1])
   if prof_idx and prof_idx >= 1 and prof_idx <= #PROFILE_KEYS then
     s.profile = PROFILE_KEYS[prof_idx]
-  elseif parts[1] ~= "" then
+  elseif parts[1] ~= "" and profile_defaults(parts[1]) then
     s.profile = parts[1]
+  elseif parts[1] ~= "" then
+    reaper.MB(
+      "Unknown profile '" .. parts[1] .. "'. Keeping '" .. s.profile .. "'.\n" ..
+      "Enter a number 1-" .. #PROFILE_KEYS .. " or a valid profile key.",
+      "Tab Agent — Settings", 0
+    )
   end
 
-  if parts[2] ~= "" then s.install_path = parts[2] end
+  s.install_path = parts[2] or ""
   if parts[3] ~= "" then s.instrument = parts[3] end
 
   -- Blank threshold fields mean "use the selected profile's values"; main.py

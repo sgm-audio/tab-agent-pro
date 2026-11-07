@@ -1,6 +1,6 @@
 # Keep hook versions in sync with .github/workflows/ci.yml (the CI job is the
 # source of truth; these hooks must not disagree with it).
-exclude: ^venv.*/|\.codegraph/|AUDIT\.md|PLAN\.md|\.coverage
+exclude: ^(\.venv|venv.*)/|\.codegraph/|AUDIT\.md|\.coverage
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.11.5

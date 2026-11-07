@@ -32,12 +32,14 @@ python app.py
 # Open http://localhost:7860
 ```
 
-> On Linux, Basic Pitch's default dependency set includes TensorFlow, which the
-> ONNX backend does not use. The Dockerfile (and CI) installs it with
-> `--no-deps` plus its real runtime imports — `mir_eval` and `resampy` — instead:
-> On Linux with Python 3.12 or newer, plain `pip install -r requirements.txt` fails:
-> basic-pitch 0.4 requires TensorFlow < 2.15.1, which has no Python 3.12 wheels.
-> Use the `--no-deps` route from `.github/workflows/ci.yml` instead (checked 2026-10-31).
+> **Linux / Python 3.12+ note:** Basic Pitch's default Linux dependency set pulls
+> TensorFlow `<2.15.1` (which has no Python 3.12+ wheels and is unused by the ONNX
+> backend). On Linux with Python 3.12+, install Basic Pitch without dependencies
+> before installing `requirements.txt` (matching `Dockerfile` and `.github/workflows/ci.yml`):
+> ```bash
+> pip install --no-deps "basic-pitch>=0.4.0,<0.5"
+> grep -v '^basic-pitch' requirements.txt > /tmp/req-nobp.txt && pip install -r /tmp/req-nobp.txt
+> ```
 
 The server binds to `HOST` (default `0.0.0.0` so containers and Hugging Face
 Spaces can reach it) and listens on `PORT` (default `7860`). Both are read from
@@ -67,9 +69,9 @@ python main.py song.wav --output-dir /tmp/out
 
 ```bash
 docker build -t tab-agent .
-docker run -p 7860:7860 -v $(pwd)/input:/app/input tab-agent
+docker run -p 7860:7860 -v $(pwd)/input:/app/input -v $(pwd)/output:/app/output tab-agent
 # or run the CLI inside the image:
-docker run -v $(pwd)/input:/app/input tab-agent python main.py input/your_song.wav
+docker run -v $(pwd)/input:/app/input -v $(pwd)/output:/app/output tab-agent python main.py input/your_song.wav
 ```
 
 The image binds `0.0.0.0:7860` (required by Hugging Face Spaces) and ships
@@ -78,7 +80,7 @@ Basic Pitch with its ONNX backend plus the stem-separation stack.
 ### Validation
 
 ```bash
-python -m pytest tests/            # 245 tests
+python -m pytest tests/            # 259 tests
 python validate.py                 # end-to-end checklist (PASS/FAIL summary)
 
 python tools/check_index.py           # ReaPack index format
@@ -134,7 +136,7 @@ graph LR
 
 ## Configuration
 
-Environment variables (all optional; `.env` is read by `app.py` and `run.sh`):
+Environment variables (all optional; `.env` is read by `app.py`, `main.py`, and `run.sh`):
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
@@ -211,7 +213,7 @@ is what runs.
 ├── validate.py            # End-to-end checklist
 ├── reaper/                # REAPER Lua scripts
 ├── tools/                 # Config/deployment guard scripts
-├── tests/                 # 245 tests
+├── tests/                 # 259 tests
 ├── examples/              # Demo audio
 ├── pyproject.toml         # Project config
 ├── Dockerfile             # HF Spaces deployment
@@ -231,9 +233,9 @@ export HF_TOKEN=hf_...
 ./tools/deploy_space.sh scottymills/tab-agent-pro
 ```
 
-This uploads exactly the files the Space needs (`Dockerfile`, `requirements.txt`,
+This uploads the exact files the Space needs (`Dockerfile`, `requirements.txt`,
 `agents.py`, `app.py`, `main.py`, `monitoring.py`, `init_memory.py`,
-`suno_postprocessor.py`, `examples/`) — the file list the Docker Space runtime
+`suno_postprocessor.py`, `README.md`, `examples/`) — the file list the Docker Space runtime
 expects. Health checks are available at `/health` and `/health/metrics`.
 
 ---

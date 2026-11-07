@@ -142,6 +142,25 @@ class TestEarAgentHumanize(unittest.TestCase):
         result = self.ear.humanize_and_clean(notes, is_bass=True)
         assert len(result) == 1
 
+    def test_transcribe_stem_failure_records_failed_metric(self) -> None:
+        """Failed transcription must record an error in default_metrics.stage_errors."""
+        from unittest.mock import patch
+
+        from monitoring import default_metrics
+
+        before_errors = default_metrics.stage_errors.get("basic_pitch_transcription", 0)
+        with (
+            patch.object(
+                self.ear,
+                "_transcribe_with_basic_pitch",
+                side_effect=RuntimeError("bp boom"),
+            ),
+            self.assertRaises(RuntimeError),
+        ):
+            self.ear.transcribe_stem("nonexistent.wav")
+        after_errors = default_metrics.stage_errors.get("basic_pitch_transcription", 0)
+        assert after_errors == before_errors + 1
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -239,11 +239,13 @@ local output_dir = settings.output_dir
 if output_dir == "" then
   output_dir = install_path .. "/output"
 end
-local imported = import_midi(basename, output_dir)
+local imported = settings.export_midi and import_midi(basename, output_dir) or 0
 
 reaper.Undo_EndBlock("Tab Agent — Transcribe " .. basename, -1)
 
-if imported > 0 then
+if not settings.export_midi then
+  reaper.ShowConsoleMsg(string.format("\nDone — exports written to %s (MIDI export disabled).\n", output_dir))
+elseif imported > 0 then
   reaper.ShowConsoleMsg(string.format("\nDone — imported %d MIDI track(s).\n", imported))
 else
   reaper.MB(

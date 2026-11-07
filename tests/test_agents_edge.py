@@ -879,11 +879,11 @@ class TestSplitterSeparateWithApi(unittest.TestCase):
         original_flag = _a.DEMUCS_API_AVAILABLE
 
         def _restore():
-            _a.demucs_api = original_api
+            _a.demucs_api = original_api  # type: ignore[assignment]
             _a.DEMUCS_API_AVAILABLE = original_flag
 
         self.addCleanup(_restore)
-        _a.demucs_api = MagicMock()
+        _a.demucs_api = MagicMock()  # type: ignore[assignment]
         _a.DEMUCS_API_AVAILABLE = True
         return _a.demucs_api
 

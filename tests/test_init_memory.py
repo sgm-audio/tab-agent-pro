@@ -56,9 +56,11 @@ def test_save_profile_bass_profile(tmp_path) -> None:
     assert data["config"]["bass_tuning"] == [23, 28, 33, 38, 43]
 
 
-def test_save_profile_invalid_key_raises() -> None:
+def test_save_profile_invalid_key_raises(tmp_path) -> None:
+    nonexistent_dir = tmp_path / "should_not_be_created"
     with pytest.raises(KeyError):
-        save_profile("nonexistent_profile")
+        save_profile("nonexistent_profile", memory_dir=str(nonexistent_dir))
+    assert not nonexistent_dir.exists()
 
 
 def test_get_memory_dir() -> None:
