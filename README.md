@@ -1,18 +1,8 @@
----
-title: Tab Agent — AI Tablature Transcription
-emoji: 🎸
-colorFrom: blue
-colorTo: purple
-sdk: docker
-app_file: Dockerfile
-license: mit
----
+# 🎸 Tab Agent
 
 [![CI](https://github.com/sgm-audio/tab-agent-pro/actions/workflows/ci.yml/badge.svg)](https://github.com/sgm-audio/tab-agent-pro/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-
-# 🎸 Tab Agent
 
 **Upload guitar or bass audio. Get tablature, MIDI, and JSON back.**
 
@@ -55,9 +45,9 @@ python tools/check_lockfile.py          # verify
 python tools/check_lockfile.py --write  # regenerate after a dependency change
 ```
 
-The server binds to `HOST` (default `0.0.0.0` so containers and Hugging Face
-Spaces can reach it) and listens on `PORT` (default `7860`). Both are read from
-the environment or from an optional `.env` file — see `.env.example`.
+The server binds to `HOST` (default `0.0.0.0` so Docker containers can reach
+it) and listens on `PORT` (default `7860`). Both are read from the environment
+or from an optional `.env` file — see `.env.example`.
 
 The **web UI** limits uploads to 50 MB and 5 minutes and accepts
 `.wav .mp3 .flac .ogg .m4a .aiff`; results are returned as a ZIP archive. The CLI
@@ -89,8 +79,8 @@ docker run -p 7860:7860 -v $(pwd)/input:/app/input -v $(pwd)/output:/app/output 
 docker run -v $(pwd)/input:/app/input -v $(pwd)/output:/app/output tab-agent python main.py input/your_song.wav
 ```
 
-The image binds `0.0.0.0:7860` (required by Hugging Face Spaces) and ships
-Basic Pitch with its ONNX backend plus the stem-separation stack.
+The image binds `0.0.0.0:7860` and ships Basic Pitch with its ONNX backend plus
+the stem-separation stack.
 
 ### Validation
 
@@ -125,7 +115,7 @@ graph LR
 | **Quality Analysis** | SunoDetector | Detects AI-generated audio artifacts, adjusts thresholds |
 | **Stem Separation** | Demucs (htdemucs) | Splits the mix into vocals / drums / bass / other; `bass` is transcribed as bass and `other` as guitar |
 | **Spatial Processing** | Mid-Side | Splits lead (centre) from rhythm (sides) by subtraction |
-| **Transcription** | YourMT3+ → Basic Pitch | Converts audio → MIDI notes (Basic Pitch is the always-available fallback) |
+| **Transcription** | Basic Pitch | Converts audio → MIDI notes |
 | **Tablature** | DP Viterbi | Assigns notes to strings/frets optimally; unplayable notes are skipped |
 | **Technique Detection** | Heuristic | Slides, hammer-ons, pull-offs |
 | **Export** | — | MIDI, ASCII tab, JSON |
@@ -142,13 +132,20 @@ graph LR
 - **Technique detection** — Slides (`s`), hammer-ons (`h`), pull-offs (`p`) annotated in output
 - **Plug-and-play presets** — 8 profiles (standard, drop D, classical, 4/5-string bass, Suno cleanup, live band) applied with `--profile`
 - **REAPER integration** — Run transcription from the DAW via ReaPack, with the settings-script values passed through as CLI flags
-- **CPU by default, GPU optional** — the transcription stack runs on CPU out of the box. Acceleration applies only in two narrow cases and is never claimed otherwise: on a Hugging Face **ZeroGPU** Space the web handler is wrapped in `spaces.GPU` *only* when the runtime reports `SPACES_ZERO_GPU=1`, and `DEVICE=cuda` moves torch work to a local GPU. Everything else is CPU, and the default Docker image installs CPU-only torch.
+- **CPU by default, GPU optional** — the transcription stack runs on CPU out of
+  the box. GPU acceleration is available on the end user's local hardware via
+  the `DEVICE` environment variable: `cuda` (NVIDIA CUDA), `rocm` (AMD ROCm),
+  `vulkan` (AMD Vulkan), `mps` (Apple Silicon), `directml` (Windows DirectML),
+  or `auto` (default — detects the best available backend, falls back to CPU).
+  The default Docker image installs CPU-only torch; build a GPU image with
+  `docker build --build-arg TORCH_INDEX_URL=...` (see the `Dockerfile`).
 
-> **YourMT3+ status:** `agents.py` can load the YourMT3+ checkpoint from the
-> Hugging Face Hub and falls back to Basic Pitch whenever it is unavailable. The
-> Docker image ships Basic Pitch only; loading YourMT3+ additionally needs a
-> multi-GB checkpoint download on first run (`HF_TOKEN` is honoured for gated
-> repos, and `CACHE_DIR` controls where it is stored).
+- **Local compute only** — there is no cloud inference and no model-hub
+  dependency. Basic Pitch and Demucs weights come from their upstream projects
+  at install / first use.
+
+> **Basic Pitch status:** `agents.py` loads Spotify's Basic Pitch (ONNX) as the
+> transcription backend. The Docker image ships Basic Pitch only.
 
 ---
 
@@ -159,16 +156,12 @@ Environment variables (all optional; `.env` is read by `app.py`, `main.py`, and 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `HOST` | `0.0.0.0` | Bind address for the web UI |
-| `PORT` | `7860` | Port for the web UI (Spaces expects 7860) |
-| `DEVICE` | `auto` | Torch device for transcription: `auto`, `cpu`, `cuda`, `mps` |
-| `CACHE_DIR` | `~/.cache/tab_agent` | Model cache (YourMT3+ checkpoint and codebase) |
-| `HF_TOKEN` | — | Hugging Face token for gated/private model repos |
+| `PORT` | `7860` | Port for the web UI |
+| `DEVICE` | `auto` | Compute device for transcription: `auto`, `cpu`, `cuda`, `rocm`, `vulkan`, `mps`, `directml` |
+| `CACHE_DIR` | `~/.cache/tab_agent` | Model cache (Basic Pitch ONNX model, Demucs weights) |
 | `MAX_CONCURRENT_REQUESTS` | `1` | Transcriptions allowed in flight at once |
 | `QUEUE_MAX_SIZE` | `32` | Bounded backlog; requests beyond this are rejected |
 | `UPLOAD_TTL_SEC` | `900` | Upload temp files older than this are pruned |
-| `YOURMT3_REVISION` | — | Checkpoint commit sha. Empty = `main` **with a warning** |
-| `YOURMT3_REQUIRE_PINNED_REVISION` | — | `1` makes an unpinned checkpoint a hard error (fail closed) |
-| `SPACES_ZERO_GPU` | — | Set by Hugging Face on ZeroGPU Spaces; never set by hand |
 
 Preset profiles configure tuning, thresholds and processing behaviour. Applying a
 profile writes it to user memory so later runs (and the REAPER scripts) reuse it:
@@ -248,7 +241,7 @@ is what runs.
 ├── requirements.lock      # 118 exact pins (runtime closure, CPU-only)
 ├── .pip-audit-ignore      # Accepted advisories; CI fails when one expires
 ├── pyproject.toml         # Project config
-├── Dockerfile             # HF Spaces deployment (non-root, read-only code)
+├── Dockerfile             # Local / GPU container build (non-root, read-only code)
 └── CHANGELOG.md           # Release history
 ```
 
@@ -264,30 +257,55 @@ is what runs.
   set (`tools/check_vulns.py`), and a lockfile check — all blocking in CI.
 - **Dependencies:** `setuptools<81` is pinned deliberately (81+ removes
   `pkg_resources`, which `pretty_midi` needs) — do not "fix" it.
-- **Model provenance:** set `YOURMT3_REVISION` to a reviewed sha and
-  `YOURMT3_REQUIRE_PINNED_REVISION=1` in production.
+- **Model provenance:** Basic Pitch and Demucs weights come from their upstream
+  project repositories; pin dependency versions via `requirements.lock` for
+  reproducible builds.
 
 ---
 
 ## Deploying
 
-### Hugging Face Spaces
-
-The Space must be kept in sync with this repo. With a write token available:
+### Docker (local)
 
 ```bash
-export HF_TOKEN=hf_...
-./tools/deploy_space.sh scottymills/tab-agent-pro
+# CPU image (default, works everywhere)
+docker build -t tab-agent .
+docker run -p 7860:7860 -v $(pwd)/input:/app/input -v $(pwd)/output:/app/output tab-agent
+
+# Open http://localhost:7860
+
+# CLI inside the image:
+docker run -v $(pwd)/input:/app/input -v $(pwd)/output:/app/output tab-agent python main.py input/your_song.wav
 ```
 
-This uploads the exact files the Space needs (`Dockerfile`, `requirements.txt`,
-`requirements.lock`, `agents.py`, `app.py`, `main.py`, `monitoring.py`,
-`init_memory.py`, `suno_postprocessor.py`, `README.md`, `examples/`) — the file
-list the Docker Space runtime expects. Health checks: `/health` (liveness +
-component detail, including `degraded_components`), `/ready` (503 until a
-transcription backend is loadable — used by the container healthcheck), and
-`/health/metrics` (per-stage timings). Demucs loss degrades output quality but
-does not fail readiness, because separation has a passthrough fallback.
+### GPU images (CUDA / ROCm / Vulkan)
+
+Override the torch index at build time so `torch`/`torchaudio` resolve CUDA or
+ROCm wheels instead of CPU, and install the matching ONNX Runtime package for
+Basic Pitch:
+
+```bash
+# NVIDIA CUDA
+docker build --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128 \
+             -t tab-agent-cuda .
+docker run -e DEVICE=cuda -p 7860:7860 tab-agent-cuda
+
+# AMD ROCm
+docker build --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/rocm6.0 \
+             -t tab-agent-rocm .
+docker run -e DEVICE=rocm -p 7860:7860 tab-agent-rocm
+
+# AMD Vulkan (Basic Pitch via ONNX Vulkan EP; Demucs stays on CPU)
+# Build the CPU image, then install onnxruntime-vulkan at runtime and set:
+docker run -e DEVICE=vulkan -p 7860:7860 tab-agent
+```
+
+`DEVICE=auto` (the default) detects the best available backend and falls back
+to CPU. Health checks: `/health` (liveness + component detail), `/ready`
+(503 until a transcription backend is loadable — used by the container
+healthcheck), and `/health/metrics` (per-stage timings). Demucs loss degrades
+output quality but does not fail readiness, because separation has a passthrough
+fallback.
 
 ---
 

@@ -8,6 +8,8 @@
     3. Run this script (Actions → Tab Agent)
     4. MIDI files are imported to new tracks automatically
 
+  Progress is streamed live to the REAPER console while the pipeline runs.
+
   Requirements:
     - Python 3.10+ with Tab Agent dependencies (pip install -r requirements.txt)
     - Tab Agent Pro cloned to a known path (auto-detected or set via Settings)
@@ -136,20 +138,67 @@ local function build_args(settings, audio_path)
   return args
 end
 
-local function run_pipeline(install_path, audio_path, settings)
+-- ============================================================================
+-- PIPELINE RUNNER WITH STREAMED CONSOLE OUTPUT
+--
+-- Runs main.py via io.popen so its stdout/stderr ([tab-agent] progress lines)
+-- are forwarded to the REAPER console in real time. Uses reaper.defer to poll
+-- for output so REAPER stays responsive during a long transcription instead of
+-- blocking on os.execute.
+-- ============================================================================
+
+local Pipeline = {}
+Pipeline.__index = Pipeline
+
+function Pipeline.new(install_path, audio_path, settings)
+  local self = setmetatable({}, Pipeline)
+  self.install_path = install_path
+  self.audio_path = audio_path
+  self.settings = settings
+  self.stream = nil
+  self.finished = false
+  self.success = false
+  return self
+end
+
+function Pipeline:start()
   local python = reaper.GetOS():match("Win") and "python" or "python3"
-  local args = build_args(settings, audio_path)
-  local cmd = string.format('cd %s && %s %s', quote(install_path), python, table.concat(args, " "))
+  local args = build_args(self.settings, self.audio_path)
+  local cmd = string.format('cd %s && %s %s 2>&1', quote(self.install_path), python, table.concat(args, " "))
   reaper.ShowConsoleMsg("Tab Agent: " .. cmd .. "\n")
-  -- Lua 5.1: os.execute returns the exit code; 5.2+: (ok, "exit"|"signal", code)
-  local result, kind, code = os.execute(cmd)
-  if result == true or result == 0 then
-    return true
+
+  local ok, err = pcall(function()
+    self.stream = io.popen(cmd, "r")
+  end)
+  if not ok or not self.stream then
+    reaper.ShowConsoleMsg("Tab Agent: failed to start pipeline: " .. tostring(err or "unknown") .. "\n")
+    self.finished = true
+    self.success = false
+    return false
   end
-  if kind == "exit" and code == 0 then
-    return true
+  return true
+end
+
+-- Poll one line of output. Returns "streaming" while the process runs, or
+-- "done" once it exits (success boolean as second value).
+function Pipeline:poll()
+  if self.finished then return "done", self.success end
+  if not self.stream then return "done", self.success end
+
+  local line = self.stream:read("*l")
+  if line then
+    reaper.ShowConsoleMsg(line .. "\n")
+    return "streaming", nil
   end
-  return false
+
+  -- End of stream: capture the exit code via stream:close()
+  local ok, err, code = self.stream:close()
+  self.stream = nil
+  self.finished = true
+  -- io.popen close: ok=true on clean exit, err=exit code string, code=number.
+  -- Treat any clean close (ok == true) or code == 0 as success.
+  self.success = (ok == true) or (code == 0)
+  return "done", self.success
 end
 
 -- ============================================================================
@@ -167,7 +216,7 @@ local function import_midi(basename, output_dir)
   for _, mf in ipairs(midi_files) do
     local path = output_dir .. "/" .. mf.file
     if reaper.file_exists(path) then
-      -- Insert MIDI on its own track (InsertMedia creates a new track automatically)
+      -- InsertMedia creates a new track automatically
       reaper.InsertMedia(path, 0)
       -- Name the last created track
       local track = reaper.GetTrack(0, reaper.GetNumTracks() - 1)
@@ -194,6 +243,7 @@ if not install_path then
     "or clone the repo to ~/tab-agent-pro.",
     "Tab Agent — Not Found", 0
   )
+  reaper.Undo_EndBlock("Tab Agent — Cancel", -1)
   return
 end
 
@@ -223,9 +273,10 @@ reaper.ShowConsoleMsg(
   )
 )
 
-if not run_pipeline(install_path, audio_path, settings) then
+local pipe = Pipeline.new(install_path, audio_path, settings)
+if not pipe:start() then
   reaper.MB(
-    "Transcription failed.\n\n" ..
+    "Transcription failed to start.\n\n" ..
     "Check the REAPER console for details.\n" ..
     "Common: pip install -r requirements.txt, install Demucs.",
     "Tab Agent — Error", 0
@@ -234,23 +285,43 @@ if not run_pipeline(install_path, audio_path, settings) then
   return
 end
 
--- main.py writes to --output-dir when given, otherwise ./output relative to install_path
-local output_dir = settings.output_dir
-if output_dir == "" then
-  output_dir = install_path .. "/output"
-end
-local imported = settings.export_midi and import_midi(basename, output_dir) or 0
+-- Poll the pipeline stream on REAPER's idle loop so the UI stays responsive.
+local function poll_pipeline()
+  local phase, success = pipe:poll()
+  if phase == "streaming" then
+    reaper.defer(poll_pipeline)
+    return
+  end
 
-reaper.Undo_EndBlock("Tab Agent — Transcribe " .. basename, -1)
+  -- Pipeline finished: import MIDI and close out.
+  local output_dir = settings.output_dir
+  if output_dir == "" then
+    output_dir = install_path .. "/output"
+  end
+  local imported = settings.export_midi and import_midi(basename, output_dir) or 0
 
-if not settings.export_midi then
-  reaper.ShowConsoleMsg(string.format("\nDone — exports written to %s (MIDI export disabled).\n", output_dir))
-elseif imported > 0 then
-  reaper.ShowConsoleMsg(string.format("\nDone — imported %d MIDI track(s).\n", imported))
-else
-  reaper.MB(
-    "Transcription finished but no MIDI files found in:\n  " .. output_dir ..
-      "\n\nCheck the REAPER console for details.",
-    "Tab Agent — No Output", 0
-  )
+  reaper.Undo_EndBlock("Tab Agent — Transcribe " .. basename, -1)
+
+  if not settings.export_midi then
+    reaper.ShowConsoleMsg(string.format("\nDone — exports written to %s (MIDI export disabled).\n", output_dir))
+  elseif imported > 0 then
+    reaper.ShowConsoleMsg(string.format("\nDone — imported %d MIDI track(s).\n", imported))
+  else
+    reaper.MB(
+      "Transcription finished but no MIDI files found in:\n  " .. output_dir ..
+        "\n\nCheck the REAPER console for details.",
+      "Tab Agent — No Output", 0
+    )
+  end
+
+  if not success then
+    reaper.MB(
+      "Transcription failed.\n\n" ..
+      "Check the REAPER console for details.\n" ..
+      "Common: pip install -r requirements.txt, install Demucs.",
+      "Tab Agent — Error", 0
+    )
+  end
 end
+
+reaper.defer(poll_pipeline)

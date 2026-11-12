@@ -35,10 +35,10 @@ Every request gets its own `mkdtemp` session. Previously two simultaneous users
 shared one output directory and could receive each other's stems and ZIPs.
 
 ### 3. Ten silent failure sites are now observable
-`.env` parsing, corrupt `user_preferences.json`, YourMT3+ clone timeout, clone
-non-zero exit, malformed token streams, and empty audio-read messages all used
-to `pass` or `return None`. Each now logs structured context, updates component
-health, and either recovers with a documented fallback or escalates.
+`.env` parsing, corrupt `user_preferences.json`, malformed token streams, and
+empty audio-read messages all used to `pass` or `return None`. Each now logs
+structured context, updates component health, and either recovers with a
+documented fallback or escalates.
 
 ### 4. Supply chain is pinned and gated
 - `requirements.lock` — 118 exact pins covering the runtime closure of what actually ships (CPU-only: no TensorFlow, no CUDA wheels).
@@ -46,8 +46,6 @@ health, and either recovers with a documented fallback or escalates.
   environment drifts (and `--static` catches a dependency added without a pin).
 - `tools/check_vulns.py` — audits the installed set and fails on any advisory
   without an accepted, **unexpired** entry in `.pip-audit-ignore`.
-- The YourMT3+ checkpoint can be revision-pinned, and
-  `YOURMT3_REQUIRE_PINNED_REVISION=1` makes an unpinned download a hard error.
 
 ### 5. Container hardening
 Non-root `tabagent` user, application code read-only at runtime, only cache and
@@ -65,9 +63,8 @@ healthcheck, lockfile gate enforced during the build.
 
 - **No migration.** There is no persistent state to migrate; the model cache is
   a cache and can be deleted.
-- **New optional env vars:** `YOURMT3_REVISION`, `YOURMT3_REQUIRE_PINNED_REVISION`
-  (recommended `1` in production), `MAX_CONCURRENT_REQUESTS`, `QUEUE_MAX_SIZE`,
-  `UPLOAD_TTL_SEC`. Defaults are safe; `.env.example` documents all 11.
+- **New optional env vars:** `DEVICE` (compute backend), `MAX_CONCURRENT_REQUESTS`,
+  `QUEUE_MAX_SIZE`, `UPLOAD_TTL_SEC`. Defaults are safe; `.env.example` documents all of them.
 - **`setuptools<81` stays.** Do not apply pip-audit's suggested upgrade: 81+
   removes `pkg_resources`, which `pretty_midi` imports (reproduced failure in
   `docs/ACCEPTED_RISKS.md` §R-2).
@@ -98,20 +95,21 @@ healthcheck, lockfile gate enforced during the build.
 - **No Docker daemon in the audit environment** → the image build, staging
   deploy, and rollback drill are validated by static guards plus running every
   command outside the container. Not a real build.
-- **YourMT3+ happy path is unverified** here (gated multi-GB checkpoint, no Hub
-  egress). It is instrumented, pinned, and fail-closed.
 - **Demucs needs its weights** for stem separation; without them audio passes
   through unseparated with a logged warning rather than failing.
-- **No authentication or per-IP rate limiting** — by design for a single-tenant
-  Space; the queue is bounded so abuse degrades to rejection (see
+- **No authentication or per-IP rate limiting** — by design for single-tenant
+  local use; the queue is bounded so abuse degrades to rejection (see
   `docs/ACCEPTED_RISKS.md` R-5/R-6).
 
 ## Deploy
 
 ```bash
-export HF_TOKEN=hf_...
-./tools/deploy_space.sh <owner>/<space>
-curl -s -o /dev/null -w '%{http_code}\n' https://<host>/ready   # expect 200
+# CPU image (default)
+docker build -t tab-agent .
+docker run -p 7860:7860 tab-agent
+
+# GPU: override the torch index at build time (see Dockerfile), then
+# docker run -e DEVICE=cuda  (or rocm / vulkan / mps / directml)
 ```
 
 Rollback is a re-deploy of the previous revision; the procedure is in

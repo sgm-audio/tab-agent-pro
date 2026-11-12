@@ -405,7 +405,7 @@ class TestEarAgentHumanizeAndCleanEdgeCases(unittest.TestCase):
     """Edge cases for humanize_and_clean."""
 
     def setUp(self) -> None:
-        self.ear = EarAgent(model_id="mimbres/YourMT3", device="cpu", prefer_yourmt3=False)
+        self.ear = EarAgent(device="cpu")
 
     def test_is_bass_filters_above_67(self) -> None:
         """Bass mode removes notes above pitch 67."""
@@ -476,7 +476,7 @@ class TestEarAgentFilterByInstrumentRangeEdgeCases(unittest.TestCase):
     """Edge cases for _filter_by_instrument_range."""
 
     def setUp(self) -> None:
-        self.ear = EarAgent(model_id="mimbres/YourMT3", device="cpu", prefer_yourmt3=False)
+        self.ear = EarAgent(device="cpu")
 
     def test_empty_notes_returns_empty(self) -> None:
         """Empty input returns empty list."""
@@ -633,7 +633,7 @@ class TestEarTranscribeStemBasicPitch(unittest.TestCase):
     """Test the transcribe_stem Basic Pitch path with mocks."""
 
     def setUp(self) -> None:
-        self.ear = EarAgent(model_id="mimbres/YourMT3", device="cpu", prefer_yourmt3=False)
+        self.ear = EarAgent(device="cpu")
 
     @patch("agents.BASIC_PITCH_AVAILABLE", True)
     @patch("agents.basic_pitch_predict")
@@ -718,7 +718,7 @@ class TestEarExportMidi(unittest.TestCase):
     """Test export_midi edge cases."""
 
     def setUp(self) -> None:
-        self.ear = EarAgent(model_id="mimbres/YourMT3", device="cpu", prefer_yourmt3=False)
+        self.ear = EarAgent(device="cpu")
         self.tmpdir = tempfile.mkdtemp()
 
     def tearDown(self) -> None:
@@ -762,7 +762,7 @@ class TestEarConvertPrettyMidi(unittest.TestCase):
     """Test _convert_prettymidi_to_noteseq with various inputs."""
 
     def setUp(self) -> None:
-        self.ear = EarAgent(model_id="mimbres/YourMT3", device="cpu", prefer_yourmt3=False)
+        self.ear = EarAgent(device="cpu")
 
     def test_convert_empty_prettymidi(self) -> None:
         """PrettyMIDI with no instruments returns empty."""
@@ -800,58 +800,6 @@ class TestEarConvertPrettyMidi(unittest.TestCase):
 # =========================================================================
 # EAR — _parse_mt3_tokens additional edge cases
 # =========================================================================
-
-
-class TestEarParseMt3TokensEdgeCases(unittest.TestCase):
-    """Additional edge cases for _parse_mt3_tokens."""
-
-    def setUp(self) -> None:
-        self.ear = EarAgent(model_id="mimbres/YourMT3", device="cpu", prefer_yourmt3=False)
-
-    def test_parse_unknown_token_skipped(self) -> None:
-        """Unknown tokens after a valid start are skipped without error."""
-        events = "NOTE_ON 60 VELOCITY 80 BOGUS 123 TIME_SHIFT 0.5 NOTE_OFF 60"
-        notes = self.ear._convert_to_noteseq(events)
-        assert len(notes) == 1
-
-    def test_parse_note_off_no_active_note(self) -> None:
-        """NOTE_OFF for a pitch with no active note is silently skipped."""
-        events = "NOTE_OFF 99 TIME_SHIFT 0.1 NOTE_ON 60 VELOCITY 80 TIME_SHIFT 0.5 NOTE_OFF 60"
-        notes = self.ear._convert_to_noteseq(events)
-        assert len(notes) == 1
-
-    def test_parse_active_notes_closed_at_end(self) -> None:
-        """Notes still active at end of input are closed."""
-        events = "NOTE_ON 60 VELOCITY 80 TIME_SHIFT 1.0"
-        notes = self.ear._convert_to_noteseq(events)
-        assert len(notes) == 1
-        assert notes[0].end_time > notes[0].start_time
-
-    def test_parse_invalid_int_skipped(self) -> None:
-        """Invalid integer value causes token to be skipped."""
-        events = "NOTE_ON sixty TIME_SHIFT 0.5 NOTE_ON 64 VELOCITY 80 TIME_SHIFT 0.5 NOTE_OFF 64"
-        notes = self.ear._convert_to_noteseq(events)
-        assert len(notes) == 1
-        assert notes[0].pitch == 64
-
-    def test_parse_time_shift_float_error(self) -> None:
-        """Invalid float after TIME_SHIFT skips the token."""
-        events = "TIME_SHIFT bad NOTE_ON 60 VELOCITY 80 TIME_SHIFT 0.5 NOTE_OFF 60"
-        notes = self.ear._convert_to_noteseq(events)
-        assert len(notes) == 1
-
-    def test_parse_no_velocity_default(self) -> None:
-        """NOTE_ON without VELOCITY defaults to 80."""
-        events = "NOTE_ON 60 TIME_SHIFT 0.5 NOTE_OFF 60"
-        notes = self.ear._convert_to_noteseq(events)
-        assert len(notes) == 1
-        assert notes[0].velocity == 80
-
-    def test_parse_short_note_filtered(self) -> None:
-        """Notes shorter than min_duration are filtered."""
-        events = "NOTE_ON 60 VELOCITY 80 TIME_SHIFT 0.01 NOTE_OFF 60"
-        notes = self.ear._convert_to_noteseq(events, min_duration=0.05)
-        assert len(notes) == 0
 
 
 # =========================================================================
@@ -926,6 +874,8 @@ class TestSplitterSeparateWithApi(unittest.TestCase):
         api.Separator.return_value = mock_separator
 
         with patch("agents.torch.cuda.is_available", return_value=True):
+            # Re-resolve the splitter so it picks up the mocked CUDA backend.
+            self.splitter = SplitterAgent(output_dir=self.tmpdir)
             dummy = os.path.join(self.tmpdir, "i.wav")
             with open(dummy, "w") as f:
                 f.write("FAKE")
@@ -959,46 +909,6 @@ class TestSplitterSeparateWithApi(unittest.TestCase):
 
 
 # =========================================================================
-# EAR — YourMT3+ path via mock (transcribe_stem)
-# =========================================================================
-
-
-class TestEarYourMT3TranscribePath(unittest.TestCase):
-    """Test the YourMT3 path in transcribe_stem with mocked model."""
-
-    def setUp(self) -> None:
-        self.ear = EarAgent(model_id="mimbres/YourMT3", device="cpu", prefer_yourmt3=False)
-
-    @patch("agents.librosa.load")
-    @patch("agents.torch.no_grad")
-    def test_transcribe_stem_yourmt3_model_set(self, mock_no_grad, mock_load) -> None:
-        """When self.model is set, YourMT3 path is used."""
-        import numpy as np
-
-        mock_load.return_value = (np.zeros(16000, dtype=np.float32), 16000)
-        mock_no_grad.return_value.__enter__.return_value = None
-        mock_no_grad.return_value.__exit__.return_value = False
-
-        self.ear.model = MagicMock()  # type: ignore[assignment]  # mock replaces real model/None in test
-        self.ear.model.inference_file = MagicMock(return_value=([MagicMock()], MagicMock()))  # type: ignore[attr-defined,assignment]
-        self.ear.processor = MagicMock()  # type: ignore[assignment]  # mock in test
-        self.ear.processor.num_decoding_channels = 1  # type: ignore[attr-defined,assignment]
-        self.ear.processor.detokenize_list_batches.return_value = (  # type: ignore[attr-defined]
-            [(0.0, 0.5, 60, 80, 1)],
-            MagicMock(),
-            MagicMock(),
-        )
-        self.ear.model.audio_cfg = {  # type: ignore[attr-defined,assignment]
-            "sample_rate": 16000,
-            "input_frames": 320,
-        }
-        self.ear._ymt3_utils = {}
-
-        result = self.ear.transcribe_stem("/fake/path.wav", target="Guitar", onset_threshold=0.5)
-        assert isinstance(result, list)
-
-
-# =========================================================================
 # EAR — all models failed path
 # =========================================================================
 
@@ -1009,76 +919,9 @@ class TestEarAllModelsFailed(unittest.TestCase):
     @patch("agents.BASIC_PITCH_AVAILABLE", False)
     def test_transcribe_stem_raises_when_no_models(self) -> None:
         """When no models available, raises RuntimeError."""
-        ear = EarAgent(
-            model_id="mimbres/YourMT3",
-            device="cpu",
-            prefer_yourmt3=False,
-        )
-        ear.model = None  # ensure no YourMT3
+        ear = EarAgent(device="cpu")
         with pytest.raises(RuntimeError):
             ear.transcribe_stem("/fake/path.wav")
-
-
-# =========================================================================
-# EAR — inline fallback methods
-# =========================================================================
-
-
-class TestEarInlineFallbacks(unittest.TestCase):
-    """Test _slice_audio_inline, _merge_notes_inline, _mix_notes_inline."""
-
-    def test_slice_audio_inline_exact_multiple(self) -> None:
-        """Audio length is exact multiple of frame_size."""
-        import numpy as np
-
-        audio = np.random.randn(1, 16000).astype(np.float32)
-        import torch
-
-        audio_t = torch.from_numpy(audio)
-        segments = EarAgent._slice_audio_inline(audio_t, 8000, 4000)
-        assert segments.shape[0] == 4  # 16000 / 4000 = 4
-        assert segments.shape[1] == 8000
-
-    def test_slice_audio_inline_partial_last(self) -> None:
-        """Last partial segment is zero-padded."""
-        import numpy as np
-        import torch
-
-        audio = np.random.randn(1, 10000).astype(np.float32)
-        audio_t = torch.from_numpy(audio)
-        segments = EarAgent._slice_audio_inline(audio_t, 8000, 4000)
-        # 10000: segments at 0-8000, 4000-10000 (partial, padded to 8000)
-        assert segments.shape[0] == 2
-        assert segments.shape[1] == 8000
-
-    def test_merge_notes_inline(self) -> None:
-        """Zipped events are converted to note dicts."""
-        zipped = [(0.0, 0.5, 60, 80, 1), (0.5, 1.0, 64, 90, 1)]
-        notes = EarAgent._merge_notes_inline(zipped)
-        assert len(notes) == 2
-        assert notes[0]["pitch"] == 60
-        assert notes[0]["start"] == 0.0
-        assert notes[1]["pitch"] == 64
-
-    def test_mix_notes_inline_deduplicates(self) -> None:
-        """Same pitch+start across channels is deduplicated."""
-        ch1 = [{"pitch": 60, "start": 0.0}]
-        ch2 = [{"pitch": 60, "start": 0.0}]  # duplicate
-        ch3 = [{"pitch": 64, "start": 0.5}]
-        mixed = EarAgent._mix_notes_inline([ch1, ch2, ch3])
-        assert len(mixed) == 2
-
-    def test_mix_notes_inline_sorted(self) -> None:
-        """Mixed notes are sorted by start time."""
-        ch1 = [{"pitch": 64, "start": 0.5}]
-        ch2 = [{"pitch": 60, "start": 0.0}]
-        mixed = EarAgent._mix_notes_inline([ch1, ch2])
-        assert mixed[0]["pitch"] == 60
-
-    def test_mix_notes_inline_empty_channel(self) -> None:
-        """Empty channel list doesn't crash."""
-        mixed = EarAgent._mix_notes_inline([[], []])
-        assert len(mixed) == 0
 
 
 # =========================================================================
@@ -1092,52 +935,33 @@ class TestEarAgentDeviceSelection(unittest.TestCase):
     @patch("agents.torch.cuda.is_available", return_value=True)
     def test_device_auto_selects_cuda(self, mock_cuda) -> None:
         """Auto device selects cuda when available."""
-        ear = EarAgent(
-            model_id="test",
-            device="auto",
-            prefer_yourmt3=False,
-        )
+        ear = EarAgent(device="auto")
         assert ear.device == "cuda"
 
     @patch("agents.torch.cuda.is_available", return_value=False)
     @patch("agents.torch.backends.mps.is_available", return_value=True)
     def test_device_auto_selects_mps(self, mock_mps, mock_cuda) -> None:
         """Auto device selects mps when cuda unavailable."""
-        ear = EarAgent(
-            model_id="test",
-            device="auto",
-            prefer_yourmt3=False,
-        )
+        ear = EarAgent(device="auto")
         assert ear.device == "mps"
 
     @patch("agents.torch.cuda.is_available", return_value=False)
     @patch("agents.torch.backends.mps.is_available", return_value=False)
     def test_device_auto_selects_cpu(self, mock_mps, mock_cuda) -> None:
         """Auto device falls back to cpu."""
-        ear = EarAgent(
-            model_id="test",
-            device="auto",
-            prefer_yourmt3=False,
-        )
+        ear = EarAgent(device="auto")
         assert ear.device == "cpu"
 
     def test_device_explicit_cpu(self) -> None:
         """Explicit device string is used directly."""
-        ear = EarAgent(
-            model_id="test",
-            device="cpu",
-            prefer_yourmt3=False,
-        )
+        ear = EarAgent(device="cpu")
         assert ear.device == "cpu"
 
     def test_device_explicit_cuda(self) -> None:
-        """Explicit cuda string is used directly."""
-        ear = EarAgent(
-            model_id="test",
-            device="cuda",
-            prefer_yourmt3=False,
-        )
-        assert ear.device == "cuda"
+        """Explicit cuda string is used directly when CUDA is available."""
+        with patch("agents.torch.cuda.is_available", return_value=True):
+            ear = EarAgent(device="cuda")
+            assert ear.device == "cuda"
 
 
 # =========================================================================
@@ -1156,41 +980,12 @@ class TestEarBasicPitchError(unittest.TestCase):
         mock_metrics.track_stage.return_value.__enter__.return_value = None
         mock_metrics.track_stage.return_value.__exit__.return_value = False
 
-        ear = EarAgent(
-            model_id="test",
-            device="cpu",
-            prefer_yourmt3=False,
-        )
-        ear.model = None
+        ear = EarAgent(device="cpu")
 
         mock_bp_predict.side_effect = RuntimeError("BP failed")
 
         with pytest.raises(RuntimeError):
             ear.transcribe_stem("/fake/path.wav")
-
-
-# =========================================================================
-# TAB — _build_yourmt3_args
-# =========================================================================
-
-
-class TestEarBuildYourmt3Args(unittest.TestCase):
-    """Test _build_yourmt3_args produces a valid argparse namespace."""
-
-    def test_build_yourmt3_args_returns_namespace(self) -> None:
-        """Returns an argparse.Namespace with expected attributes."""
-        import argparse
-
-        ear = EarAgent(
-            model_id="test",
-            device="cpu",
-            prefer_yourmt3=False,
-        )
-        args = ear._build_yourmt3_args("/fake/checkpoint")
-        assert isinstance(args, argparse.Namespace)
-        assert hasattr(args, "exp_id")
-        assert hasattr(args, "task")
-        assert hasattr(args, "precision")
 
 
 # =========================================================================
@@ -1228,129 +1023,6 @@ class TestTabAgentGenerateTabBacktracking(unittest.TestCase):
 
 
 # =========================================================================
-# EAR — YourMT3 failure fallback and internal branches
-# =========================================================================
-
-
-class TestEarYourMT3FailureAndBranches(unittest.TestCase):
-    """Cover YourMT3 failure handler and internal branch paths."""
-
-    def setUp(self) -> None:
-        self.ear = EarAgent(model_id="mimbres/YourMT3", device="cpu", prefer_yourmt3=False)
-
-    @patch("agents.librosa.load")
-    @patch("agents.torch.no_grad")
-    @patch("agents.BASIC_PITCH_AVAILABLE", True)
-    def test_yourmt3_failure_falls_to_basic_pitch(self, mock_load, mock_no_grad) -> None:
-        """When YourMT3 raises, transcribe_stem falls to Basic Pitch."""
-        import numpy as np
-
-        mock_load.return_value = (np.zeros(16000, dtype=np.float32), 16000)
-        mock_no_grad.return_value.__enter__.return_value = None
-        mock_no_grad.return_value.__exit__.return_value = False
-
-        self.ear.model = MagicMock()  # type: ignore[assignment]  # mock replaces real model/None in test
-        self.ear.model.inference_file = MagicMock(side_effect=RuntimeError("mt3-crash"))  # type: ignore[attr-defined,assignment]
-        self.ear.processor = MagicMock()  # type: ignore[assignment]  # mock in test
-        self.ear.model.audio_cfg = {  # type: ignore[attr-defined,assignment]
-            "sample_rate": 16000,
-            "input_frames": 320,
-        }
-        self.ear._ymt3_utils = {}
-
-        with patch("agents.basic_pitch_predict") as mock_bp:
-            import pretty_midi
-
-            pm = pretty_midi.PrettyMIDI()
-            inst = pretty_midi.Instrument(program=0)
-            inst.notes.append(pretty_midi.Note(velocity=80, pitch=60, start=0.0, end=0.5))
-            pm.instruments.append(inst)
-            mock_bp.return_value = (MagicMock(), pm, MagicMock())
-
-            result = self.ear.transcribe_stem("/fake/path.wav")
-            assert len(result) == 1
-
-    @patch("agents.librosa.load")
-    @patch("agents.torch.no_grad")
-    def test_yourmt3_uses_util_slice(self, mock_no_grad, mock_load) -> None:
-        """_transcribe_with_yourmt3 uses _ymt3_utils slice when available."""
-        import numpy as np
-
-        mock_load.return_value = (np.zeros(16000, dtype=np.float32), 16000)
-        mock_no_grad.return_value.__enter__.return_value = None
-        mock_no_grad.return_value.__exit__.return_value = False
-
-        self.ear.model = MagicMock()  # type: ignore[assignment]  # mock replaces real model/None in test
-        self.ear.model.inference_file = MagicMock(return_value=([MagicMock()], MagicMock()))  # type: ignore[attr-defined,assignment]
-        self.ear.processor = MagicMock()  # type: ignore[assignment]  # mock in test
-        self.ear.processor.num_decoding_channels = 1  # type: ignore[attr-defined,assignment]
-        self.ear.processor.detokenize_list_batches.return_value = (  # type: ignore[attr-defined]
-            [(0.0, 0.5, 60, 80, 1)],
-            MagicMock(),
-            MagicMock(),
-        )
-        self.ear.model.audio_cfg = {  # type: ignore[attr-defined,assignment]
-            "sample_rate": 16000,
-            "input_frames": 4000,
-        }
-        # Provide all utils to cover "slice", "merge", "mix" branches
-        import numpy as np
-
-        def fake_slice(audio, frame_size, step_size):
-            audio_np = audio.squeeze().numpy()
-            total = len(audio_np)
-            segments = []
-            start = 0
-            while start + frame_size <= total:
-                segments.append(audio_np[start : start + frame_size])
-                start += step_size
-            if start < total:
-                seg = np.zeros(frame_size, dtype=audio_np.dtype)
-                seg[: total - start] = audio_np[start:]
-                segments.append(seg)
-            return np.array(segments)
-
-        self.ear._ymt3_utils = {
-            "slice": fake_slice,
-            "merge": lambda z: (
-                [{"pitch": 60, "start": 0.0, "end": 0.5, "velocity": 80}],
-                [],
-            ),
-            "mix": lambda x: [{"pitch": 60, "start": 0.0, "end": 0.5, "velocity": 80}],
-        }
-
-        result = self.ear.transcribe_stem("/fake/path.wav")
-        assert isinstance(result, list)
-
-    @patch("agents.librosa.load")
-    @patch("agents.BASIC_PITCH_AVAILABLE", True)
-    def test_yourmt3_not_ready_raises(self, mock_load) -> None:
-        """When tm is None or model lacks inference_file, falls back."""
-        import numpy as np
-
-        mock_load.return_value = (np.zeros(16000, dtype=np.float32), 16000)
-
-        self.ear.model = MagicMock()  # type: ignore[assignment]  # mock replaces real model/None in test
-        self.ear.model.audio_cfg = {"sample_rate": 16000, "input_frames": 320}  # type: ignore[attr-defined,assignment]
-        # Don't set inference_file — model lacks it
-        del self.ear.model.inference_file  # type: ignore[attr-defined,union-attr]
-        self.ear.processor = MagicMock()  # type: ignore[assignment]  # mock in test
-        self.ear._ymt3_utils = {}
-
-        with patch("agents.basic_pitch_predict") as mock_bp:
-            import pretty_midi
-
-            pm = pretty_midi.PrettyMIDI()
-            inst = pretty_midi.Instrument(program=0)
-            inst.notes.append(pretty_midi.Note(velocity=80, pitch=60, start=0.0, end=0.5))
-            pm.instruments.append(inst)
-            mock_bp.return_value = (MagicMock(), pm, MagicMock())
-
-            result = self.ear.transcribe_stem("/fake/path.wav")
-            assert len(result) == 1
-
-
-# =========================================================================
 # EAR — init without Basic Pitch
 # =========================================================================
 
@@ -1361,12 +1033,8 @@ class TestEarAgentInitWithoutBasicPitch(unittest.TestCase):
     @patch("agents.BASIC_PITCH_AVAILABLE", False)
     def test_init_warns_when_no_models(self) -> None:
         """EarAgent init prints warning when no models available."""
-        ear = EarAgent(
-            model_id="mimbres/YourMT3",
-            device="cpu",
-            prefer_yourmt3=False,
-        )
-        assert ear.model is None
+        ear = EarAgent(device="cpu")
+        assert ear.backend == "cpu"
 
 
 if __name__ == "__main__":

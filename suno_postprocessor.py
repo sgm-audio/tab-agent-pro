@@ -36,10 +36,10 @@ class SunoArtifactDetector:
     def __init__(self, aggressiveness: float = 0.5) -> None:
         self.sample_rate = 22050
         self.aggressiveness = float(np.clip(aggressiveness, 0.0, 1.0))
-        self._hf_ratio_threshold = 0.35 - (self.aggressiveness * 0.15)  # 0.20-0.35
+        self._hi_freq_ratio_threshold = 0.35 - (self.aggressiveness * 0.15)  # 0.20-0.35
         self._flatness_threshold = 0.008 + ((1.0 - self.aggressiveness) * 0.004)  # 0.008-0.012
         self._combo_flatness = 0.015 + ((1.0 - self.aggressiveness) * 0.005)  # 0.015-0.020
-        self._combo_hf = 0.25 - (self.aggressiveness * 0.10)  # 0.15-0.25
+        self._combo_hi_freq = 0.25 - (self.aggressiveness * 0.10)  # 0.15-0.25
 
     def analyze(self, audio_path: str) -> tuple[bool, dict]:
         """
@@ -59,10 +59,10 @@ class SunoArtifactDetector:
 
         # 1. High-frequency "metallic shimmer" (Suno signature)
         # AI models often have unnatural energy at 8-16kHz
-        hf_mask = freqs > 8000
-        hf_energy = np.mean(spec[hf_mask])
+        hi_freq_mask = freqs > 8000
+        hi_freq_energy = np.mean(spec[hi_freq_mask])
         total_energy = np.mean(spec)
-        metrics["hf_ratio"] = hf_energy / (total_energy + 1e-10)
+        metrics["hi_freq_ratio"] = hi_freq_energy / (total_energy + 1e-10)
 
         # 2. Spectral flatness (naturalness measure)
         # Lower flatness = more AI-like (less natural variation)
@@ -96,18 +96,18 @@ class SunoArtifactDetector:
             metrics["spectral_flatness"] = 0.5  # Override so flatness rule won't trigger
 
         # Decision heuristics (tuned on Suno v3/v4 + Udio, configurable aggressiveness).
-        # The standalone flatness rule also requires non-negligible HF energy (> 0.01)
+        # The standalone flatness rule also requires non-negligible high-frequency energy (> 0.01)
         # so dark/midrange harmonic recordings without 8-16kHz shimmer (such as
         # examples/guitar_solo.wav) are not misclassified as AI-generated.
         is_suno = bool(
-            metrics["hf_ratio"] > self._hf_ratio_threshold
+            metrics["hi_freq_ratio"] > self._hi_freq_ratio_threshold
             or (
                 not is_pure_tone
                 and metrics["spectral_flatness"] < self._flatness_threshold
-                and metrics["hf_ratio"] > 0.01
+                and metrics["hi_freq_ratio"] > 0.01
             )
             or (
-                metrics["hf_ratio"] > self._combo_hf
+                metrics["hi_freq_ratio"] > self._combo_hi_freq
                 and metrics["spectral_flatness"] < self._combo_flatness
             )
         )
@@ -139,7 +139,7 @@ class SunoAudioPreprocessor:
         y = self._highpass_filter(y, sr, cutoff=40)
 
         # 2. Reduce high-frequency metallic shimmer
-        y = self._reduce_hf_artifacts(y, sr)
+        y = self._reduce_hi_freq_artifacts(y, sr)
 
         # 3. Spectral gating (reduce background AI noise floor)
         y = self._spectral_gate(y, sr)
@@ -158,7 +158,7 @@ class SunoAudioPreprocessor:
         b, a = butter(4, normal_cutoff, btype="high", analog=False)
         return filtfilt(b, a, y)
 
-    def _reduce_hf_artifacts(self, y: np.ndarray, sr: float) -> np.ndarray:
+    def _reduce_hi_freq_artifacts(self, y: np.ndarray, sr: float) -> np.ndarray:
         """
         Reduce high-frequency metallic artifacts (8-16kHz).
 
@@ -175,10 +175,12 @@ class SunoAudioPreprocessor:
         # When sr <= 32kHz (e.g. default 22050Hz, Nyquist 11025Hz), freqs >= 16000
         # has no matches and np.argmax would return 0, producing an empty slice.
         if np.any(freqs >= 8000):
-            hf_start = int(np.argmax(freqs >= 8000))
-            hf_end = int(np.argmax(freqs >= 16000)) if np.any(freqs >= 16000) else len(freqs)
+            hi_freq_start = int(np.argmax(freqs >= 8000))
+            hi_freq_end = (
+                int(np.argmax(freqs >= 16000)) if np.any(freqs >= 16000) else len(freqs)
+            )
             # Apply reduction (0.3 = reduce to 30% of original)
-            mag[hf_start:hf_end, :] *= 0.3
+            mag[hi_freq_start:hi_freq_end, :] *= 0.3
 
         # Reconstruct
         processed = mag * phase

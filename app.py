@@ -1,14 +1,17 @@
 """
-Tab Agent - Hugging Face Gradio Interface
+Tab Agent - Gradio web UI for local guitar/bass tablature transcription.
+
 AI-powered guitar/bass tablature transcription using Basic Pitch.
 
-This is the web UI for the Tab Agent transcription system.
+This is the web UI for the Tab Agent transcription system. Everything runs
+locally on the end user's machine - there is no cloud inference.
 
 Deployment notes:
-  * Binds to ``HOST`` (default ``0.0.0.0`` so Docker/Hugging Face Spaces can reach it).
-  * Honours ``PORT`` (default 7860, the port Spaces routes to).
-  * ``process_audio`` is decorated with ``spaces.GPU`` when the Space actually runs on
-    Zero GPU hardware (``SPACES_ZERO_GPU``); otherwise it is a plain CPU function.
+  * Binds to ``HOST`` (default ``0.0.0.0`` so Docker containers can reach it).
+  * Honours ``PORT`` (default 7860).
+  * Compute device is controlled by the ``DEVICE`` environment variable
+    (``auto``, ``cpu``, ``cuda``, ``rocm``, ``vulkan``, ``mps``,
+    ``directml``); see ``device.py``.
 """
 
 import atexit
@@ -21,12 +24,15 @@ import tempfile
 import time
 import uuid
 import zipfile
+import json
 from datetime import datetime
 from pathlib import Path
 
 import gradio as gr
 
 from monitoring import get_logger, health
+
+from device import DEVICE_BACKENDS, DeviceConfig, resolve_device
 
 
 def _load_dotenv(path: str = ".env") -> None:
@@ -55,23 +61,10 @@ from agents import EarAgent, SplitterAgent, TabAgent  # noqa: E402
 from main import (  # noqa: E402
     export_tab_to_json,
     export_tab_to_txt,
+    render_tab_text,
     validate_thresholds,
 )
 from suno_postprocessor import SunoNotePostprocessor, process_suno_audio  # noqa: E402
-
-# Zero GPU support: the decorator only reserves a GPU on ZeroGPU Spaces. On CPU
-# Spaces `spaces.GPU` is a pass-through, so we still import `spaces` when present
-# but only report GPU acceleration when the runtime really provides it.
-try:
-    import spaces
-
-    SPACES_AVAILABLE = True
-except ImportError:
-    spaces = None  # type: ignore[assignment]
-    SPACES_AVAILABLE = False
-
-ZERO_GPU = os.getenv("SPACES_ZERO_GPU", "").lower() in ("1", "true")
-GPU_AVAILABLE = SPACES_AVAILABLE and ZERO_GPU
 
 # Configuration
 TEMP_DIR = tempfile.gettempdir()
@@ -87,7 +80,7 @@ MAX_DURATION_SEC = 300  # 5 minutes
 ALLOWED_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aiff"}
 
 # A single transcription holds Demucs + a Basic Pitch model in memory, so the
-# queue must be bounded: an unbounded queue turns a busy Space into an OOM kill
+# queue must be bounded: an unbounded queue turns a busy server into an OOM kill
 # instead of a fast "busy" signal. One worker by default (each request is
 # CPU-bound and already uses multiple threads internally).
 MAX_CONCURRENT_REQUESTS = max(1, int(os.getenv("MAX_CONCURRENT_REQUESTS", "1") or "1"))
@@ -95,7 +88,8 @@ QUEUE_MAX_SIZE = int(os.getenv("QUEUE_MAX_SIZE", "32") or "32")
 # Uploads older than this are removed on each request (seconds).
 UPLOAD_TTL_SEC = int(os.getenv("UPLOAD_TTL_SEC", "900") or "900")
 
-# PyTorch device for the transcription agent ("auto", "cpu", "cuda", "mps")
+# PyTorch/ONNX device for the transcription pipeline ("auto", "cpu", "cuda",
+# "rocm", "vulkan", "mps", "directml"). Resolved by device.py at runtime.
 DEVICE = os.getenv("DEVICE", "auto")
 
 BASS_TARGETS = {"Bass", "bass"}
@@ -134,22 +128,10 @@ def process_audio(
     )
 
 
-if GPU_AVAILABLE:
-
-    @spaces.GPU
-    def _gpu_process_audio(*args, **kwargs):
-        """Run the pipeline on a Zero GPU slice. Only active on ZeroGPU Spaces."""
-        return process_audio(*args, **kwargs)
-
-    _reserve_gpu = True
-else:
-    _gpu_process_audio = None
-    _reserve_gpu = False
-
-# `ui_entry` is what the Gradio button is bound to: the Zero GPU wrapper when the
-# runtime provides a GPU, otherwise the plain function. Both accept 5 inputs and
-# a defaulted `progress`, so the number of connected inputs never matters.
-ui_entry = _gpu_process_audio if _reserve_gpu else process_audio
+# `ui_entry` is what the Gradio button is bound to. The pipeline resolves its own
+# compute device (see device.py), so there is no cloud GPU decorator here - Tab Agent
+# runs on the end user's local hardware, not on a hosted inference space.
+ui_entry = process_audio
 
 
 def _validate_audio(audio_path: Path) -> str | None:
@@ -205,6 +187,51 @@ def _load_saved_config() -> dict:
     return {}
 
 
+def _save_device_preference(device: str) -> None:
+    """Persist the user's device choice to user_preferences.json so it survives
+    across server restarts and is reused by the CLI (main.py reads the same
+    file via init_memory)."""
+    import init_memory
+
+    try:
+        memory_dir = init_memory.get_memory_dir()
+        os.makedirs(memory_dir, exist_ok=True)
+        prefs_path = os.path.join(memory_dir, "user_preferences.json")
+        preferences = {}
+        if os.path.exists(prefs_path):
+            try:
+                with open(prefs_path) as f:
+                    preferences = json.load(f)
+            except (OSError, ValueError):
+                preferences = {}
+        if not isinstance(preferences, dict):
+            preferences = {}
+        config = preferences.setdefault("config", {})
+        if not isinstance(config, dict):
+            config = {}
+            preferences["config"] = config
+        config["device"] = device
+        tmp_path = f"{prefs_path}.tmp"
+        with open(tmp_path, "w") as f:
+            json.dump(preferences, f, indent=2)
+        os.replace(tmp_path, prefs_path)
+    except OSError as e:
+        print(f"⚠️  Could not save device preference {device}: {e}", file=sys.stderr)
+
+
+def _active_device_config() -> DeviceConfig:
+    """Resolve the device to use for this request.
+
+    Precedence: live DEVICE env var > saved user preference > auto-detect. The
+    env var always wins so an operator can override a saved preference without
+    editing user_preferences.json.
+    """
+    saved = _load_saved_config().get("device")
+    pref = os.getenv("DEVICE") or saved or "auto"
+    return resolve_device(pref)
+
+
+
 def _process_audio_impl(
     audio_file,
     instrument_type="Guitar",
@@ -217,13 +244,13 @@ def _process_audio_impl(
     cleanup_stale_sessions()
 
     if audio_file is None:
-        return "❌ Please upload an audio file", None
+        return "❌ Please upload an audio file", None, None
 
     # Validate
     audio_path = Path(audio_file)
     error = _validate_audio(audio_path)
     if error:
-        return f"❌ {error}", None
+        return f"❌ {error}", None, None
 
     try:
         # Create a unique output directory. A second-resolution timestamp plus
@@ -260,7 +287,7 @@ def _process_audio_impl(
         health.set_component(
             "suno_detector",
             (
-                f"ai_audio_detected (hf_ratio={suno_metrics.get('hf_ratio', 0):.4f})"
+                f"ai_audio_detected (hi_freq_ratio={suno_metrics.get('hi_freq_ratio', 0):.4f})"
                 if is_suno
                 else "clean"
             ),
@@ -276,10 +303,11 @@ def _process_audio_impl(
             )
         except ValueError as e:
             # A corrupt user_preferences.json must not silently degrade output.
-            return f"❌ Invalid saved configuration: {e}", None
+            return f"❌ Invalid saved configuration: {e}", None, None
 
         # Initialize agents
-        runtime_device = os.getenv("DEVICE", DEVICE)
+        device_config = _active_device_config()
+        runtime_device = device_config.torch_device
         splitter = SplitterAgent(
             output_dir=str(session_dir / "stems"),
             device=runtime_device,
@@ -356,12 +384,16 @@ def _process_audio_impl(
         skipped: list[str] = []
         counted_files: set[Path] = set()
         written = 0
+        lead_tab_data: list | None = None
 
         for stem_name, notes in results.items():
             tab_data = tab_agent.generate_tab(
                 notes,
                 technique_sensitivity=technique_sensitivity,
             )
+
+            if stem_name == "lead":
+                lead_tab_data = tab_data
 
             if notes and not tab_data:
                 skipped.append(stem_name)
@@ -404,12 +436,31 @@ def _process_audio_impl(
 
         progress(1.0, desc="✅ Complete!")
 
+        # Inline tablature preview for the lead guitar track (shown directly in
+        # the UI so the user sees results without downloading/unzipping).
+        inline_tab_html = None
+        if include_tab and lead_tab_data:
+            tab_text = render_tab_text(
+                lead_tab_data,
+                instrument=f"{instrument_type} - Lead",
+                num_strings=len(tuning),
+            )
+            if tab_text:
+                escaped = tab_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                inline_tab_html = f"""
+                <div class="tab-preview">
+                    <div class="tab-preview-header">Lead Guitar Tablature</div>
+                    <pre class="tab-preview-body">{escaped}</pre>
+                </div>
+                """
+
         if not results or not any(results.values()):
             return (
                 "⚠️ **No notes were transcribed.** The audio may be too quiet, "
                 "or a transcription backend may be missing "
                 "(check `/health` → `components`).",
                 str(zip_path),
+                inline_tab_html,
             )
 
         # Generate status message
@@ -434,14 +485,14 @@ def _process_audio_impl(
 """
         if skipped:
             status_msg += (
-                f"\n⚠️ No tablature for: {', '.join(skipped)} — notes fell outside the "
+                f"\n⚠️ No tablature for: {', '.join(skipped)} - notes fell outside the "
                 "instrument's range/tuning.\n"
             )
 
         status_msg += "\n📥 **Download the ZIP file below to get all outputs!**\n"
 
         health.record_request(success=True, details=f"transcribe: {song_name}")
-        return status_msg, str(zip_path)
+        return status_msg, str(zip_path), inline_tab_html
 
     except Exception as e:
         from monitoring import get_logger
@@ -463,7 +514,7 @@ def _process_audio_impl(
             "The server log has the full traceback. Check `/health` → "
             "`components` to confirm a transcription backend is available."
         )
-        return error_msg, None
+        return error_msg, None, None
 
 
 # Create Gradio interface
@@ -472,6 +523,31 @@ UI_CSS = """
     .tab-agent-header p { color: #666; margin-top: 0.25rem; }
     .tab-agent-footer { text-align: center; color: #999; font-size: 0.85rem; padding-top: 1rem; border-top: 1px solid #e5e7eb; margin-top: 1.5rem; }
     .status-box { min-height: 120px; }
+    .tab-agent-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.4rem 0.8rem;
+        margin-top: 0.75rem;
+        border: 1px solid #e5e7eb;
+        border-radius: 999px;
+        background: #f9fafb;
+        font-size: 0.85rem;
+    }
+    .chip-label { color: #6b7280; font-weight: 600; }
+    .chip-value { color: #111827; font-weight: 700; }
+    .chip-detail { color: #6b7280; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .tab-preview { margin-top: 1rem; border: 1px solid #e5e7eb; border-radius: 0.5rem; background: #f9fafb; }
+    .tab-preview-header { padding: 0.5rem 0.75rem; font-weight: 700; color: #111827; border-bottom: 1px solid #e5e7eb; font-size: 0.9rem; }
+    .tab-preview-body {
+        padding: 0.75rem;
+        overflow-x: auto;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.85rem;
+        line-height: 1.6;
+        color: #111827;
+        white-space: pre;
+    }
     """
 
 
@@ -494,7 +570,7 @@ def _ui_style_kwargs() -> dict:
 def create_ui():
     """Create Gradio UI interface."""
     with gr.Blocks(
-        title="Tab Agent — AI Tablature Transcription",
+        title="Tab Agent - AI Tablature Transcription",
         **_ui_style_kwargs(),
     ) as demo:
         gr.HTML("""
@@ -518,6 +594,25 @@ def create_ui():
                     label="Instrument",
                     choices=["Guitar", "Bass"],
                     value="Guitar",
+                )
+
+                device_dropdown = gr.Dropdown(
+                    label="Compute device",
+                    choices=[key for key, _ in DEVICE_BACKENDS],
+                    value=os.getenv("DEVICE", "auto"),
+                    info="GPU acceleration requires the matching ONNX Runtime package (see requirements.txt). Takes effect on next transcription.",
+                )
+
+                # Backend chip: shows what compute backend is actually active.
+                _chip_cfg = _active_device_config()
+                gr.HTML(
+                    f"""
+                    <div class="tab-agent-chip">
+                        <span class="chip-label">Active backend:</span>
+                        <span class="chip-value">{_chip_cfg.label}</span>
+                        <span class="chip-detail">{_chip_cfg.torch_device}</span>
+                    </div>
+                    """
                 )
 
                 with gr.Group():
@@ -553,15 +648,19 @@ def create_ui():
                     interactive=False,
                     visible=False,
                 )
+                tab_output = gr.HTML(
+                    label="Lead Guitar Tablature",
+                    visible=False,
+                )
 
         with gr.Accordion("How it works", open=False):
             gr.Markdown("""
-            1. **Stem separation** — Demucs isolates the guitar/bass/other stems from the mix
-            2. **Spatial processing** — Mid-side technique splits lead from rhythm
-            3. **AI transcription** — Basic Pitch converts audio → MIDI notes
-            4. **Tablature generation** — Dynamic programming assigns notes to strings/frets
-            5. **Technique detection** — Slides, hammer-ons, pull-offs annotated
-            6. **Export** — MIDI, ASCII tab, JSON in a single ZIP
+            1. **Stem separation** - Demucs isolates the guitar/bass/other stems from the mix
+            2. **Spatial processing** - Mid-side technique splits lead from rhythm
+            3. **AI transcription** - Basic Pitch converts audio → MIDI notes
+            4. **Tablature generation** - Dynamic programming assigns notes to strings/frets
+            5. **Technique detection** - Slides, hammer-ons, pull-offs annotated
+            6. **Export** - MIDI, ASCII tab, JSON in a single ZIP
             """)
 
         with gr.Accordion("Links", open=False):
@@ -582,14 +681,30 @@ def create_ui():
         transcribe_btn.click(
             fn=ui_entry,
             inputs=[audio_input, instrument_type, export_midi, export_tab, export_json],
-            outputs=[status_output, download_output],
+            outputs=[status_output, download_output, tab_output],
         ).then(
-            fn=lambda path: gr.update(visible=path is not None),
-            inputs=[download_output],
-            outputs=[download_output],
+            fn=lambda path, tab: (
+                gr.update(visible=path is not None),
+                gr.update(visible=tab is not None and str(tab).strip() != ""),
+            ),
+            inputs=[download_output, tab_output],
+            outputs=[download_output, tab_output],
+        )
+
+        device_dropdown.change(
+            fn=_on_device_change,
+            inputs=[device_dropdown],
+            outputs=None,
         )
 
     return demo
+
+
+def _on_device_change(device: str) -> None:
+    """Save the user's device choice and apply it to this running server so the
+    next transcription uses it immediately."""
+    os.environ["DEVICE"] = device
+    _save_device_preference(device)
 
 
 def create_app() -> gr.Blocks:
@@ -718,8 +833,8 @@ def serve() -> None:
     """
     Run the FastAPI + Gradio app with uvicorn.
 
-    Binds HOST (default 0.0.0.0 so Docker/Hugging Face Spaces can reach it) and
-    PORT (default 7860, the port Spaces routes to).
+    Binds HOST (default 0.0.0.0 so Docker containers can reach it) and
+    PORT (default 7860). Set HOST=127.0.0.1 for local-only use.
     """
     import threading
 
@@ -729,7 +844,7 @@ def serve() -> None:
         signal.signal(signal.SIGTERM, handle_signal)
         signal.signal(signal.SIGINT, handle_signal)
 
-    # Binding 0.0.0.0 is required for container/Hugging Face Spaces routing;
+    # Binding 0.0.0.0 is required for container routing;
     # set HOST=127.0.0.1 for local-only use.
     uvicorn.run(
         create_app(),

@@ -61,7 +61,6 @@ httpcore==1.0.9
 httpcore2==2.16.0
 httpx==0.28.1
 httpx2==2.16.0
-huggingface-hub==2.4.0
 idna==3.20
 intervaltree==3.2.1
 ipython==8.29.0
@@ -123,7 +122,7 @@ six==1.17.0
 sortedcontainers==2.4.0
 soundfile==0.12.1
 soxr==1.1.0
-spaces==0.51.3
+
 sphn==0.2.1
 stack-data==0.6.3
 starlette==1.10.0

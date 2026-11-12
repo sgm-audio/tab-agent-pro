@@ -11,10 +11,9 @@
 # torch>=2.1 and basic-pitch's ONNX runtime is validated against the 2.5 line.
 #
 # Exposure analysis for this project:
-#   * No user-supplied model files. The only torch.load() call loads the
-#     YourMT3+ checkpoint, with weights_only=True, from a revision that can be
-#     pinned via YOURMT3_REVISION (see agents.py; YOURMT3_REQUIRE_PINNED_REVISION=1
-#     makes an unpinned download a hard failure).
+#   * No user-supplied model files. The only torch.load()-adjacent path is
+#     Demucs weight loading (handled by demucs itself) and Basic Pitch, which
+#     loads an ONNX model via onnxruntime, not torch.load of arbitrary checkpoints.
 #   * No torch.jit / torch.compile / inductor usage in the codebase, which is
 #     what most of these advisories target.
 #   * The web UI is the only untrusted-input surface, and audio never reaches a

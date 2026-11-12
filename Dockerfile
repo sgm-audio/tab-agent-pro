@@ -1,6 +1,8 @@
 # Stage 1: Build deps — compilers, git, Python wheels
 FROM python:3.12-slim AS builder
 
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -20,9 +22,18 @@ ENV PATH="/venv/bin:$PATH"
 
 RUN pip install --upgrade pip
 
-# CPU-only wheels. The PyPI torch wheel also pulls 12 NVIDIA CUDA packages
-# (~2.5 GB) that a CPU Space cannot use.
-RUN pip install torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+# Torch wheels. Defaults to the CPU-only index. For a GPU image, override at
+# build time:
+#
+#   docker build --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128 \
+#                -t tab-agent-cuda .
+#
+#   docker build --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/rocm6.0 \
+#                -t tab-agent-rocm .
+#
+# Match the ONNX Runtime package to your backend too (see requirements.txt),
+# e.g. onnxruntime-gpu for CUDA or onnxruntime-vulkan for AMD Vulkan.
+RUN pip install torch==2.5.1 torchaudio==2.5.1 --index-url "$TORCH_INDEX_URL"
 
 COPY requirements.txt .
 # basic-pitch declares a TensorFlow dependency on Linux, but uses ONNX here.
@@ -51,17 +62,15 @@ FROM python:3.12-slim
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
-
-# Hugging Face Spaces routes to port 7860 and requires the app to listen on
-# 0.0.0.0 (not 127.0.0.1) so the Space proxy can reach it.
-ENV HOST=0.0.0.0 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    # The container listens on 0.0.0.0 so a local Docker client (or any
+    # reverse proxy in front of it) can reach the web UI.
+    HOST=0.0.0.0 \
     PORT=7860 \
     # Writable cache location for the owner of /app; models land here.
     CACHE_DIR=/app/.cache/tab_agent \
     XDG_CACHE_HOME=/app/.cache \
-    TORCH_HOME=/app/.cache/torch \
-    HF_HOME=/app/.cache/huggingface
+    TORCH_HOME=/app/.cache/torch
 
 WORKDIR /app
 

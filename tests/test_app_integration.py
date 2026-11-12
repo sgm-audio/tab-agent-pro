@@ -86,7 +86,7 @@ def test_create_ui_returns_blocks() -> None:
 def test_process_audio_impl_none_audio() -> None:
     app = _import_app()
 
-    msg, zip_path = app._process_audio_impl(None, "Guitar", True, True, True, None)
+    msg, zip_path, _tab = app._process_audio_impl(None, "Guitar", True, True, True, None)
     assert "upload" in msg.lower()
     assert zip_path is None
 
@@ -94,8 +94,8 @@ def test_process_audio_impl_none_audio() -> None:
 def test_process_audio_non_gpu_wrapper() -> None:
     app = _import_app()
 
-    with patch("app._process_audio_impl", return_value=("OK", "/tmp/z.zip")) as mock_impl:
-        msg, _zp = app.process_audio("f.wav", "Guitar", True, True, True, MagicMock())
+    with patch("app._process_audio_impl", return_value=("OK", "/tmp/z.zip", None)) as mock_impl:
+        msg, _zp, _tab = app.process_audio("f.wav", "Guitar", True, True, True, MagicMock())
         assert msg == "OK"
         mock_impl.assert_called_once()
 
@@ -108,7 +108,7 @@ def test_process_audio_impl_error() -> None:
         patch("app.process_suno_audio", side_effect=ValueError("boom")),
         patch("app._validate_audio", return_value=None),
     ):
-        msg, zip_path = app._process_audio_impl(
+        msg, zip_path, _tab = app._process_audio_impl(
             "dummy.wav", "Guitar", True, True, True, mock_progress
         )
         assert "failed" in msg
@@ -173,16 +173,16 @@ def _run_mocked_pipeline(app, instrument, stems_fn, is_suno=False):
             {"string": 0, "fret": 3, "technique": "pick", "start_time": 0.0}
         ]
 
-        msg, zip_path = app._process_audio_impl(
+        msg, zip_path, _tab = app._process_audio_impl(
             "dummy.wav", instrument, True, True, True, mock_progress
         )
-    return msg, zip_path
+    return msg, zip_path, _tab
 
 
 def test_process_audio_impl_guitar_full_pipeline() -> None:
     app = _import_app()
 
-    msg, zip_path = _run_mocked_pipeline(app, "Guitar", _make_mock_stems)
+    msg, zip_path, _tab = _run_mocked_pipeline(app, "Guitar", _make_mock_stems)
     assert "Complete!" in msg
     assert zip_path is not None
     assert zip_path.endswith(".zip")
@@ -191,7 +191,7 @@ def test_process_audio_impl_guitar_full_pipeline() -> None:
 def test_process_audio_impl_bass_full_pipeline() -> None:
     app = _import_app()
 
-    msg, zip_path = _run_mocked_pipeline(app, "Bass", _make_mock_bass_stems)
+    msg, zip_path, _tab = _run_mocked_pipeline(app, "Bass", _make_mock_bass_stems)
     assert "Complete!" in msg
     assert zip_path is not None
     assert zip_path.endswith(".zip")
@@ -200,7 +200,7 @@ def test_process_audio_impl_bass_full_pipeline() -> None:
 def test_process_audio_impl_suno_true() -> None:
     app = _import_app()
 
-    msg, zip_path = _run_mocked_pipeline(app, "Guitar", _make_mock_stems, is_suno=True)
+    msg, zip_path, _tab = _run_mocked_pipeline(app, "Guitar", _make_mock_stems, is_suno=True)
     assert "Complete!" in msg
     assert zip_path is not None
 
@@ -235,7 +235,7 @@ def test_process_audio_impl_zip_with_files() -> None:
             {"string": 0, "fret": 3, "technique": "pick", "start_time": 0.0}
         ]
 
-        msg, _zp = app._process_audio_impl("d.wav", "Guitar", True, True, True, mock_progress)
+        msg, _zp, _tab = app._process_audio_impl("d.wav", "Guitar", True, True, True, mock_progress)
 
     assert "Complete!" in msg
     after = {p.name for p in app.OUTPUT_DIR.iterdir() if p.is_dir()}

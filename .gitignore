@@ -97,3 +97,4 @@ gradio_cached_examples/
 # ReaPack
 !index.xml
 !reaper/*.lua
+.agents/loop-state/

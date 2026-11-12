@@ -60,7 +60,7 @@ class TestBenchmark(unittest.TestCase):
         signal = generate_sine_sweep(duration_sec)
         sf.write(path, signal, 22050)
 
-        ear = EarAgent(device="cpu", prefer_yourmt3=False)
+        ear = EarAgent(device="cpu")
         detector = SunoArtifactDetector()
         tab_agent = TabAgent(tuning=[40, 45, 50, 55, 59, 64], num_frets=24)
         mock_notes = [

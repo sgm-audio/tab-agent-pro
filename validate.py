@@ -259,7 +259,7 @@ def main(argv: list[str] | None = None) -> int:
         detector = SunoArtifactDetector()
         _is_suno, metrics = detector.analyze("examples/guitar_solo.wav")
         check("SunoDetector.analyze() returns (bool, dict)", True)
-        check("SunoDetector metrics has hf_ratio", "hf_ratio" in metrics)
+        check("SunoDetector metrics has hi_freq_ratio", "hi_freq_ratio" in metrics)
         check("SunoDetector metrics has spectral_flatness", "spectral_flatness" in metrics)
         detector_aggressive = SunoArtifactDetector(aggressiveness=1.0)
         _is_suno_hi, _ = detector_aggressive.analyze("examples/guitar_solo.wav")
@@ -284,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
             note_seq.NoteSequence.Note(pitch=60, start_time=0.0, end_time=0.5, velocity=80),
             note_seq.NoteSequence.Note(pitch=72, start_time=0.01, end_time=0.5, velocity=80),
         ]
-        cleaned = post.process(notes, is_suno=True, metrics={"hf_ratio": 0.4})
+        cleaned = post.process(notes, is_suno=True, metrics={"hi_freq_ratio": 0.4})
         check("SunoNotePostprocessor removes octave errors", len(cleaned) < len(notes))
         check(
             "SunoNotePostprocessor does NOT mutate input",
@@ -394,7 +394,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # MIDI export
     try:
-        ear = EarAgent(device="cpu", prefer_yourmt3=False)
+        ear = EarAgent(device="cpu")
         # Just test the export_midi method (transcription requires Basic Pitch)
         notes = [
             note_seq.NoteSequence.Note(pitch=60, start_time=0.0, end_time=0.5, velocity=80),

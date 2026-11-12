@@ -9,7 +9,6 @@ description = "AI-powered guitar/bass tablature transcription"
 requires-python = ">=3.11"
 dependencies = [
     "gradio>=4.44,<7",
-    "spaces>=0.19.0",
     "basic-pitch>=0.4.0,<0.5",
     # Imported by basic_pitch.note_creation; required because the Dockerfile
     # installs basic-pitch with --no-deps (its Linux extra pulls TensorFlow).
@@ -28,9 +27,9 @@ dependencies = [
     "IPython>=8.0,<8.30",
     "fastapi>=0.110",
     "uvicorn>=0.27",
-    "huggingface_hub[cli]>=0.23",
     # agents.py imports torch/torchaudio at module scope; demucs requires
-    # torch>=2.1. The Dockerfile pins the CPU-only index explicitly.
+    # torch>=2.1. The Dockerfile defaults to the CPU-only index; override
+    # TORCH_INDEX_URL to build with CUDA/ROCm wheels.
     "torch>=2.1",
     "torchaudio>=2.1",
 ]

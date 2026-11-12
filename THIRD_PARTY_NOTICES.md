@@ -30,8 +30,6 @@ All licenses below were verified from the installed distribution metadata
 | [gradio-client](https://github.com/gradio-app/gradio) | 2.7.2 | Apache-2.0 | Gradio Inc. |
 | [fastapi](https://github.com/fastapi/fastapi) | 0.162.0 | MIT | Sebastián Ramírez |
 | [uvicorn](https://github.com/encode/uvicorn) | 0.54.0 | BSD-3-Clause | Tom Christie |
-| [huggingface-hub](https://github.com/huggingface/huggingface_hub) | 2.4.0 | Apache-2.0 | Hugging Face Inc. |
-| [spaces](https://github.com/huggingface/huggingface_hub) | 0.51.3 | Apache-2.0 | Hugging Face Inc. |
 
 ## Copyleft / reciprocal licenses in the shipped set
 
@@ -46,7 +44,7 @@ library, dynamically linked — both conditions hold here.
 
 **No GPL, AGPL, SSPL or other network-copyleft license appears anywhere in the
 shipped dependency tree** (`requirements.lock`). Verified by scanning the
-license metadata of all 164 installed distributions.
+license metadata of all installed distributions.
 
 ## Model weights and data
 
@@ -54,7 +52,6 @@ license metadata of all 164 installed distributions.
 |---|---|---|
 | Basic Pitch ONNX model | Apache-2.0 | Downloaded at install time with the `basic-pitch` wheel. |
 | Demucs `htdemucs` weights | MIT | Downloaded by `demucs` on first use. |
-| YourMT3+ checkpoint (`mimbres/YourMT3`) | See upstream repository | Optional; not shipped. Loaded only if enabled, and only from a revision you pin (see `docs/RUNBOOK.md`). Review upstream terms before enabling it in production. |
 | `examples/guitar_solo.wav`, `examples/bass_groove.wav` | MIT (this repository) | Synthesised for the test suite; no third-party audio. |
 
 ## NVIDIA CUDA redistributables (GPU installs only)

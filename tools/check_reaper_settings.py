@@ -56,11 +56,27 @@ reaper.InsertMedia = function(path, mode) end
 reaper.GetNumTracks = function() return 1 end
 reaper.GetTrack = function(_, idx) return 1 end
 reaper.GetSetMediaTrackInfo_String = function(track, name, value, setnew) end
+-- reaper.defer schedules idle work; in this linear test harness it is a no-op.
+reaper.defer = function(callback) end
 
--- Intercept the shell command (the script calls os.execute(cmd))
-local real_execute = os.execute
-os.execute = function(cmd) CAPTURED_COMMAND = cmd; return 0 end
+-- Intercept io.popen (the script now streams via io.popen instead of os.execute)
+-- CAPTURED_COMMAND is intentionally a global so the test harness can read it.
+CAPTURED_COMMAND = nil
+local FAKE_STREAM = {}
+function FAKE_STREAM:read(fmt) return nil end            -- simulate EOF immediately
+function FAKE_STREAM:close() return true, nil, 0 end     -- clean exit, success
+io.popen = function(cmd, mode)
+  CAPTURED_COMMAND = cmd
+  return FAKE_STREAM
+end
+-- Keep os.execute defined (returns success) in case any code path calls it.
+os.execute = function(cmd) return 0 end
 """
+
+
+def _lua_str(value: str) -> str:
+    """Escape a Python string for safe embedding in a Lua double-quoted string."""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def run_lua(extstate: dict[str, str]) -> str | None:
@@ -69,9 +85,9 @@ def run_lua(extstate: dict[str, str]) -> str | None:
     lua = LuaRuntime(unpack_returned_tuples=True)
     lua.execute("EXTSTATE_INIT = {}")
     for key, value in extstate.items():
-        lua.execute(f'EXTSTATE_INIT["{key}"] = "{value}"')
-    lua.execute(f"AUDIO_PATH = '{AUDIO_PATH}'")
-    lua.execute(f"INSTALL_PATH = '{INSTALL_PATH}'")
+        lua.execute(f'EXTSTATE_INIT["{key}"] = "{_lua_str(value)}"')
+    lua.execute(f"AUDIO_PATH = '{_lua_str(AUDIO_PATH)}'")
+    lua.execute(f"INSTALL_PATH = '{_lua_str(INSTALL_PATH)}'")
     lua.execute(STUB)
     lua.execute((ROOT / "reaper" / "TabAgent.lua").read_text())
     captured = lua.globals().CAPTURED_COMMAND
@@ -146,10 +162,10 @@ def main() -> int:
 
     lua = LuaRuntime(unpack_returned_tuples=True)
     lua.execute("EXTSTATE_INIT = {}")
-    lua.execute(f'EXTSTATE_INIT["install_path"] = "{INSTALL_PATH}"')
+    lua.execute(f'EXTSTATE_INIT["install_path"] = "{_lua_str(INSTALL_PATH)}"')
     lua.execute('EXTSTATE_INIT["export_midi"] = "0"')
-    lua.execute(f"AUDIO_PATH = '{AUDIO_PATH}'")
-    lua.execute(f"INSTALL_PATH = '{INSTALL_PATH}'")
+    lua.execute(f"AUDIO_PATH = '{_lua_str(AUDIO_PATH)}'")
+    lua.execute(f"INSTALL_PATH = '{_lua_str(INSTALL_PATH)}'")
     lua.execute(STUB)
     lua.execute((ROOT / "reaper" / "TabAgent.lua").read_text())
     no_midi_cmd = str(lua.globals().CAPTURED_COMMAND or "")
