@@ -57,7 +57,7 @@ class TestSunoArtifactDetector(unittest.TestCase):
         is_suno, metrics = self.detector.analyze(path)
         assert isinstance(is_suno, bool | np.bool_)
         assert isinstance(metrics, dict)
-        assert "hf_ratio" in metrics
+        assert "hi_freq_ratio" in metrics
         assert "spectral_flatness" in metrics
 
     def test_clean_sine_not_ai(self) -> None:
@@ -115,12 +115,12 @@ class TestSunoAudioPreprocessor(unittest.TestCase):
         # Filtered signal should have lower amplitude (attenuated)
         assert np.max(np.abs(filtered)) < np.max(np.abs(signal))
 
-    def test_reduce_hf_artifacts_when_nyquist_below_16khz(self) -> None:
-        """_reduce_hf_artifacts attenuates 12-15kHz even when Nyquist < 16kHz (sr=30000)."""
+    def test_reduce_hi_freq_artifacts_when_nyquist_below_16khz(self) -> None:
+        """_reduce_hi_freq_artifacts attenuates 12-15kHz even when Nyquist < 16kHz (sr=30000)."""
         sr = 30000  # Nyquist = 15000 Hz (< 16000 Hz)
         t = np.linspace(0, 1, sr, endpoint=False)
         tone_14k = np.sin(2 * np.pi * 14000 * t).astype(np.float32)
-        out = self.preprocessor._reduce_hf_artifacts(tone_14k, sr)
+        out = self.preprocessor._reduce_hi_freq_artifacts(tone_14k, sr)
         assert np.sqrt(np.mean(out**2)) < np.sqrt(np.mean(tone_14k**2)) * 0.8
 
 
@@ -224,7 +224,7 @@ class TestSunoNotePostprocessor(unittest.TestCase):
             wav = os.path.join(tmpdir, "in.wav")
             sf.write(wav, np.zeros(22050, dtype=np.float32), 22050)
             with patch("suno_postprocessor.SunoArtifactDetector") as det_cls:
-                det_cls.return_value.analyze.return_value = (False, {"hf_ratio": 0.0})
+                det_cls.return_value.analyze.return_value = (False, {"hi_freq_ratio": 0.0})
                 process_suno_audio(wav, aggressiveness=0.9)
                 det_cls.assert_called_once_with(aggressiveness=0.9)
 

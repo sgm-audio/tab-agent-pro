@@ -23,9 +23,8 @@ within 10. Credit is given in `CHANGELOG.md` unless you ask to stay anonymous.
 
 Tab Agent Pro is a **single-tenant** audio transcription service. It has **no
 user accounts, no authentication, and no persistent user data**. The trust
-boundary is the hosting platform (a Hugging Face Space or a container you
-control) — anyone who can reach the port can transcribe audio and read
-`/health`.
+boundary is the container or machine it runs on — anyone who can reach the port
+can transcribe audio and read `/health`.
 
 In scope:
 
@@ -33,9 +32,8 @@ In scope:
   ffmpeg / audioread)
 - Path traversal or overwrite through uploaded filenames and session directories
 - Resource exhaustion (memory, disk, CPU) from oversized or malicious uploads
-- Leakage of `HF_TOKEN` or other environment secrets into logs or responses
-- Supply-chain compromise of a pinned dependency or the optional YourMT3+
-  checkpoint
+- Leakage of environment secrets into logs or responses
+- Supply-chain compromise of a pinned dependency
 
 Out of scope (by design, documented rather than fixed):
 
@@ -59,7 +57,9 @@ Out of scope (by design, documented rather than fixed):
 | Dependency pinning | `requirements.lock`, verified in CI and in the Docker build |
 | Vulnerability gate | `tools/check_vulns.py`, fails on any advisory without a dated, justified acceptance in `.pip-audit-ignore` |
 | Static analysis | `bandit` (SAST) + `gitleaks` (secret scan) in CI, both blocking |
-| Model provenance | `YOURMT3_REVISION` pin + `YOURMT3_REQUIRE_PINNED_REVISION=1` fail-closed mode |
+| Model provenance | Basic Pitch and Demucs weights are downloaded from their upstream project |
+|                  | repositories at install / first use; pin dependency versions via |
+|                  | `requirements.lock` for reproducible builds |
 
 ## Known accepted risks
 
@@ -68,9 +68,7 @@ exposure analysis and expiry dates. Expired entries fail CI.
 
 ## Hardening the deployment
 
-1. Run with `YOURMT3_REQUIRE_PINNED_REVISION=1` and a reviewed `YOURMT3_REVISION`.
-2. Keep `HF_TOKEN` in the platform secret store, never in the image or `.env` in git.
-3. Put the service behind a proxy that terminates TLS and applies rate limits if
+1. Put the service behind a proxy that terminates TLS and applies rate limits if
    it is not a private/internal tool.
-4. Re-run `tools/check_vulns.py` on a schedule — the acceptances expire
+2. Re-run `tools/check_vulns.py` on a schedule — the acceptances expire
    (currently `2027-01-31`) and the gate is designed to force a re-review.

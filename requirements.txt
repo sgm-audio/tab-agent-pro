@@ -1,14 +1,13 @@
-# Tab Agent - Docker Space Requirements
+# Tab Agent - Local GPU Requirements
 gradio>=4.44,<7
-
-# Zero GPU support (HuggingFace Spaces). Harmless on CPU Spaces: spaces.GPU()
-# passes through when SPACES_ZERO_GPU is not set.
-spaces>=0.19.0
 
 # Core transcription (Basic Pitch with ONNX backend)
 # ONNX runtime is auto-detected by basic-pitch; no TensorFlow needed on Linux.
 # NOTE: the Dockerfile installs basic-pitch with --no-deps and therefore lists
 # its real runtime imports (mir_eval, resampy) explicitly. Keep them in sync.
+# For GPU-accelerated Basic Pitch install the matching ONNX Runtime package:
+#   onnxruntime-gpu (CUDA), onnxruntime-rocm (AMD ROCm),
+#   onnxruntime-vulkan (AMD Vulkan), onnxruntime-directml (Windows DirectML)
 basic-pitch>=0.4.0,<0.5
 mir_eval>=0.6
 resampy>=0.2.2,<0.4.3
@@ -35,20 +34,11 @@ IPython>=8.0,<8.30
 fastapi>=0.110
 uvicorn>=0.27
 
-# Provides the `hf` CLI used by tools/deploy_space.sh. It is also pulled in
-# transitively by gradio, but the deployment script depends on it, so it is
-# declared explicitly rather than inherited.
-huggingface_hub[cli]>=0.23
-
-# Transcription runtime. The Dockerfile pins these to the CPU-only index; the
-# PyPI resolver would otherwise pull NVIDIA CUDA wheels for a CPU Space.
-# Declared here so a non-Docker install matches the image and so the demucs
-# requirement (torch>=2.1) is satisfiable without an implicit upgrade.
+# Transcription runtime. The Dockerfile defaults to the CPU-only torch index;
+# for GPU builds override TORCH_INDEX_URL (see Dockerfile) so torch resolves
+# CUDA/ROCm wheels instead. torch>=2.1 is required by demucs.
 torch>=2.1
 torchaudio>=2.1
 
-# NOTE: transformers is intentionally NOT a dependency. YourMT3+ is a custom
-# PyTorch Lightning model (see agents.py) and the code never imports
-# transformers, so it was only ~1 GB of dead weight in the image.
-
-# Gradio is handled by HF Spaces runtime
+# NOTE: transformers is intentionally NOT a dependency. Tab Agent uses Basic
+# Pitch (ONNX) and Demucs only, so transformers was dead weight in the image.

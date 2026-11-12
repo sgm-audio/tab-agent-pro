@@ -115,30 +115,26 @@ def _string_labels(num_strings: int) -> list[str]:
     return [chr(65 + i) for i in range(num_strings - 1, -1, -1)]
 
 
-def export_tab_to_txt(
+def render_tab_text(
     tab_data,
-    output_path,
     instrument="Guitar",
     num_strings: int | None = None,
-) -> None:
-    """Export tablature to human-readable text format.
+) -> str | None:
+    """Render tablature to a human-readable text string.
 
     Groups simultaneous notes (within 50ms) into the same column
     so chords align vertically across strings.
 
-    Notes that share a string within one 50ms group are all rendered, joined
-    with ``/`` (previously the later note silently overwrote the earlier one,
-    so the ASCII tab disagreed with the JSON export).
+    Returns ``None`` when there is nothing to render.
 
     Args:
         tab_data: positions from ``TabAgent.generate_tab``
-        output_path: destination ``.tab`` file
         instrument: label written in the file header
         num_strings: instrument string count; keeps the displayed grid the same
             size as the instrument even when the highest strings are unused
     """
-    if not tab_data:
-        return
+    if not tab_data or not isinstance(tab_data, list):
+        return None
 
     max_used = max(pos["string"] for pos in tab_data) + 1
     num_strings = max(max_used, num_strings or 0)
@@ -177,13 +173,28 @@ def export_tab_to_txt(
 
     labels = _string_labels(num_strings)
 
+    out = [f"=== {instrument} Tablature ===", ""]
+    # Display high strings first (reverse order)
+    for i in range(num_strings - 1, -1, -1):
+        out.append(f"{labels[num_strings - 1 - i]}|{lines[i]}")
+    out.append("")
+    out.append("Legend: s=slide, h=hammer-on, p=pull-off")
+    out.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    return "\n".join(out) + "\n"
+
+
+def export_tab_to_txt(
+    tab_data,
+    output_path,
+    instrument="Guitar",
+    num_strings: int | None = None,
+) -> None:
+    """Export tablature to human-readable text format."""
+    text = render_tab_text(tab_data, instrument, num_strings)
+    if text is None:
+        return
     with open(output_path, "w") as f:
-        f.write(f"=== {instrument} Tablature ===\n\n")
-        # Display high strings first (reverse order)
-        for i in range(num_strings - 1, -1, -1):
-            f.write(f"{labels[num_strings - 1 - i]}|{lines[i]}\n")
-        f.write("\nLegend: s=slide, h=hammer-on, p=pull-off\n")
-        f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(text)
 
 
 def export_tab_to_json(
@@ -336,9 +347,12 @@ Examples:
     parser.add_argument("--no-json", action="store_true", help="Skip JSON export")
     parser.add_argument(
         "--device",
-        choices=["auto", "cpu", "cuda", "mps"],
+        choices=["auto", "cpu", "cuda", "rocm", "vulkan", "mps", "directml"],
         default=os.getenv("DEVICE", "auto"),
-        help="Compute device (default: DEVICE env var or auto)",
+        help="Compute device (default: DEVICE env var or auto). CUDA = NVIDIA, "
+        "rocm = AMD ROCm, vulkan = AMD Vulkan, mps = Apple Silicon, "
+        "directml = Windows DirectML. Falls back to CPU if the requested "
+        "backend is unavailable.",
     )
     parser.add_argument(
         "--profile", type=str, default=None, help="Preset profile name (see init_memory.py --list)"
@@ -353,6 +367,12 @@ Examples:
 def parse_args(argv: list[str] | None = None):
     """Parse CLI arguments (options documented in ``init_memory.py --list``)."""
     return build_parser().parse_args(argv)
+
+
+def _progress(msg: str) -> None:
+    """Emit a progress line for stdout consumers (e.g. the REAPER console
+    streaming wrapper). Always flushed so a streaming reader never blocks."""
+    print(f"[tab-agent] {msg}", flush=True)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -396,6 +416,7 @@ def main(argv: list[str] | None = None) -> None:
     else:
         aggressiveness = 0.5
 
+    _progress("Analyzing audio quality (Suno artifact detection)...")
     processed_audio, is_suno, suno_metrics = process_suno_audio(
         audio_path,
         output_path=os.path.join(output_dir, f"{song_name}_processed.wav"),
@@ -429,6 +450,7 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     # Separate stems (use processed audio if Suno)
+    _progress("Separating audio stems (Demucs)...")
     stems = splitter.separate_stems(processed_audio)
 
     # Initialize transcription agent
@@ -445,6 +467,7 @@ def main(argv: list[str] | None = None) -> None:
     bass_prefer_low = bool(config.get("prefer_low_strings", True))
 
     if run_guitar:
+        _progress("Transcribing guitar stems to MIDI (Basic Pitch)...")
         # Process guitar stems
         guitar_stems = splitter.process_guitars(stems["guitar"])
         guitar_min_pitch = min(guitar_tuning) if guitar_tuning else 40
@@ -523,6 +546,7 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"⚠️  No playable positions for {label} — skipping its tablature.")
 
     if run_bass:
+        _progress("Transcribing bass stem to MIDI (Basic Pitch)...")
         # Process bass stem
         bass_clean = splitter.process_bass(stems["bass"])
         bass_min_pitch = min(bass_tuning) if bass_tuning else 23

@@ -36,7 +36,7 @@ def test_process_audio_impl_accepts_five_args() -> None:
     """The regression: 5 positional args (as wired in create_ui) must not raise."""
     app = _import_app()
 
-    msg, zip_path = app._process_audio_impl(None, "Guitar", True, True, True)
+    msg, zip_path, _tab = app._process_audio_impl(None, "Guitar", True, True, True)
     assert "upload" in msg.lower()
     assert zip_path is None
 
@@ -53,23 +53,10 @@ def test_every_pipeline_entry_point_has_defaults() -> None:
         assert optional, f"{name} has no defaulted parameters"
 
 
-def test_ui_entry_matches_runtime_capabilities() -> None:
-    """ui_entry is the GPU wrapper only when a Zero GPU slice is available."""
+def test_ui_entry_is_process_audio() -> None:
+    """ui_entry is the plain process function (no cloud GPU wrapper)."""
     app = _import_app()
-
-    if app.GPU_AVAILABLE:
-        assert app.ui_entry is app._gpu_process_audio
-    else:
-        assert app.ui_entry is app.process_audio
-
-
-def test_gpu_available_requires_zero_gpu_env() -> None:
-    app = _import_app()
-
-    assert (app.SPACES_AVAILABLE and app.ZERO_GPU) == app.GPU_AVAILABLE
-    # A plain import of `spaces` alone must not advertise GPU acceleration.
-    if not app.ZERO_GPU:
-        assert app.GPU_AVAILABLE is False
+    assert app.ui_entry is app.process_audio
 
 
 def test_transcribe_button_is_bound_to_ui_entry() -> None:
@@ -218,7 +205,7 @@ def test_no_notes_produces_warning_not_success() -> None:
         ear_cls.return_value.humanize_and_clean.return_value = []
         suno_cls.return_value.process.return_value = []
 
-        msg, zip_path = app._process_audio_impl("d.wav", "Guitar", True, True, True)
+        msg, zip_path, _tab = app._process_audio_impl("d.wav", "Guitar", True, True, True)
 
     assert "No notes were transcribed" in msg
     assert zip_path is not None  # the (mostly empty) ZIP is still downloadable
@@ -252,7 +239,7 @@ def test_files_generated_not_double_counted_and_formats_clean() -> None:
         ear_cls.return_value.export_midi.side_effect = _write_midi
 
         # Uncheck Tab (middle option) to test both format string and file count
-        msg, zip_path = app._process_audio_impl("d.wav", "Bass", True, False, True)
+        msg, zip_path, _tab = app._process_audio_impl("d.wav", "Bass", True, False, True)
 
         assert zip_path is not None
         with zipfile.ZipFile(zip_path, "r") as zf:
@@ -353,8 +340,8 @@ def test_same_second_sessions_get_distinct_directories() -> None:
         ear_cls.return_value.humanize_and_clean.return_value = []
         suno_cls.return_value.process.return_value = []
 
-        _msg1, zip1 = app._process_audio_impl("d.wav", "Bass", True, True, True)
-        _msg2, zip2 = app._process_audio_impl("d.wav", "Bass", True, True, True)
+        _msg1, zip1, _tab1 = app._process_audio_impl("d.wav", "Bass", True, True, True)
+        _msg2, zip2, _tab2 = app._process_audio_impl("d.wav", "Bass", True, True, True)
 
         assert zip1 is not None and zip2 is not None
         assert Path(zip1).parent != Path(zip2).parent

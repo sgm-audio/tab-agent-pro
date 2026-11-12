@@ -5,8 +5,11 @@ Agent Pro. Written so it can be followed at 3 a.m. by someone who did not build
 the service.
 
 - **Service:** Gradio web UI + FastAPI health endpoints (`7860`)
-- **Shape:** single container, CPU-bound, stateless apart from the model cache
-  and a short-lived upload/temp directory
+- **Shape:** single container, stateless apart from the model cache and a
+  short-lived upload/temp directory
+- **Compute:** local GPU/CPU chosen by the ``DEVICE`` environment variable
+  (``auto``, ``cpu``, ``cuda``, ``rocm``, ``vulkan``, ``mps``, ``directml``).
+  There is no cloud inference.
 - **Failure philosophy:** the app never reports `up` for a component it could not
   load. If transcription is gone, `/ready` is `503` and the platform takes it
   out of rotation.
@@ -22,23 +25,27 @@ python -m pytest tests/ -q
 python tools/check_vulns.py
 python tools/check_lockfile.py
 
-# 2. Ship it (pinned files only; the Space gets exactly what the image needs)
-export HF_TOKEN=hf_...
-./tools/deploy_space.sh <owner>/<space>
+# 2. Build and run the Docker image (CPU by default)
+docker build -t tab-agent .
+docker run -p 7860:7860 -v $(pwd)/input:/app/input -v $(pwd)/output:/app/output tab-agent
+
+# For an NVIDIA CUDA build, override the torch index at build time:
+#   docker build --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128 \
+#                -t tab-agent-cuda .
+# Then run with DEVICE=cuda (or DEVICE=auto to auto-detect).
+#
+# For AMD ROCm:
+#   docker build --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/rocm6.0 \
+#                -t tab-agent-rocm .
+# Then run with DEVICE=rocm (or DEVICE=vulkan if you installed onnxruntime-vulkan).
 ```
 
-The script uploads `Dockerfile`, the two requirement files, the app modules,
-`README.md` (it carries the Space YAML frontmatter) and `examples/`, then prints
-the Space URL. There is no separate "build" step: the Space builds the image.
+**Production environment variables** (container env or `.env`):
 
-**Production environment variables** (Space settings → Variables and secrets):
-
-| Name | Value | Why |
+| Name | Example | Why |
 |---|---|---|
-| `YOURMT3_REQUIRE_PINNED_REVISION` | `1` | Fail closed if the checkpoint revision is not pinned |
-| `YOURMT3_REVISION` | reviewed commit sha | Removes the `main`-branch supply-chain vector |
-| `HF_TOKEN` | **secret**, only if the checkpoint repo is gated | Never a build arg |
-| `MAX_CONCURRENT_REQUESTS` | `1` | One transcription at a time per CPU worker |
+| `DEVICE` | `auto` | Compute backend — see §Capacity for GPU notes |
+| `MAX_CONCURRENT_REQUESTS` | `1` | One transcription at a time per worker |
 | `QUEUE_MAX_SIZE` | `32` | Bounded backlog; beyond this requests are rejected |
 
 ---
@@ -122,21 +129,20 @@ to the pipeline is needed. This is deliberately not a default dependency.
 
 ## 4. Rollback
 
-The Space keeps revision history, so a rollback is a re-deploy of a known-good
-revision.
+Rebuild and redeploy a known-good image revision.
 
 ```bash
 # 1. Find the last good revision
 git log --oneline -10
-huggingface-cli repo-files <owner>/<space> --repo-type space   # or the Space UI "History"
 
 # 2. Re-deploy that revision's tree
 git checkout <good-sha>
-./tools/deploy_space.sh <owner>/<space>
+docker build -t tab-agent .
+docker run -p 7860:7860 ...
 
 # 3. Verify (the readiness probe IS the go/no-go signal)
-curl -s -o /dev/null -w '%{http_code}\n' https://<host>/ready   # expect 200
-curl -s https://<host>/health | jq -r '.status'                  # expect "up"
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:7860/ready   # expect 200
+curl -s http://localhost:7860/health | jq -r '.status'                  # expect "up"
 ```
 
 > **Rolling back past 1.1.0:** releases before `1.1.0` have no `/ready` route, so
@@ -191,8 +197,9 @@ Rules that are not negotiable:
 
 ## 6. Capacity and cost
 
-- One request is CPU-bound for tens of seconds: Demucs separation dominates when
-  the weights are present; Basic Pitch adds ~0.8 s per 2 s of audio per stem.
+- One request is GPU/CPU-bound for tens of seconds: Demucs separation dominates
+  when a GPU backend is available (CUDA/ROCm); otherwise it runs on CPU.
+  Basic Pitch adds ~0.8 s per 2 s of audio per stem.
 - Keep `MAX_CONCURRENT_REQUESTS=1` on a 2-vCPU box. Raising it helps throughput
   only with more cores; memory is ~600 MB resident after imports plus ~90 MB per
   in-flight transcription.

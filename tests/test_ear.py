@@ -14,58 +14,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from agents import EarAgent
 
 
-class TestEarAgentNoteConversion(unittest.TestCase):
-    """Tests for _convert_to_noteseq and _convert_prettymidi_to_noteseq."""
-
-    def setUp(self) -> None:
-        self.ear = EarAgent(model_id="mimbres/YourMT3", device="cpu", prefer_yourmt3=False)
-
-    def test_mt3_token_parsing_note_on_off(self) -> None:
-        """Parse NOTE_ON/NOTE_OFF/TIME_SHIFT token format."""
-        events = (
-            "TIME_SHIFT 0.0 NOTE_ON 60 VELOCITY 80 "
-            "TIME_SHIFT 0.5 NOTE_OFF 60 "
-            "TIME_SHIFT 0.1 NOTE_ON 64 VELOCITY 70 "
-            "TIME_SHIFT 0.3 NOTE_OFF 64"
-        )
-        notes = self.ear._convert_to_noteseq(events)
-        assert len(notes) == 2
-        assert notes[0].pitch == 60
-        self.assertAlmostEqual(notes[0].start_time, 0.0)
-        self.assertAlmostEqual(notes[0].end_time, 0.5)
-        assert notes[0].velocity == 80
-        assert notes[1].pitch == 64
-
-    def test_kv_format_parsing(self) -> None:
-        """Parse key:value output format."""
-        events = "pitch:60,start:0.0,end:0.5,velocity:80 pitch:64,start:0.5,end:1.0,velocity:75"
-        notes = self.ear._convert_to_noteseq(events)
-        assert len(notes) == 2
-        assert notes[0].pitch == 60
-        self.assertAlmostEqual(notes[0].end_time, 0.5)
-
-    def test_empty_input_returns_empty(self) -> None:
-        """Empty / whitespace input returns empty list."""
-        assert len(self.ear._convert_to_noteseq("")) == 0
-        assert len(self.ear._convert_to_noteseq("   ")) == 0
-
-    def test_unparseable_format_returns_empty_with_warning(self) -> None:
-        """Unknown format returns empty list (does not crash)."""
-        notes = self.ear._convert_to_noteseq("garbage input 123")
-        assert len(notes) == 0
-
-    def test_min_duration_filter(self) -> None:
-        """Notes shorter than min_duration are excluded."""
-        events = "TIME_SHIFT 0.0 NOTE_ON 60 VELOCITY 80 TIME_SHIFT 0.01 NOTE_OFF 60"
-        notes = self.ear._convert_to_noteseq(events, min_duration=0.05)
-        assert len(notes) == 0
-
-
 class TestEarAgentInstrumentFilter(unittest.TestCase):
     """Tests for instrument range filtering."""
 
     def setUp(self) -> None:
-        self.ear = EarAgent(model_id="mimbres/YourMT3", device="cpu", prefer_yourmt3=False)
+        self.ear = EarAgent(device="cpu")
 
     def _make_note(self, pitch, start=0.0, end=0.5, velocity=80):
         return note_seq.NoteSequence.Note(
@@ -116,7 +69,7 @@ class TestEarAgentHumanize(unittest.TestCase):
     """Tests for humanize_and_clean."""
 
     def setUp(self) -> None:
-        self.ear = EarAgent(model_id="mimbres/YourMT3", device="cpu", prefer_yourmt3=False)
+        self.ear = EarAgent(device="cpu")
 
     def _make_note(self, pitch, start=0.0, end=0.5, velocity=80):
         return note_seq.NoteSequence.Note(

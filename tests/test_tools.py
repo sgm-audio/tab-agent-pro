@@ -89,7 +89,6 @@ class TestEnvExampleGuard:
     def test_documented_variables_are_read(self) -> None:
         guard = _load("check_env_example")
         vars_found = guard.documented_variables()
-        assert "HF_TOKEN" in vars_found
         sources = guard.sources()
         missing = [name for name in vars_found if name not in sources]
         assert missing == []
@@ -101,17 +100,6 @@ class TestEnvExampleGuard:
         env_file.write_text("NEVER_USED_VAR_XYZ=1\n")
         monkeypatch.setattr(guard, "ENV_FILE", env_file)
         assert guard.main() == 1
-
-
-class TestDeploySpaceScript:
-    def test_deploy_space_syntax_and_flags(self) -> None:
-        script = ROOT / "tools" / "deploy_space.sh"
-        res = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
-        assert res.returncode == 0, res.stderr
-        text = script.read_text()
-        assert '--revision "$REVISION"' in text
-        assert '--exclude "*.md"' not in text
-        assert "tr '[:upper:]' '[:lower:]'" in text
 
 
 class TestValidationSuite:

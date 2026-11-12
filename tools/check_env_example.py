@@ -2,9 +2,10 @@
 """
 Verify that every variable advertised in .env.example is actually read.
 
-Background (docs-audit P2-1): .env.example used to document HOST, PORT,
-CACHE_DIR, DEVICE and HF_TOKEN while only HOST was read by the code, and no
-module loaded .env at all.
+Background (docs-audit P2-1): .env.example used to document variables that no
+module read, and no module loaded .env at all. Every variable documented here
+must now be read by the source tree, and no variable may reference a removed
+model hub.
 
 Exits non-zero if a documented variable has no consumer in the source tree.
 """

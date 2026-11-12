@@ -81,8 +81,8 @@ def check_app_binds_externally() -> None:
     app = (ROOT / "app.py").read_text()
     if 'os.getenv("HOST", "127.0.0.1")' in app:
         failures.append(
-            "app.py still defaults HOST to 127.0.0.1; Docker/Hugging Face Spaces "
-            "cannot reach it (use 0.0.0.0)"
+            "app.py still defaults HOST to 127.0.0.1; Docker containers cannot "
+            "reach it (use 0.0.0.0)"
         )
 
 

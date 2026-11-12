@@ -27,7 +27,7 @@
       <version name="1.0.1" author="Scott Mills" time="2026-10-04T00:00:00Z">
         <source file="TabAgent.lua">reaper/TabAgent.lua</source>
         <changelog><![CDATA[
-Initial release: Basic Pitch + YourMT3+ transcription, Demucs stem separation,
+Initial release: Basic Pitch transcription, Demucs stem separation,
 technique detection (slides/hammer-ons/pull-offs), MIDI/tab/JSON export.
 Settings from "Tab Agent Settings" are passed through to main.py.
         ]]></changelog>

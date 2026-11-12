@@ -338,26 +338,3 @@ def test_cli_rejects_absurd_threshold(tmp_path, monkeypatch) -> None:
     wav.write_bytes(b"RIFF")
     with pytest.raises(SystemExit):
         main.main([str(wav), "--onset", "42", "--output-dir", str(tmp_path)])
-
-
-# ---------------------------------------------------------------------------
-# Silent-failure hygiene
-# ---------------------------------------------------------------------------
-
-
-def test_clone_failures_are_logged_not_swallowed(capsys) -> None:
-    """The YourMT3 codebase clone used to return None with no log line at all."""
-    import subprocess
-    from unittest.mock import patch
-
-    from agents import EarAgent
-
-    ear = EarAgent.__new__(EarAgent)  # bypass heavy __init__
-    ear.YOURMT3_CACHE = os.path.join("/tmp", "tab-agent-nonexistent-cache")
-    with (
-        patch("agents.subprocess.run", side_effect=subprocess.TimeoutExpired("git", 60)),
-        patch("agents.health"),
-    ):
-        assert ear._clone_yourmt3_codebase() is None
-    out = capsys.readouterr().out
-    assert "yourmt3_clone_timeout" in out

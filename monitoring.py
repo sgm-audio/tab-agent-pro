@@ -112,7 +112,7 @@ class HealthTracker:
     REQUIRED_FOR_TRANSCRIPTION = ("basic_pitch",)
     # Backends whose absence degrades quality but not availability.
     DEGRADABLE_COMPONENTS = ("demucs",)
-    OPTIONAL_COMPONENTS = ("yourmt3", "suno_detector")
+    OPTIONAL_COMPONENTS = ("suno_detector",)
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -124,7 +124,6 @@ class HealthTracker:
         self._component_status: dict[str, str] = {
             "demucs": "unknown",
             "basic_pitch": "unknown",
-            "yourmt3": "unknown",
             "suno_detector": "unknown",
         }
         self._start_time = time.time()

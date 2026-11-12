@@ -77,7 +77,7 @@ class TestEndToEndPipeline(unittest.TestCase):
         """EarAgent transcribes synthetic audio to MIDI notes (mocked)."""
         import note_seq
 
-        ear = EarAgent(device="cpu", prefer_yourmt3=False)
+        ear = EarAgent(device="cpu")
 
         mock_notes = [
             note_seq.NoteSequence.Note(pitch=64, start_time=0.0, end_time=0.4, velocity=80),
@@ -164,7 +164,7 @@ class TestEndToEndPipeline(unittest.TestCase):
         original_starts = [n.start_time for n in notes]
 
         processor = SunoNotePostprocessor()
-        processor.process(notes, is_suno=True, metrics={"hf_ratio": 0.4})
+        processor.process(notes, is_suno=True, metrics={"hi_freq_ratio": 0.4})
 
         # Original notes must be unchanged
         for i, note in enumerate(notes):

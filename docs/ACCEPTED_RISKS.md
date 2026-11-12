@@ -24,16 +24,13 @@ untrusted model files.
 **Exposure in this project:** low.
 
 - Inference only. No training loop, no gradient storage of user data.
-- The **only** `torch.load` call reads the YourMT3+ checkpoint with
-  `weights_only=True` (grep-verified single call site in `agents.py`), so no
-  arbitrary pickle objects can be instantiated.
 - No user-supplied model files are ever accepted. There is no upload path for
   weights, and no path is built from user input.
 - `torch.jit`, `torch.compile`, `torch.inductor` and `torch.distributed` are not
   imported anywhere in the tree.
-- The checkpoint source is revision-pinnable (`YOURMT3_REVISION`) and can be made
-  to fail closed (`YOURMT3_REQUIRE_PINNED_REVISION=1`), which removes the
-  remaining supply-chain vector.
+- Basic Pitch and Demucs weights are downloaded from their upstream project
+  repositories at install / first use; pin dependency versions via
+  `requirements.lock` for reproducible builds.
 
 **Why not upgrade now:** moving torch means re-validating the ONNX/Basic Pitch
 and Demucs paths on CPU and GPU, re-measuring the performance baseline, and
@@ -97,9 +94,8 @@ These are recorded for completeness; they are design decisions, not oversights.
 | R-5 | **No authentication** | The product is a single-tenant demo/Space; there is nothing to authenticate against and no per-user data to protect. | If it becomes multi-tenant or handles private audio, add auth at the proxy. |
 | R-6 | **No per-IP rate limiting** | The Gradio queue is bounded (`MAX_CONCURRENT_REQUESTS`, `QUEUE_MAX_SIZE`), so abuse degrades to fast rejection rather than memory exhaustion. | Add a proxy-level limiter for any public deployment. |
 | R-7 | **`soxr` is LGPL-2.1-or-later** | Dynamically linked, unmodified, replaceable wheel; LGPL permits this in an MIT project. | Documented in `THIRD_PARTY_NOTICES.md`. |
-| R-8 | **Optional YourMT3+ checkpoint has upstream-defined terms and a `torch.load` path** | It is optional (Basic Pitch is the default working path), and it is pinned + fail-closed capable. | Run production with `YOURMT3_REQUIRE_PINNED_REVISION=1`. |
-| R-9 | **No external error tracker (Sentry etc.)** | Keeps the image small and dependency-light; JSON logs already carry an `error_ref` for correlation. | Hook point documented in `docs/RUNBOOK.md`. |
-| R-10 | **Uploads are written to disk before validation completes** | Validation happens before decode; the file must exist to be probed, and the TTL pruner bounds disk use. | `UPLOAD_TTL_SEC` (default 900 s) plus per-request session cleanup. |
+| R-8 | **No external error tracker (Sentry etc.)** | Keeps the image small and dependency-light; JSON logs already carry an `error_ref` for correlation. | Hook point documented in `docs/RUNBOOK.md`. |
+| R-9 | **Uploads are written to disk before validation completes** | Validation happens before decode; the file must exist to be probed, and the TTL pruner bounds disk use. | `UPLOAD_TTL_SEC` (default 900 s) plus per-request session cleanup. |
 
 ---
 
