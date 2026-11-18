@@ -85,17 +85,23 @@ the stem-separation stack.
 ### Validation
 
 ```bash
-python -m pytest tests/            # 291 tests, 91% coverage
-python validate.py                 # end-to-end checklist (PASS/FAIL summary)
+python -m pytest                    # app branch coverage + real Basic Pitch CPU inference
+python validate.py --quick          # configuration and component checklist
 
 python tools/check_index.py           # ReaPack index format
 python tools/check_env_example.py     # every documented env var is read
 python tools/check_docker_install.py  # basic-pitch pin + required deps
-python tools/check_reaper_settings.py # REAPER settings reach main.py
+python tools/check_reaper_settings.py # execute both Lua scripts, CLI wiring and MIDI import checks
 python tools/check_lockfile.py        # installed env == requirements.lock
 python tools/check_vulns.py           # advisories: none unaccepted/expired
 python tools/simulate_failures.py     # failure modes still behave (15 checks)
 ```
+
+Install `pytest`, `pytest-cov` and `lupa` for the test suite. The default run
+uses the ONNX weights shipped in the Basic Pitch wheel and needs no GPU or model
+downloads. Real Demucs inference is opt-in with pre-provisioned weights. See the
+[test audit](docs/TEST_AUDIT.md) for lane commands, known tab playability gaps,
+and the checks to run before releasing the REAPER scripts.
 
 ---
 
@@ -158,7 +164,6 @@ Environment variables (all optional; `.env` is read by `app.py`, `main.py`, and 
 | `HOST` | `0.0.0.0` | Bind address for the web UI |
 | `PORT` | `7860` | Port for the web UI |
 | `DEVICE` | `auto` | Compute device for transcription: `auto`, `cpu`, `cuda`, `rocm`, `vulkan`, `mps`, `directml` |
-| `CACHE_DIR` | `~/.cache/tab_agent` | Model cache (Basic Pitch ONNX model, Demucs weights) |
 | `MAX_CONCURRENT_REQUESTS` | `1` | Transcriptions allowed in flight at once |
 | `QUEUE_MAX_SIZE` | `32` | Bounded backlog; requests beyond this are rejected |
 | `UPLOAD_TTL_SEC` | `900` | Upload temp files older than this are pruned |
@@ -217,7 +222,9 @@ into its neighbour, and a string that is unused in a column shows `-`.
 `Tab Agent Settings` stores the install path, profile, instrument, onset/frame
 thresholds, output directory and export toggles in REAPER's ExtState.
 `Tab Agent` passes those values to `main.py` as CLI flags, so what you configure
-is what runs.
+is what runs. Use matching versions of the Lua scripts and Python checkout;
+newer scripts expect the CLI to report which MIDI files it wrote during the
+current run. The REAPER host tests use a stub and do not replace a DAW smoke test.
 
 ---
 
@@ -233,12 +240,12 @@ is what runs.
 ├── validate.py            # End-to-end checklist
 ├── reaper/                # REAPER Lua scripts
 ├── tools/                 # Config/deployment guard scripts
-├── tests/                 # 291 tests
+├── tests/                 # Unit, contract and real-inference tests
 ├── examples/              # Demo audio
 ├── docs/RUNBOOK.md        # Deploy / monitor / rollback / dependency refresh
 ├── docs/ACCEPTED_RISKS.md # Every known risk, with exposure and expiry
 ├── SECURITY.md            # Threat model + disclosure process
-├── requirements.lock      # 118 exact pins (runtime closure, CPU-only)
+├── requirements.lock      # Exact pins (runtime closure, CPU-only)
 ├── .pip-audit-ignore      # Accepted advisories; CI fails when one expires
 ├── pyproject.toml         # Project config
 ├── Dockerfile             # Local / GPU container build (non-root, read-only code)

@@ -27,8 +27,8 @@ dependencies = [
     "IPython>=8.0,<8.30",
     "fastapi>=0.110",
     "uvicorn>=0.27",
-    # agents.py imports torch/torchaudio at module scope; demucs requires
-    # torch>=2.1. The Dockerfile defaults to the CPU-only index; override
+    # Device detection uses torch and Demucs runs on torch/torchaudio.
+    # The Dockerfile defaults to the CPU-only index; override
     # TORCH_INDEX_URL to build with CUDA/ROCm wheels.
     "torch>=2.1",
     "torchaudio>=2.1",
@@ -52,6 +52,7 @@ dev = [
 py-modules = [
     "agents",
     "app",
+    "device",
     "main",
     "monitoring",
     "suno_postprocessor",
@@ -84,7 +85,15 @@ exclude = ["^build/", "^dist/", "^\\.eggs/", "^\\.venv/", "^venv"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=. --cov-report=term-missing -v"
+addopts = "--cov --cov-report=term-missing -ra"
+markers = [
+    "basic_pitch_model: requires real CPU inference with the bundled ONNX weights",
+    "demucs_model: opt-in real CPU inference with a pre-provisioned Demucs cache",
+]
+
+[tool.coverage.run]
+source = ["agents", "app", "device", "init_memory", "main", "monitoring", "suno_postprocessor"]
+branch = true
 
 [tool.isort]
 profile = "black"

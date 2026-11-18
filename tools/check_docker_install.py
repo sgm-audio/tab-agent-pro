@@ -106,7 +106,11 @@ def check_hardening() -> None:
             "Dockerfile CMD must use exec form so SIGTERM reaches the server " "(graceful shutdown)"
         )
 
-    if "--index-url https://download.pytorch.org/whl/cpu" not in text:
+    cpu_index = "https://download.pytorch.org/whl/cpu"
+    torch_lines = [line for line in text.splitlines() if line.startswith("RUN pip install torch==")]
+    default_cpu = f"ARG TORCH_INDEX_URL={cpu_index}" in text.splitlines()
+    uses_arg = default_cpu and any('--index-url "$TORCH_INDEX_URL"' in line for line in torch_lines)
+    if not uses_arg and not any(f"--index-url {cpu_index}" in line for line in torch_lines):
         failures.append(
             "torch must install from the CPU-only index; the PyPI wheel pulls "
             "~2.5 GB of unusable NVIDIA CUDA packages"

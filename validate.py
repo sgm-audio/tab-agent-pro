@@ -483,9 +483,6 @@ def main(argv: list[str] | None = None) -> int:
                 f"{f} has balanced curly braces",
                 content.count("{") == content.count("}"),
             )
-            # Pipeline script needs os.execute; settings script doesn't
-            if f == "reaper/TabAgent.lua":
-                check(f"{f} uses os.execute for pipeline", "os.execute(" in content)
         else:
             check(f"File exists: {f}", False)
 
