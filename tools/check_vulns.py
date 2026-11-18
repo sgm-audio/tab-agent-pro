@@ -11,8 +11,8 @@ findings in packages that never reach the image, which drowns the ones that
 matter.
 
 This gate audits the installed environment instead — the same set pinned in
-requirements.lock — and fails on HIGH/CRITICAL findings unless the advisory ID
-is listed in .pip-audit-ignore with a reason and an expiry date.
+requirements.lock — and fails on any reported advisory unless it is listed in
+.pip-audit-ignore with a reason and an expiry date.
 
 Usage:
     python tools/check_vulns.py                 # gate (exit 1 on unaccepted finding)
@@ -54,6 +54,42 @@ def load_ignores(path: Path = IGNORE_FILE) -> dict[str, dict[str, str]]:
     return entries
 
 
+def advisory_ids(vuln: dict) -> list[str]:
+    """
+    Every identifier an advisory is known by, reported id first.
+
+    pip-audit collapses results that share an alias set and keeps whichever
+    record it saw first (pip_audit/_audit.py, _service/interface.py), so the
+    reported `id` flips between PYSEC-*, GHSA-* and CVE-* as the advisory
+    databases are refreshed. The vulnerability is unchanged by the rename, so
+    any of its identifiers may be the key in .pip-audit-ignore.
+    """
+    ids: list[str] = []
+    for candidate in [vuln.get("id") or "UNKNOWN", *(vuln.get("aliases") or [])]:
+        if candidate and candidate not in ids:
+            ids.append(candidate)
+    return ids
+
+
+def lookup(
+    ignores: dict[str, dict[str, str]], vuln: dict
+) -> tuple[str, dict[str, str]] | None:
+    """Return the accepted-risk entry for an advisory, under whatever name it has."""
+    for advisory in advisory_ids(vuln):
+        entry = ignores.get(advisory)
+        if entry is not None:
+            return advisory, entry
+    return None
+
+
+def describe(vuln: dict) -> str:
+    """Render an unaccepted advisory with its other names, so a rename is obvious."""
+    ids = advisory_ids(vuln)
+    if len(ids) == 1:
+        return ids[0]
+    return f"{ids[0]} (aliases: {', '.join(ids[1:])})"
+
+
 def audit() -> list[dict]:
     """Run pip-audit against the installed environment and return its JSON."""
     result = subprocess.run(  # nosec B603, B607
@@ -68,9 +104,9 @@ def audit() -> list[dict]:
     return json.loads(result.stdout).get("dependencies", [])
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, ignore_path: Path | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    ignores = load_ignores()
+    ignores = load_ignores(ignore_path or IGNORE_FILE)
 
     if "--list-accepted" in argv:
         if not ignores:
@@ -94,16 +130,16 @@ def main(argv: list[str] | None = None) -> int:
 
     for dep in deps:
         for vuln in dep.get("vulns") or []:
-            advisory = vuln.get("id", "UNKNOWN")
-            entry: dict[str, str] | None = ignores.get(advisory)
-            if entry:
-                if dt.date.fromisoformat(entry["expiry"]) < today:
-                    expired.append(advisory)
-                    unaccepted.append((dep["name"], dep["version"], advisory))
-                else:
-                    accepted.append((advisory, dep["name"]))
+            match = lookup(ignores, vuln)
+            if match is None:
+                unaccepted.append((dep["name"], dep["version"], describe(vuln)))
                 continue
-            unaccepted.append((dep["name"], dep["version"], advisory))
+            advisory, entry = match
+            if dt.date.fromisoformat(entry["expiry"]) < today:
+                expired.append(advisory)
+                unaccepted.append((dep["name"], dep["version"], advisory))
+            else:
+                accepted.append((advisory, dep["name"]))
 
     for advisory in sorted(set(expired)):
         print(
