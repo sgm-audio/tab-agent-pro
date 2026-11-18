@@ -1,7 +1,9 @@
 # Tab Agent Pro — Reliability Review
 
 **Subject:** `sgm-audio/tab-agent-pro` @ `a4814b2` (`refactor: remove Hugging Face, add local GPU, stream REAPER console`)
-— this is `origin/main` at the time of review, and the base of branch `arena/18940913-tab-agent-pro`.
+— the base of branch `arena/18940913-tab-agent-pro`. Re-verified at `6d1dbd9`
+("Audit and strengthen transcription and REAPER safety tests") before merge; §0 lists what
+that commit fixed, acknowledged, or left alone.
 **Review date:** 2026-11-18
 **Focus:** defects that produce unusable tabs, hang the UI, or damage a REAPER project —
 plus the build/lockfile/check-tool drift that lets them ship.
@@ -30,15 +32,45 @@ All quoted outputs are verbatim from those runs unless marked "(computed)".
 
 ---
 
+## 0. Status against the merged `main` (`6d1dbd9`)
+
+This review was produced against `a4814b2`. Before it was merged, `main` advanced to
+`6d1dbd9` ("Audit and strengthen transcription and REAPER safety tests", #11), which fixes
+two of the build findings and **acknowledges** six product findings — as strict `xfail`
+tests plus `docs/TRANSCRIPTION_TEST_AUDIT.md`, which states plainly that "the six strict
+xfails remain unresolved product defects".
+
+Every reproduction below and every check tool/lint gate was re-run against the merged
+tree. Line numbers are for `6d1dbd9`; the reproductions are unchanged.
+
+| Status on `6d1dbd9` | Findings |
+|---|---|
+| **Fixed upstream** | **D-2** (`huggingface-hub==2.4.0` is now pinned, gradio bumped to 6.32.0), **D-3** (`ruff check` clean, `CACHE_DIR` removed from `.env.example`/Dockerfile, `check_docker_install` accepts the `TORCH_INDEX_URL` ARG form) |
+| **Acknowledged as known defects, still broken** — strict `xfail` tests | **T-1** (`test_simultaneous_playable_chord_uses_distinct_strings`), **T-2** (`test_separate_picked_notes_are_not_automatically_slides`), **M-1** (`test_demucs_missing_api_stem_must_not_report_success`), **M-2/R-7** (`test_failed_pipeline_never_imports_stale_midi`), **R-4** (`test_shell_metacharacters_in_audio_path_remain_literal`), **M-5**'s octave deletion (`test_suno_cleanup_preserves_legitimate_octave_chord`) |
+| **Still broken, not acknowledged** | **T-3**, **M-3**, **M-4**, **W-1…W-7**, **R-1**, **R-2**, **R-3**, **R-5**, **R-6**, **R-8**, **D-1**, **D-4**, **D-5**, **D-6**, **D-7** (version pin), **D-8**, **L-1…L-3**, **V-1** |
+
+Two consequences worth stating up front:
+
+* An `xfail(strict=True)` is a *guard against silent regression*, not a fix — and not a
+  guarantee of the behaviour, either: the same defect reproduces exactly as before
+  (`audit_poc/repro.py`, `reaper_probe.py`). They are honest about this; the risk is a
+  reader treating "tested" as "handled".
+* One **new** test asserts the M-3 behaviour as correct
+  (`tests/test_transcription_safety.py:125` requires
+  `health.set_component("basic_pitch", "error: missing mir_eval")` after a *request*
+  failure), so fixing readiness will require changing that test, not just the code.
+
+---
+
 ## 1. Summary
 
 | # | Severity | Finding | User-visible effect |
 |---|---|---|---|
-| **T-1** | High | Chord notes are assigned to a single string; positions drift to the 19th fret | Tab is physically unplayable for most dyads/triads |
-| **T-2** | High | Slides / hammer-ons / pull-offs are fabricated from timing alone, order-dependent | Every fast run is mislabelled; no bend data even exists |
+| **T-1** | High | Chord notes are assigned to a single string; positions drift to the 19th fret (*known defect: strict xfail*) | Tab is physically unplayable for most dyads/triads |
+| **T-2** | High | Slides / hammer-ons / pull-offs are fabricated from timing alone, order-dependent (*known defect: strict xfail*) | Every fast run is mislabelled; no bend data even exists |
 | **T-3** | Medium | Per-note drops are invisible in the exported artifacts | Silent note loss; audit says it is reported |
-| **M-1** | High | Demucs "succeeds" with no stem files; documented fallback is skipped | Generic failure instead of passthrough; health says `loaded` |
-| **M-2** | High | Zero-note transcription reports success (CLI exit 0 + "Done"); REAPER imports stale MIDI | Silent empty/incorrect output |
+| **M-1** | High | Demucs "succeeds" with no stem files; documented fallback is skipped (*known defect: strict xfail*) | Generic failure instead of passthrough; health says `loaded` |
+| **M-2** | High | Zero-note transcription reports success (CLI exit 0 + "Done"); REAPER imports stale MIDI (*known defect: strict xfail*) | Silent empty/incorrect output |
 | **M-3** | High | One failed request writes `error:` into component health → `/ready` 503 | Instance leaves rotation permanently |
 | **M-4** | Medium | Any Basic Pitch exception is reported as "no models installed" | Misleading diagnosis |
 | **M-5** | Medium | Suno detector reads 30 s; post-processor silently deletes notes/octaves | Garbage-in, "success" out |
@@ -50,24 +82,25 @@ All quoted outputs are verbatim from those runs unless marked "(computed)".
 | **R-1** | High | `stream:read("*l")` inside `reaper.defer` blocks REAPER's main thread | DAW freezes during long silent stages |
 | **R-2** | High | `Undo_BeginBlock`/`Undo_EndBlock` are paired across idle cycles | Unrelated edits folded into / excluded from undo |
 | **R-3** | High | MIDI is imported into whatever project is active when the poll finishes | Tracks land in the wrong project |
-| **R-4** | High | ExtState values are interpolated into a shell command | `$(…)` execution; broken quoting on Windows |
+| **R-4** | High | ExtState values are interpolated into a shell command (*known defect: strict xfail*) | `$(…)` execution; broken quoting on Windows |
 | **R-5** | Medium | Comma-joined settings dialog misassigns fields | Thresholds/exports silently shifted |
 | **R-6** | Medium | REAPER default profile rewrites shared prefs on every run | Web UI device/tuning changes lost |
 | **R-7** | Medium | Script and CLI disagree on the default output dir; stale MIDI re-imported | "No Output" or wrong tracks |
 | **R-8** | Medium | No confirmation, cancel, run lock, or orphan cleanup | Concurrent runs clobber each other |
 | **D-1** | High | `.dockerignore` excludes `tools/` while the Dockerfile `COPY`s it | Image cannot build |
-| **D-2** | High | `requirements.lock` omits `huggingface-hub` (gradio + demucs require it) | Image build fails at the lock check; runtime unpinned |
-| **D-3** | High | CI is red at the shipped tip (lint), so every later gate is unenforced | "All gates green" claims are stale |
-| **D-4** | Medium | `check_lockfile --verify` cannot see a missing transitive dependency | Exactly the D-2 class of drift |
+| **D-2** | High → **fixed** | `requirements.lock` omitted `huggingface-hub` (gradio + demucs require it) | Image build failed at the lock check; now pinned on main |
+| **D-3** | High → **fixed** | CI was red at `a4814b2` (lint), so every later gate was unenforced | Fixed on main; every guard now runs |
+| **D-4** | Medium | The lock verifier cannot see a dependency missing from both lock and environment | The D-2 class of drift reappears if an install step silently skips |
 | **D-5** | Medium | `setuptools` is excluded from the lock; the lock's own scope/counts are wrong | "Lock is what ships" is false |
 | **D-6** | Medium | `run.sh` reinstalls Basic Pitch with deps → TensorFlow, fails on Python 3.12 | Documented quick start breaks |
 | **L-1** | High | No length limit on the CLI; whole-file loads + STFT exceed RAM on long input | OOM on an hour of audio |
 | **L-2** | Medium | `_remove_octave_errors` is O(n²) | Minutes-to-hours on dense long files |
 | **L-3** | Medium | Fixed staging filenames in a shared output dir | Concurrent CLI/REAPER runs mix stems |
-| **V-1** | Medium | The tests/guards that should have caught the above are vacuous | Regressions invisible to CI |
+| **V-1** | Medium | The guards that should have caught the above are vacuous or `xfail`; one new test codifies M-3 | Regressions invisible to CI |
 
-The three documents that assert the opposite are `AUDIT.md` (Appendix C),
-`SECURITY.md` and `docs/ACCEPTED_RISKS.md`. Section 9 is a claim-by-claim ledger.
+The documents this review adjudicates are `AUDIT.md` (Appendix C), `SECURITY.md` and
+`docs/ACCEPTED_RISKS.md`. Section 9 is a claim-by-claim ledger, updated for the fixes that
+landed in `6d1dbd9` (see §0).
 
 ---
 
@@ -75,8 +108,8 @@ The three documents that assert the opposite are `AUDIT.md` (Appendix C),
 
 ### T-1 (High) — Chord notes collapse onto one string, and voicings drift to fret 19
 
-**Location:** `agents.py:627-758` (`TabAgent.generate_tab`), `agents.py:578-624`
-(`calculate_cost`), `agents.py:563-576` (`get_valid_positions`).
+**Location:** `agents.py:621-752` (`TabAgent.generate_tab`), `agents.py:572-618`
+(`calculate_cost`), `agents.py:557-570` (`get_valid_positions`).
 
 **What happens.** `generate_tab` flattens the note list into a linear chain and runs a
 pairwise DP over it. Notes that start at the same instant become consecutive DP layers
@@ -185,17 +218,27 @@ bonus is *only* there to steer the DP — it is the same mechanism that manufact
 technique labels in T-2.
 
 **Claim check.** `AUDIT.md` P1-9 (“a single unplayable note silently discards an entire
-track”) was fixed narrowly — unplayable notes are now skipped (`agents.py:668-681`), and
+track”) was fixed narrowly — unplayable notes are now skipped (`agents.py:662-675`), and
 that part holds. But `AUDIT.md` §4 row 5/6 (“column-aligned chords”, “technique
 detection verified”) and `README` (“Assigns notes to strings/frets optimally”) do **not**
-hold: the DP assigns chords to impossible positions. The regression test
-`tests/test_agents_edge.py` only exercises single-note sequences, so nothing pins this.
+hold: the DP assigns chords to impossible positions.
+
+On `6d1dbd9` this is **acknowledged rather than fixed**: `tests/test_transcription_safety.py:65`
+is a strict `xfail` named `test_simultaneous_playable_chord_uses_distinct_strings`, reason
+"DP assigns chord tones independently to the same string", and
+`docs/TRANSCRIPTION_TEST_AUDIT.md` lists it as a P0 known defect. A strict xfail turns an
+unexpected *pass* into a failure, so it does guard against a silent regression — but the
+shipped behaviour is unchanged. The test's own chord (`45, 50, 55`) is precisely a case
+the DP collapses — on the merged tree it yields
+`[(0,5,'pick'), (0,10,'hammer'), (0,15,'hammer')]`, three pitches on the low E string and
+two invented hammer-ons — which is why the strict xfail reports it as failing, and why the
+suite's "6 xfailed" is not a clean bill of health.
 
 ---
 
 ### T-2 (High) — Techniques are fabricated and depend on input note order
 
-**Location:** `agents.py:731-756` (annotation), `agents.py:356-408`
+**Location:** `agents.py:725-750` (annotation), `agents.py:351-403`
 (`multiple_pitch_bends=False`).
 
 **What happens.** After the DP, any two chronologically adjacent notes on the same string
@@ -252,18 +295,23 @@ bend of ≥ 1 semitone across the interval. Otherwise remove the `slide` label f
 legend and the JSON entirely. Add `"technique_source": "heuristic" | "bend"` so consumers
 can tell.
 
-**Claim check.** `AUDIT.md` §4 row 6 (“`slide`/`hammer`/`pull` produced and annotated”)
-is evidence that the code emits the labels, not that they are correct. The tests are
+**Claim check.** `AUDIT.md` §4 row 6 ("`slide`/`hammer`/`pull` produced and annotated")
+is evidence that the code emits the labels, not that they are correct. The older tests are
 vacuous: `tests/test_agents_edge.py:335-343` asserts the pull-off result is *in*
 `["slide", "hammer", "pull", "pick"]`, and the hammer test accepts `slide` or `hammer`.
-No test pins a technique to a ground truth, which is why this shipped.
+
+On `6d1dbd9` there is a real regression test, `tests/test_transcription_safety.py:76`
+(`test_separate_picked_notes_are_not_automatically_slides`), strict `xfail`, reason "onset
+proximity alone is not evidence of a slide" — an acknowledged defect, not a fix. Its
+fixture uses a 70 ms gap between notes, while the shipped heuristic fires for any gap under
+`0.05 + 0.7·0.25 = 0.225 s`: picked 16ths 125 ms apart are still labelled slides.
 
 ---
 
 ### T-3 (Medium) — Per-note drops are invisible in every artifact
 
-**Location:** `agents.py:668-681`; `main.py:200-216` (`export_tab_to_json`);
-`app.py:470-495` (status message).
+**Location:** `agents.py:662-675`; `main.py:200-216` (`export_tab_to_json`);
+`app.py:466-493` (status message).
 
 **What happens.** `last_skipped_notes` is populated and logged, but:
 
@@ -316,8 +364,8 @@ mentioned.
 
 ### M-1 (High) — Demucs reports success with no stems, so the fallback never runs
 
-**Location:** `agents.py:131-162` (`_separate_with_api`), `agents.py:164-186`
-(`_separate_with_subprocess`), `agents.py:92-117` (`separate_stems`).
+**Location:** `agents.py:126-157` (`_separate_with_api`), `agents.py:159-181`
+(`_separate_with_subprocess`), `agents.py:87-112` (`separate_stems`).
 
 **What happens.** Both separation paths return a dict of *constructed* paths without
 checking that anything was written:
@@ -384,8 +432,8 @@ that returns successfully but writes nothing, which is the path that breaks.
 
 ### M-2 (High) — A zero-note run reports success, and REAPER imports stale MIDI
 
-**Location:** `agents.py:303-355` (`transcribe_stem` returns `[]` as success),
-`agents.py:510-525` (`export_midi` silently no-ops on empty), `main.py:378-625`,
+**Location:** `agents.py:298-350` (`transcribe_stem` returns `[]` as success),
+`agents.py:504-519` (`export_midi` silently no-ops on empty), `main.py:378-625`,
 `reaper/TabAgent.lua:208-231` and `:288-315`.
 
 **What happens.** Basic Pitch "succeeding" with zero notes is a normal outcome for silent,
@@ -455,8 +503,8 @@ as a dialog *after* attempting the import, so stale files defeat it entirely.
 
 ### M-3 (High) — One failed request flips `/ready` to 503, permanently in a traffic-gated deployment
 
-**Location:** `agents.py:390-408` (`set_component("basic_pitch", f"error: …")`),
-`monitoring.py:150-182` (`is_ready`), `app.py:730-746` (`/ready`),
+**Location:** `agents.py:385-403` (`set_component("basic_pitch", f"error: …")`),
+`monitoring.py:167-180` (`is_ready`), `app.py:726-742` (`/ready`),
 `Dockerfile` `HEALTHCHECK`.
 
 **What happens.** `_transcribe_with_basic_pitch` writes a *request-scoped* failure into
@@ -507,11 +555,17 @@ error rate so a single bad upload does not take an otherwise healthy instance ou
 rotation.” It is not independent. `AUDIT.md` N-1 and Appendix C P1-1 claim the readiness
 split fixed the conflation of liveness and readiness — it fixed the *startup* case only.
 
+`6d1dbd9` goes the other way: `tests/test_transcription_safety.py:125`
+(`test_basic_pitch_failure_updates_health_and_does_not_return_empty_success`) *asserts*
+`health.set_component("basic_pitch", "error: missing mir_eval")` after a failed
+prediction. Fixing M-3 therefore means changing that test as well — the suite currently
+locks the defect in.
+
 ---
 
 ### M-4 (Medium) — Every Basic Pitch failure is reported as "no models installed"
 
-**Location:** `agents.py:303-355`.
+**Location:** `agents.py:298-350`.
 
 `transcribe_stem` catches every exception from Basic Pitch, logs it, then raises a canned
 `RuntimeError("No transcription models available … Install Basic Pitch …")`. A corrupt
@@ -564,8 +618,8 @@ mechanism. `AUDIT.md` P1-7 documents the Demucs limitation but says nothing abou
 
 ### W-1 (High) — The upload endpoint is unbounded; the 50 MB rule runs after the bytes are on disk
 
-**Location:** `app.py:78-96` (limits), `app.py:710-757` (`create_app`),
-`app.py:137-165` (`_validate_audio`).
+**Location:** `app.py:77-95` (limits), `app.py:706-753` (`create_app`),
+`app.py:136-164` (`_validate_audio`).
 
 **What happens.** The app mounts Gradio with `gr.mount_gradio_app(parent_app, demo,
 path="/", theme=..., css=...)` and never passes `max_file_size`, whose default is `None`.
@@ -615,7 +669,7 @@ return gr.mount_gradio_app(parent_app, demo, path="/", **mount_kwargs)
 ```
 
 plus, at the proxy, `client_max_body_size 50m;` (nginx) or the equivalent. Keep
-`_validate_audio` as the second line of defence. Note also `app.py:589` uses
+`_validate_audio` as the second line of defence. Note also `app.py:584` uses
 `gr.Audio(type="filepath", sources=["upload"])` without `format=None`; on the 4.x side of
 the declared `gradio>=4.44,<7` range the default is `format="wav"`, which **transcodes
 every upload to WAV in `preprocess`** — before `_validate_audio` runs. That makes the
@@ -627,8 +681,8 @@ pass `format=None` explicitly.
 
 ### W-2 (High) — The global upload pruner deletes inputs of jobs that are still queued
 
-**Location:** `app.py:797-830` (`cleanup_stale_uploads`), called from
-`app.py:261` at the start of every request; `UPLOAD_TTL_SEC` default 900.
+**Location:** `app.py:793-826` (`cleanup_stale_uploads`), called from
+`app.py:259` at the start of every request; `UPLOAD_TTL_SEC` default 900.
 
 **What happens.** Every request deletes everything under `${TMPDIR}/gradio` whose mtime is
 older than 15 minutes. Gradio has already received the upload when the event is queued,
@@ -666,8 +720,8 @@ RUNBOOK admits this).
 
 ### W-3 (High) — No job timeout: one hung request wedges the service
 
-**Location:** `agents.py:164-186` (`subprocess.run` without `timeout`),
-`app.py:715-721` (`demo.queue`, defaults `default_concurrency_limit=1`, `max_size=32`), `app.py:235-560` (no deadline).
+**Location:** `agents.py:159-181` (`subprocess.run` without `timeout`),
+`app.py:713-719` (`demo.queue`, defaults `default_concurrency_limit=1`, `max_size=32`), `app.py:233-556` (no deadline).
 
 `demo.queue(default_concurrency_limit=1, max_size=32)` bounds the *backlog*, not the
 *duration*. Gradio's queue has no per-event execution timeout (the `timeout` symbols in
@@ -708,7 +762,7 @@ must check a deadline between stages (Suno → Demucs → per stem) and raise.
 
 ### W-4 (Medium) — Device selection is process-global and the ONNX patch is sticky
 
-**Location:** `app.py:703-708` (`_on_device_change`), `app.py:222-233`
+**Location:** `app.py:699-704` (`_on_device_change`), `app.py:221-230`
 (`_active_device_config`), `device.py:240-278` (`install_onnx_provider_override`).
 
 * `_on_device_change` writes `os.environ["DEVICE"]` — process-wide. Every concurrent user
@@ -734,12 +788,12 @@ ort.InferenceSession._tab_agent_providers = wanted
 
 ### W-5 (Medium) — `atexit` and the session pruner can destroy live work
 
-**Location:** `app.py:760-790`.
+**Location:** `app.py:756-786`.
 
 `atexit.register(cleanup_temp_dirs)` removes the entire `OUTPUT_DIR`
 (`${TMPDIR}/tab_agent_outputs`) — every session, including those created by another app
 process on the same host (two `python app.py` instances share `/tmp`). `handle_signal`
-does the same on SIGTERM (`app.py:768-774`), so a container stop during one user's job
+does the same on SIGTERM (`app.py:761-768`), so a container stop during one user's job
 deletes the completed outputs of every other session on that host. Likewise
 `cleanup_stale_sessions(max_age_hours=1)` deletes by directory mtime; with
 `MAX_CONCURRENT_REQUESTS > 1` and a job longer than an hour, a *different* request's
@@ -753,7 +807,7 @@ pruning can distinguish active from abandoned work.
 
 ### W-6 (Medium) — A corrupt preferences file is flattened by the device save
 
-**Location:** `app.py:190-220` (`_save_device_preference`), `app.py:167-188`.
+**Location:** `app.py:189-219` (`_save_device_preference`), `app.py:166-187`.
 
 If `user_preferences.json` fails to parse, `_save_device_preference` catches `ValueError`,
 sets `preferences = {}` and writes `{"config": {"device": …}}` — destroying tunings,
@@ -1033,7 +1087,7 @@ M-2, a failed run leaves the previous MIDI to be imported. **Fix:** always pass
 The script starts a multi-minute job immediately, with no confirmation of the selected
 item/settings and no way to cancel. Quitting REAPER mid-run leaves the Python child
 running (`io.popen` children are not killed), still writing `stems/processed_*.wav` with
-*fixed filenames* (`agents.py:188-260`), so a second run — or the CLI — interleaves with
+*fixed filenames* (`agents.py:183-255`), so a second run — or the CLI — interleaves with
 it and produces mixed stems and wrong MIDI. **Fix:** per-run output directories (R-7),
 a persisted lock (`SetExtState("TabAgent","running", pid, true)`) that refuses to start a
 second run, a confirmation dialog showing the item, project, profile and output path, and
@@ -1068,12 +1122,25 @@ and copy only what the build needs. Add a `docker build --target builder` smoke 
 
 ---
 
-### D-2 (High) — `requirements.lock` omits `huggingface-hub`, which gradio and demucs require
+### D-2 (High — **fixed in `6d1dbd9`**) — `requirements.lock` omitted `huggingface-hub`
 
-**Location:** `requirements.lock` (118 pins, no `huggingface-hub`), `Dockerfile:53-57`.
+**Status.** Fixed on main: `requirements.lock` now pins `huggingface-hub==2.4.0`
+(line 64), with gradio bumped to 6.32.0, pillow to 13.0.0 and tornado to 6.6.1. Verified on
+the merged tree:
 
-Requirements of the exact locked artifacts (from the `gradio==6.31.0` wheel's own
-`METADATA`, and PyPI metadata for the other two):
+```
+$ python tools/check_lockfile.py --static
+requirements.lock covers all 17 declared dependencies (4 exact pins verified).
+$ grep -n "huggingface" requirements.lock
+64:huggingface-hub==2.4.0
+```
+
+The entry below is kept because the *shape* of the defect is what D-4 is about, and because
+the same lock still carries stale counts (D-5).
+
+**What it was at `a4814b2`.** The lock had 118 pins and no `huggingface-hub`, while the
+three locked packages that require it were these (the first from the locked wheel's own
+`METADATA`):
 
 ```
 $ unzip -p /tmp/gdl/gradio-6.31.0-py3-none-any.whl '*/METADATA' | grep -i huggingface
@@ -1083,29 +1150,10 @@ gradio-client 2.7.2 : Requires-Dist: huggingface-hub<3.0,>=1.16.0
 demucs 4.1.0        : Requires-Dist: huggingface-hub
 ```
 
-and the lock does not name it — only `huggingface-hub`'s own dependency `hf-xet` is
-pinned (`requirements.lock:59`):
-
-```
-$ grep -in "huggingface" requirements.lock; echo "rc=$?"
-rc=1
-```
-
-Resolving the declared set (`requirements.txt`) does install it, so the builder has it
-but the lock does not pin it:
-
-```
-$ pip install --dry-run --ignore-installed --report - -r requirements.txt | tail -1
-Would install ... gradio-6.32.0 gradio_client-2.7.2 ... hf-xet-1.8.0 ... huggingface_hub-2.4.0 ...
-```
-
-(Note the resolver also picks **gradio 6.32.0**, not the locked 6.31.0 — the declared
-range `gradio>=4.44,<7` is wider than the lock.)
-
-The Dockerfile then re-applies the lock with `--no-deps` — which cannot install a package
-the lock does not name — and runs the exact check (`Dockerfile:53-57`). That check
-(bare `check_lockfile.py`, exact mode) on the state the builder reaches — everything in
-the lock, plus the `huggingface-hub` that step 2's resolver installed:
+The Dockerfile re-applies the lock with `--no-deps` (which cannot install a package the
+lock does not name) and then runs the exact check (`Dockerfile:53-57`). On the state the
+builder reached — everything in the lock plus the `huggingface-hub` that the resolver step
+installed — that check reported:
 
 ```
 requirements.lock is out of date with the installed environment.
@@ -1116,32 +1164,32 @@ Regenerate with: python tools/check_lockfile.py --write
 exit code: 1
 ```
 
-The CI-side `--verify` mode fails too, via the closure walk (`huggingface-hub` is a
-requirement of installed gradio/`gradio_client`/demucs):
-`requirements.lock is missing 1 shipped dependencies: + huggingface-hub==2.4.0 (in the install closure)`.
-So the image build stops at the lock check. If that check were
-skipped, the runtime would use an unpinned `huggingface-hub` — contradicting
-`SECURITY.md` ("Dependency pinning — `requirements.lock`, verified in CI and in the
-Docker build") and `docs/ACCEPTED_RISKS.md` ("the installed environment, i.e. exactly
-what ships (`requirements.lock`, 164 distributions)").
-
-**Exact fix.** Add the pin and the missing transitive closure to the lock, then make the
-lock generation reproducible:
-
-```bash
-python -m venv /tmp/lockenv && /tmp/lockenv/bin/pip install -r requirements.txt \
-  && /tmp/lockenv/bin/python tools/check_lockfile.py --write
-git diff --stat requirements.lock      # expect + huggingface-hub, and gradio 6.31.0 -> 6.32.0
-```
-
-Add a CI step that runs `--write` into a temp copy and fails if the result differs from
-the committed lock (a byte-comparison catches both omissions and stale pins).
+so the image build stopped at the lock check, and `SECURITY.md`'s "verified in CI and in
+the Docker build" did not hold at that commit.
 
 ---
 
-### D-3 (High) — CI is red at the shipped tip, so every later gate is unenforced
+### D-3 (High — **fixed in `6d1dbd9`**) — CI was red at `a4814b2`, so every later gate was unenforced
 
-**Location:** `.github/workflows/ci.yml`, job run `43330247605` (this exact commit).
+**Status.** Fixed on main. The eight lint errors were cleared (the `torch` import is now
+explicitly `# noqa: F401` with the reason that callers patch `agents.torch`; `Optional[X]`
+became `X | None`; the unused `note_seq` and `logging` imports and the unsorted import
+block are gone), `CACHE_DIR` was removed from `.env.example` and the Dockerfile, and
+`check_docker_install.py` now accepts the `TORCH_INDEX_URL` ARG form. Verified on the
+merged tree:
+
+```
+$ ruff check agents.py app.py device.py main.py tests/
+All checks passed!
+$ python tools/check_env_example.py
+.env.example OK — 6 variables all referenced in code.
+$ python tools/check_docker_install.py
+Docker checks passed (basic-pitch deps, external bind, non-root, readiness probe, CPU torch, lockfile enforce+verify).
+$ python tools/check_reaper_settings.py
+All REAPER settings checks passed.
+```
+
+**What it was at `a4814b2`.** The last CI run on that commit failed at the lint step:
 
 ```
 $ gh run list --branch main --limit 1
@@ -1150,7 +1198,7 @@ $ gh run view 43330247605 --json jobs --jq '.jobs[].steps[] | select(.conclusion
 Lint with Ruff
 ```
 
-The failure is trivial; locally, with the pinned linter:
+with, locally:
 
 ```
 $ ruff check --output-format=concise agents.py app.py device.py main.py tests/
@@ -1166,29 +1214,11 @@ Found 8 errors.
 [*] 8 fixable with the `--fix` option.
 ```
 
-Because lint is the fourth step of the job, **none** of `check_index`, `check_env_example`,
-`check_docker_install`, `check_lockfile`, gitleaks, bandit, the tests, or
-`check_vulns` ran on this commit. Two of them are independently failing:
-
-```
-$ python tools/check_env_example.py
-✗ CACHE_DIR (no reference in *.py, reaper/*.lua)        exit 1
-
-$ python tools/check_docker_install.py
-✗ torch must install from the CPU-only index …          exit 1
-```
-
-The second is a false negative caused by the Dockerfile's own refactor: the guard greps
-for the literal `--index-url https://download.pytorch.org/whl/cpu`, but the Dockerfile now
-uses `ARG TORCH_INDEX_URL=…` + `--index-url "$TORCH_INDEX_URL"` (`Dockerfile:4,36`). The
-first is real: `CACHE_DIR` is documented and read by nothing (torch/ONNX caches are
-configured via `TORCH_HOME`/`XDG_CACHE_HOME` in the image).
-
-**Exact fix:** fix the eight lint errors; wire `CACHE_DIR` into
-`os.environ.setdefault("HF_HOME"/"TORCH_HOME", …)` or delete it from `.env.example`; make
-`check_docker_install.py` accept the ARG form (or make the Dockerfile use the literal and
-drop the ARG). Re-run the whole suite, and only then restore the
-`AUDIT.md` Appendix C claim.
+Because lint is the fourth step of the job, **none** of `check_index`,
+`check_env_example`, `check_docker_install`, `check_lockfile`, gitleaks, bandit, the tests,
+or `check_vulns` ran on that commit, and two of them were independently failing
+(`check_env_example` on `CACHE_DIR`, `check_docker_install` on the literal torch index
+string).
 
 ---
 
@@ -1238,8 +1268,9 @@ load-bearing `<81` pin documented in `ACCEPTED_RISKS.md` R-2 is enforced only by
 range-based `pip install -r requirements.txt` step. If the base image ever ships ≥ 81,
 nothing in the lock prevents `pretty_midi` from failing at import. The self-description is
 also wrong: the lock header says “131 packages”, `ACCEPTED_RISKS.md` says “164
-distributions”, `AUDIT.md` N-7 says “118 pins”, and the file contains **118** entries
-(`grep -c ==`).
+distributions”, `AUDIT.md` N-7 says “118 pins”, and the file now contains **119** entries
+(`grep -c ==`; it was 118 before `6d1dbd9` added `huggingface-hub`). No two of those four
+numbers agree.
 
 **Exact fix:** include `setuptools==80.10.2` in the lock (it is installed and scanned
 anyway) or document the exclusion in the header with the reason; correct the three counts
@@ -1276,14 +1307,24 @@ and extend `check_docker_install.py` to run the same assertions over `run.sh`.
 
 ---
 
-### D-7 (Low) — The ReaPack pin is valid but stale, and the guard mis-handles exports
+### D-7 (Low) — The ReaPack pin is valid but stale, and the guard mis-handles shallow checkouts
 
 `index.xml` pins commit `4061696b…` (which does resolve upstream — verified via the GitHub
-API) and advertises version **1.0.1** while the project is **1.1.0**. ReaPack users
-therefore install the pre-1.1 scripts (no streamed console, older settings handling) and
-will never see an update. `tools/check_index.py` only checks resolvability, so staleness is
-invisible; in a squashed/exported checkout `git cat-file` cannot resolve the pin and the
-check fails spuriously (it did here).
+API, and `tools/check_index.py` now passes) but advertises version **1.0.1** while the
+project is **1.1.0**. ReaPack users therefore install the pre-1.1 scripts (no streamed
+console, older settings handling) and will never see an update. `check_index.py` only
+checks resolvability, so staleness is invisible.
+
+The guard also failed spuriously on this checkout while it was shallow, because
+`git cat-file` cannot see a commit outside the truncated history:
+
+```
+$ python tools/check_index.py        # in a depth-1 clone
+✗ index.xml: commit 4061696b does not exist in this repository — every <source> ...
+```
+
+After `git fetch --unshallow` the same command passes, so the failure was environmental,
+not a bad pin — but CI or an exported source archive can hit it.
 
 **Fix:** regenerate `index.xml` with `reapack-index` at release time and bump `<version
 name>`; treat “not a git repository” and “object not found in a shallow clone”
@@ -1293,13 +1334,17 @@ name>`; treat “not a git repository” and “object not found in a shallow cl
 
 ### D-8 (Low) — `.pip-audit-ignore` duplicates and a docstring that overstates the gate
 
-`PYSEC-2025-41`, `PYSEC-2025-191` and `PYSEC-2026-1970` appear twice (the parser keeps the
-last, so it is harmless but the file no longer matches its own “one entry per advisory”
-contract), and `AUDIT.md` says 70 advisories while the file has 68 ID lines. The
-`check_vulns.py` docstring says it “fails on HIGH/CRITICAL findings”; the code fails on
-*any* unaccepted advisory regardless of severity. **Fix:** dedupe (and assert uniqueness
-in `load_ignores`), correct the counts, and either implement the severity filter or fix
-the docstring.
+`PYSEC-2025-41`, `PYSEC-2025-191` and `PYSEC-2026-1970` are each listed twice, the second
+time with a comment saying it is a duplicate ("duplicate advisory identifier reported by
+two feeds", "duplicate listing"). The parser keeps the last entry, so this is harmless at
+runtime — but it contradicts the file's own "one entry per advisory" format line, defeats
+any uniqueness assertion, and doubled entries are exactly what an expiry audit trips over.
+`AUDIT.md` still says 70 advisories while the current file has **27** ID lines (61 lines
+including comments; `6d1dbd9` pruned the expired ones). The `check_vulns.py` docstring
+still says it "fails on HIGH/CRITICAL findings"; the code fails on *any* unaccepted
+advisory regardless of severity. **Fix:** keep one line per advisory (fold the reason into
+the first entry), assert uniqueness in `load_ignores`, correct the count in `AUDIT.md`,
+and either implement the severity filter or fix the docstring.
 
 ---
 
@@ -1334,7 +1379,7 @@ and replace whole-file STFTs with `librosa.stream(...)` (block-wise, with overla
 process Demucs stems segment by segment. At minimum, refuse to run the Suno
 preprocessor on files above a threshold and log the decision.
 
-**L-2 (Medium) — `_remove_octave_errors` is O(n²).** `suno_postprocessor.py:240-274`
+**L-2 (Medium) — `_remove_octave_errors` is O(n²).** `suno_postprocessor.py:238-272`
 compares every note to every other note. Measured on the real function:
 
 ```
@@ -1360,7 +1405,7 @@ for i, n in enumerate(notes):
 
 **L-3 (Medium) — fixed staging filenames.** `process_guitars`/`process_bass` write
 `processed_lead.wav`, `processed_rhythm_L.wav`, `processed_rhythm_R.wav`,
-`processed_bass_clean.wav` into a shared `output_dir` (`agents.py:204-260`). Two CLI runs
+`processed_bass_clean.wav` into a shared `output_dir` (`agents.py:199-255`). Two CLI runs
 or two REAPER runs share those paths and overwrite each other mid-flight. **Fix:** per-run
 subdirectory (`mkdtemp` or the run id from R-7).
 
@@ -1368,24 +1413,33 @@ subdirectory (`mkdtemp` or the run id from R-7).
 
 ## 8. Test and guard gaps that let all of this ship
 
-**V-1 (Medium) —** every guard that should have caught the findings above is either
-vacuous or does not execute the code path:
+**V-1 (Medium) —** at `a4814b2` every guard that should have caught the findings above was
+either vacuous or never executed the code path. `6d1dbd9` adds real tests for six of them,
+but marks them strict `xfail`: they *document* the defects and fail on an unexpected pass,
+while the shipped behaviour is unchanged (see §0). One test goes further and asserts the
+buggy behaviour as correct.
 
 | Guard | Why it does not catch the defect |
 |---|---|
+| `tests/test_transcription_safety.py:65,76,112` and `tests/test_reaper_safety.py:46,67`, `tests/test_transcription_safety.py:150` | strict `xfail` — they encode T-1, T-2, M-1, R-4, M-2 and the octave deletion as known failures. Useful as regression sentinels; they are not passing safety guarantees, and `docs/TRANSCRIPTION_TEST_AUDIT.md` says so |
+| `tests/test_transcription_safety.py:125` | asserts `health.set_component(..., "error: …")` after a *request* failure — codifies M-3 |
 | `tests/test_agents_edge.py::test_technique_pull_descending` | asserts the value is in `["slide","hammer","pull","pick"]` — always true |
 | `…::test_technique_hammer_ascending` | accepts `slide` **or** `hammer` |
-| No chord test | every `generate_tab` test uses single-note sequences, so T-1 is untested |
+| No chord test that passes | the only chord test is the xfail above; every *passing* `generate_tab` test uses single notes, so T-1 is unguarded |
 | `tests/test_hardening.py::test_concurrent_sessions_get_distinct_directories` | calls `tempfile.mkdtemp` twice itself; never enters `_process_audio_impl` |
-| `tools/check_reaper_settings.py` | stubs `reaper.defer` to a no-op, so `poll_pipeline`, `import_midi`, undo pairing and project capture never execute; the “no spurious No Output” assertion is in a branch that cannot run |
-| `tools/simulate_failures.py::simulate_demucs_offline` | only covers `DEMUCS_API_AVAILABLE=False` + a raising subprocess; not “API returns without writing stems” (M-1) |
+| `tools/check_reaper_settings.py` | stubs `reaper.defer` to a no-op, so `poll_pipeline`, `import_midi`, undo pairing and project capture never execute; the "no spurious No Output" assertion is in a branch that cannot run |
+| `tools/simulate_failures.py::simulate_demucs_offline` | only covers `DEMUCS_API_AVAILABLE=False` + a raising subprocess; not "API returns without writing stems" (M-1) |
 | `tests/test_app_integration.py` | mocks `SplitterAgent`/`EarAgent`, so backend contract violations (empty notes, missing stems) are invisible |
 | `validate.py --quick` | skips Docker and the LLM-heavy checks; does not run `run.sh` or the lock regeneration |
 
-**Fix:** add the four regression tests named in the findings (chord voicing: distinct
-strings and span ≤ 5; exact technique value for a picked run; Demucs-returns-`{}` →
-fallback; failed transcription leaves `is_ready()` true), and make the REAPER harness
-invoke the deferred callback at least twice with an `EnumProjects` probe.
+**Fix:** un-xfail as you fix. For each strict xfail there is a matching fix section above
+(T-1 voicing DP, T-2 evidence-based techniques, M-1 stem validation, M-2 run-scoped output,
+R-4 argv file, M-5 octave policy); land the fix and the xfail removal in the same commit,
+which is what the marker is for. In addition: add a passing chord test that covers narrow
+dyads and triads (the current xfail's chord is not the collapsing case — it xfails, but it
+does not characterise the bug), assert an exact technique value for a picked run, replace
+the M-3 test's `set_component` assertion with `is_ready() is True`, and make the REAPER
+harness invoke the deferred callback at least twice with an `EnumProjects` probe.
 
 ---
 
@@ -1397,14 +1451,14 @@ invoke the deferred callback at least twice with an `EnumProjects` probe.
 |---|---|---|
 | Upload limits 50 MB / 5 min, extension allowlist, **validated before decode** | ❌ | `max_file_size` is never set, so the upload is unbounded (W-1). On the 4.x side of `gradio>=4.44,<7` the file is transcoded to WAV before validation. |
 | Request isolation: `mkdtemp` per request, unique ZIP | ✅ / 🟡 | Holds for the web path (and is guarded by a source test). The CLI uses shared fixed staging names (L-3), and `atexit` deletes *all* sessions (W-5). |
-| No info leak: short message + `error_ref` | ✅ | `app.py:497-520` does this correctly. |
-| Non-root, read-only container | 🟡 | The Dockerfile does it; the image cannot be built (D-1, D-2). |
+| No info leak: short message + `error_ref` | ✅ | `app.py:493-516` does this correctly. |
+| Non-root, read-only container | 🟡 | The Dockerfile does it (and CI checks the directives), but the image cannot be built at all (D-1), so no running container has ever been verified. |
 | Readiness gating: `/ready` 503 unless a required backend loads | 🟡 | Correct at startup; a single failed request flips it (M-3), so it gates on the *last error*, not on load. |
 | Secret handling: `.env` excluded from the image | ✅ | `.dockerignore` has `.env` and `.env.local`. |
-| Dependency pinning verified in CI **and in the Docker build** | ❌ | `huggingface-hub` missing (D-2); CI never reaches the step (D-3). |
-| Vulnerability gate: fails on any unaccepted/expired advisory | 🟡 | Logic is sound, but it did not run on this commit (D-3); the ignore file has duplicates and the counts are wrong (D-8). |
-| Static analysis: bandit + gitleaks, both blocking | ❌ (unenforced) | Both are after the failing lint step on the shipped commit. |
-| Model provenance: weights from upstream repos, versions pinned | 🟡 | Dependency versions are pinned (with the D-2 gap); Demucs weights are fetched at first use with no digest or size check — a truncated download is exactly the M-1 case. |
+| Dependency pinning verified in CI **and in the Docker build** | 🟡 | Fixed on main: `huggingface-hub==2.4.0` is pinned and CI's lint gate is green, so the checks run. The Docker claim is still unproven because the image cannot build at all (D-1). |
+| Vulnerability gate: fails on any unaccepted/expired advisory | 🟡 | Logic is sound and it now runs (lint is green); the ignore file still carries three duplicate entries and `AUDIT.md`'s advisory count is stale (D-8). |
+| Static analysis: bandit + gitleaks, both blocking | ✅ | Unenforced at `a4814b2` (behind the failing lint step); the gate now runs — CI runs 44216256025 / 44217717369 on this code passed. |
+| Model provenance: weights from upstream repos, versions pinned | 🟡 | Dependency versions are pinned (the D-2 gap is closed); Demucs weights are fetched at first use with no digest or size check — a truncated download is exactly the M-1 case. |
 
 ### 9.2 `docs/ACCEPTED_RISKS.md`
 
@@ -1412,21 +1466,21 @@ invoke the deferred callback at least twice with an `EnumProjects` probe.
 |---|---|---|
 | R-1 torch 2.5.1 (23 advisories), "no user-supplied model files, no `torch.jit`" | ✅ (claim still true) | `grep -rn "torch.load\|torch.jit\|torch.compile" --include=*.py .` → no matches; the YourMT3+ code that the entry and `AUDIT.md` N-3 describe no longer exists, so N-3's "single `torch.load` verified `weights_only=True`" is stale (harmlessly: there is no `torch.load`). |
 | R-2 setuptools `<81`, "runtime never imports setuptools" | 🟡 | The pin is load-bearing — but `pretty_midi` imports `pkg_resources` *at runtime*, which is setuptools. The entry's own proof contradicts its exposure paragraph. Exclusion from the lock also means the pin is not reproducible (D-5). |
-| R-3 pillow, "not a declared dependency … absent from the shipped image" | ❌ | `pillow==12.3.0` **is in `requirements.lock`** (gradio requires it). The package is shipped; the exposure argument (“absent”) is factually wrong. The conclusion (“not imported by this code”) may still be acceptable — re-justify it on that basis. |
+| R-3 pillow, "not a declared dependency … absent from the shipped image" | ❌ | `pillow==13.0.0` **is in `requirements.lock`** (gradio requires it). The entry is unchanged on main and now contradicts the lock header that `6d1dbd9` rewrote — “Some dependencies such as pillow and protobuf also arrive through other packages and are shipped”. The exposure argument (“absent”) is factually wrong; the conclusion (“not imported by this code”) may still be acceptable — re-justify it on that basis. |
 | R-4 black, dev-only | ✅ | Not in the lock, not in the image. |
 | R-5 no authentication | ✅ (by design) | Consistent with the code; but see W-1: no auth plus an unbounded upload endpoint is a stronger exposure than “nothing to protect”. |
 | R-6 no rate limiting; "queue is bounded, abuse degrades to rejection" | ❌ | Uploads never touch the queue and are unbounded (W-1); a hung job is never rejected and blocks the only worker (W-3). |
 | R-7 soxr LGPL | ✅ | Documented in `THIRD_PARTY_NOTICES.md`. |
 | R-8 no error tracker | ✅ | `error_ref` + JSON logs work as described. |
 | R-9 uploads written to disk before validation; TTL pruner bounds disk | 🟡/❌ | True that they are written first; the TTL pruner is what deletes queued jobs' inputs (W-2) and does not bound the write *rate* (W-1). |
-| "Scope of the scan: exactly what ships (164 distributions)" | ❌ | 118 pins, and `huggingface-hub` ships unpinned (D-2, D-5). |
+| "Scope of the scan: exactly what ships (164 distributions)" | ❌ | 119 pins today, and three different counts are in circulation (D-5). The missing-package half is fixed. |
 
 ### 9.3 `AUDIT.md` — Appendix C (post-fix verification)
 
 | Row | Claim | Holds? |
 |---|---|---|
 | P0-1 | UI button works | ✅ (5-arg wrapper + defaulted `progress`; the `.click` wiring is correct) |
-| P0-2 | Basic Pitch deps fixed, guarded by `check_docker_install.py` | 🟡 — the deps are right; the guard currently fails (D-3) and does not cover `run.sh` (D-6) |
+| P0-2 | Basic Pitch deps fixed, guarded by `check_docker_install.py` | 🟡 — the deps are right and the guard now passes; it still does not cover `run.sh` (D-6) |
 | P0-3 | Binds `0.0.0.0`, honours `PORT` | ✅ |
 | P0-4 | Zero-GPU claim corrected | ✅ |
 | P1-1 | `/ready` + derived health | 🟡 — M-3 |
@@ -1438,12 +1492,12 @@ invoke the deferred callback at least twice with an `EnumProjects` probe.
 | P1-7 | Demucs limitation documented | 🟡 — the *documented* fallback is not reached on an empty success (M-1) |
 | P1-8 | `validate.py` usable | ✅ |
 | P1-9 | Wheel ships modules | ✅ |
-| P2-1 | `.env.example` variables all referenced | ❌ — `check_env_example.py` fails on `CACHE_DIR` (D-3) |
-| P2-2 | Stale counts/drift fixed | ❌ — lock/audit/risk counts disagree (D-5); RUNBOOK §6/§7 still wrong (L-1, T-3) |
+| P2-1 | `.env.example` variables all referenced | ✅ — fixed in `6d1dbd9` (`CACHE_DIR` removed); `check_env_example.py` passes |
+| P2-2 | Stale counts/drift fixed | ❌ — the drift was re-fixed but the counts did not follow: 119 pins vs “131”/“164”/“118” (D-5); RUNBOOK §6/§7 still wrong (L-1, T-3) |
 | N-1 | health/readiness split | 🟡 — M-3 |
 | N-2 | per-request sessions | ✅ code; test vacuous (V-1) |
 | N-5 | upload TTL pruner | ❌ — W-2 |
-| N-7 | lock + vulnerability gate | ❌ — D-2/D-3 |
+| N-7 | lock + vulnerability gate | 🟡 — the lock is complete and the gate runs now, but the advisory/ignore bookkeeping is stale (D-8) and D-4 remains |
 | N-8 | non-root read-only image | 🟡 — image does not build (D-1) |
 
 Also: the index pin in `index.xml` (`4061696b`) is **not** the commit the audit says was
@@ -1462,20 +1516,25 @@ described this one.
 3. **REAPER: never block the main thread and never insert into the wrong project**
    (R-1, R-2, R-3, R-8). These are the only findings that can damage a user's session.
 4. **Make the health signal honest** (M-3): request failures must not change readiness.
-5. **Make the build reproducible again** (D-1, D-2, D-3, D-4): fix `.dockerignore`,
-   regenerate the lock, fix lint and the two broken guards, and only then trust CI.
+5. **Make the build reproducible again** (D-1, D-4): fix `.dockerignore`, and teach the
+   verifier to compare against the resolver. D-2 and D-3 are already fixed on main; the
+   image still cannot build (D-1), so CI's Docker claim remains unproven.
 6. **Bound the service** (W-1, W-2, W-3): `max_file_size`, drop the global pruner, add a
    job deadline.
 7. **Bound the CLI** (L-1, L-2, L-3): duration guard, streaming DSP, per-run staging.
 8. Everything else (T-3, M-4, M-5, W-4…W-7, R-4…R-7, D-5…D-8) as a follow-up batch.
 
+Each of the six strict `xfail` tests in §0/§8 names the fix it is waiting for; remove the
+marker in the same commit that fixes the behaviour, so the suite turns from "known defect"
+into "guard" without an interval in which it protects nothing.
+
 ---
 
 ## 11. Boundaries of this review
 
-* **Docker was not available**, so D-1/D-2 are proven from the context rules, the
+* **Docker was not available**, so D-1 is proven from the context rules, the
   Dockerfile text, upstream package metadata and the repo's own checker — not from a
-  `docker build`. Both failures are deterministic; run `docker build --target builder .`
+  `docker build`. That failure is deterministic; run `docker build --target builder .`
   to confirm.
 * **The real inference stack** (`torch`, `onnxruntime`, Demucs weights, `gradio`'s runtime)
   was not installed. All findings in `agents.py`/`main.py`/`monitoring.py`/`reaper/*.lua`
@@ -1489,4 +1548,16 @@ described this one.
   is correct under both.
 * **CI logs** for the failing run were not retrievable from this sandbox (only the job
   summary: “Lint with Ruff — failure”), so D-3's list of downstream gates is inferred from
-  step order, which the workflow makes explicit.
+  step order, which the workflow makes explicit. Locally, every gate in that workflow can
+  be reproduced except those needing the full dependency set (mypy, pytest, pip-audit).
+* **The checkout was shallow** for most of this review (`git rev-parse
+  --is-shallow-repository` → `true`, two entries in `.git/shallow`). That is why the
+  ReaPack pin appeared unresolvable (D-7) and why `main` looked like an orphan commit.
+  After `git fetch --unshallow`, `6d1dbd9` is a normal child of `a4814b2` and
+  `check_index.py` passes; any claim here that depended on history traversal was re-checked
+  after the unshallow.
+* **`6d1dbd9` was merged during the review.** All findings were re-run against the merged
+  tree; §0 lists what changed. The test suite as a whole (287 passed / 6 xfailed per
+  `docs/TRANSCRIPTION_TEST_AUDIT.md`) was not executed here — the real dependency set
+  (torch, gradio, librosa, soundfile) is not installable in this sandbox, so only the
+  dependency-free harnesses and guards were run.
