@@ -55,7 +55,7 @@ class TestExportTabToTxt(unittest.TestCase):
         assert "G|" in content
         assert "D|" in content
         assert "A|" in content
-        assert "Technique hints (heuristic only): s=slide, h=hammer-on, p=pull-off" in content
+        assert "Playing techniques not inferred." in content
 
     def test_export_tab_to_txt_content_bass(self) -> None:
         tab_data = [

@@ -314,35 +314,35 @@ class TestTabAgentGenerateTabEdgeCases(unittest.TestCase):
         assert self.agent.generate_tab([]) == []
         assert self.agent.last_skipped_notes == []
 
-    def test_technique_slide_adjacent_1_fret(self) -> None:
-        """1-fret difference on same string fast → slide."""
+    def test_adjacent_fret_is_not_labeled_slide(self) -> None:
+        """A one-fret move is not evidence of a slide."""
         notes = [
             make_note(40, 0.0, 0.12),  # E2 string 0 fret 0
             make_note(41, 0.12),  # F2
         ]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
         assert len(result) == 2
-        assert result[1]["technique"] == "slide"
+        assert [p["technique"] for p in result] == ["pick", "pick"]
 
-    def test_technique_hammer_ascending(self) -> None:
-        """Ascending same-string fast → hammer."""
+    def test_ascending_frets_are_not_labeled_hammer(self) -> None:
+        """A fast ascending move is not evidence of a hammer-on."""
         notes = [
             make_note(40, 0.0, 0.12),  # E2
             make_note(44, 0.12),  # G#2 — only the low E string is available
         ]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
         assert len(result) == 2
-        assert result[1]["technique"] == "hammer"
+        assert [p["technique"] for p in result] == ["pick", "pick"]
 
-    def test_technique_pull_descending(self) -> None:
-        """Descending same-string fast → pull."""
+    def test_descending_frets_are_not_labeled_pull(self) -> None:
+        """A fast descending move is not evidence of a pull-off."""
         notes = [
             make_note(44, 0.0, 0.12),  # G#2
             make_note(40, 0.12),  # E2
         ]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
         assert len(result) == 2
-        assert result[1]["technique"] == "pull"
+        assert [p["technique"] for p in result] == ["pick", "pick"]
 
     def test_slow_transition_is_pick_not_technique(self) -> None:
         """Slow transition on same string → 'pick' (no technique)."""
@@ -354,15 +354,15 @@ class TestTabAgentGenerateTabEdgeCases(unittest.TestCase):
         if len(result) > 1:
             assert result[1]["technique"] == "pick"
 
-    def test_technique_window_includes_close_notes(self) -> None:
-        """Close notes within window on same string get 'slide'."""
+    def test_legacy_sensitivity_does_not_enable_inference(self) -> None:
+        """Even high sensitivity leaves fast two-fret moves unmarked."""
         notes = [
             make_note(40, 0.0, 0.15),  # E2 — only on string 0
             make_note(42, 0.15),  # F#2 — only on string 0, fret diff=2
         ]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
         assert len(result) == 2
-        assert result[1]["technique"] == "slide"
+        assert [p["technique"] for p in result] == ["pick", "pick"]
 
     def test_technique_window_excludes_distant_notes(self) -> None:
         """Distant notes outside window get 'pick'."""
@@ -829,7 +829,7 @@ class TestSplitterSeparateWithApi(unittest.TestCase):
         return _a.demucs_api
 
     def test_separate_with_api_creates_stems(self) -> None:
-        """API separation writes readable mono and stereo stems from tensors."""
+        """API separation writes fresh, readable stems with matching stereo layouts."""
         import soundfile as sf
         import torch
 
@@ -838,10 +838,13 @@ class TestSplitterSeparateWithApi(unittest.TestCase):
         separator.samplerate = 44100
         separator.separate_audio_file.return_value = (
             None,
-            {"other": torch.zeros((2, 128)), "bass": torch.zeros(128)},
+            {"other": torch.zeros((2, 128)), "bass": torch.zeros((2, 128))},
         )
         result = self.splitter._separate_with_api("input.wav", "input")
-        assert (sf.info(result["guitar"]).channels, sf.info(result["bass"]).channels) == (2, 1)
+        assert all(sf.info(p).channels == 2 for p in result.values())
+        assert all(
+            os.path.basename(os.path.dirname(p)).startswith("demucs-api-") for p in result.values()
+        )
         assert all(sf.info(p).frames == 128 for p in result.values())
         assert "segment" not in api.Separator.call_args.kwargs
 
