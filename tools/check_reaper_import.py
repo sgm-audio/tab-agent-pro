@@ -10,8 +10,10 @@ Two defects motivated this guard:
     top of the audio being transcribed. Mode 1 creates a dedicated track.
   * ``Undo_BeginBlock()`` was called in the script body and ``Undo_EndBlock()``
     inside a ``reaper.defer`` callback, i.e. in a later script invocation. Undo
-    blocks must open and close in the same invocation, and ``extraflags = -1``
-    creates no undo point at all, so ``Ctrl+Z`` could not remove an import.
+    blocks must open and close in the same invocation, so the two halves were
+    never paired and ``Ctrl+Z`` could not reliably remove an import. The flag
+    must stay -1: it means "everything changed" and is what the REAPER docs
+    recommend for scripts that modify project state directly.
 
 check_reaper_settings.py stubs ``reaper.defer`` to a no-op, which is why the
 import path was never exercised. This checker runs it.
@@ -190,9 +192,13 @@ def check_import() -> None:
         and all(e.split(":")[1] == "deferred" for e in undo if e.startswith("end:")),
         str(undo),
     )
+    # -1 means "everything changed" and is the value the REAPER docs recommend
+    # when a script modifies project state directly. A narrower bitmask can
+    # make REAPER decide nothing changed and create no undo point at all, so
+    # -1 is the correct choice here, not a bug.
     expect(
-        "no undo point is requested with extraflags -1",
-        not any(e.endswith(":-1") for e in undo),
+        "the undo block covers all project state (-1)",
+        all(e.endswith(":-1") for e in undo if e.startswith("end:")),
         str(undo),
     )
     expect(

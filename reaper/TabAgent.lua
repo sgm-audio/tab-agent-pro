@@ -302,16 +302,22 @@ local function poll_pipeline()
   end
   -- Open and close the undo block around the only part that modifies the
   -- project, in this same invocation, so one Ctrl+Z removes every imported
-  -- track. Passing -1 as extraflags would create no undo point at all, so the
-  -- default flags (0) are used.
+  -- track. extraflags stays -1 ("everything changed"): InsertMedia modifies
+  -- project state directly, and a narrower bitmask risks REAPER deciding
+  -- nothing worth undoing happened and creating no undo point at all.
   local imported = 0
   if settings.export_midi then
     reaper.Undo_BeginBlock()
     reaper.PreventUIRefresh(1)
-    imported = import_midi(basename, output_dir)
+    local ok, count = pcall(import_midi, basename, output_dir)
     reaper.PreventUIRefresh(-1)
-    reaper.Undo_EndBlock("Tab Agent — Import MIDI for " .. basename, 0)
+    reaper.Undo_EndBlock("Tab Agent — Import MIDI for " .. basename, -1)
     reaper.UpdateArrange()
+    if ok then
+      imported = count
+    else
+      reaper.ShowConsoleMsg("Tab Agent: MIDI import failed: " .. tostring(count) .. "\n")
+    end
   end
 
   if not settings.export_midi then
