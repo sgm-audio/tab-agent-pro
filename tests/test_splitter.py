@@ -140,7 +140,7 @@ class TestSplitterAgent(unittest.TestCase):
 
         with (
             patch.object(_a, "demucs_api", mock_api, create=True),
-            patch("agents.torch.cuda.is_available", return_value=True),
+            patch("torch.cuda.is_available", return_value=True),
         ):
             sp._separate_with_api("/tmp/song.wav", "song")
 

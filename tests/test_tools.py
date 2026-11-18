@@ -176,6 +176,22 @@ class TestReaperSettingsGuard:
             token = flag.rstrip("0123456789")
             assert token in lua, f"TabAgent.lua never passes {flag}"
 
+    def test_tab_agent_lua_import_is_undoable(self) -> None:
+        """End-to-end run of the deferred import phase (P0: undo + InsertMedia).
+
+        check_reaper_settings.py stubs reaper.defer to a no-op, so it never
+        reaches the import. This one runs it and asserts the imported MIDI goes
+        to dedicated tracks inside a single-invocation undo block.
+        """
+        pytest.importorskip("lupa")
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "check_reaper_import.py")],
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
     def test_settings_lua_exposes_thresholds_and_output_dir(self) -> None:
         lua = (ROOT / "reaper" / "Settings.lua").read_text()
         for key in ("onset", "frame", "output_dir"):

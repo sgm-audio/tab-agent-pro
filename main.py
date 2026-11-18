@@ -90,6 +90,12 @@ def load_user_memory():
 # (without it, frets 12 and 15 in neighbouring columns render as "1215").
 COLUMN_SEPARATOR = " "
 
+# Two tab positions are in the same column (chord) when their onsets are within
+# this many seconds. One Basic Pitch frame hop (256 samples at 22050 Hz is
+# ~11.6 ms), so genuinely simultaneous notes stay together and two events a
+# frame apart do not. Must match TabAgent.GROUP_TOLERANCE_S; a test asserts it.
+TAB_COLUMN_TOLERANCE_S = 0.012
+
 
 def _format_position(pos) -> str:
     """Format a single tab position (fret + optional technique suffix)."""
@@ -105,7 +111,15 @@ def _format_position(pos) -> str:
 
 
 def _string_labels(num_strings: int) -> list[str]:
-    """String labels ordered high→low (string index 0 is the lowest string)."""
+    """
+    Fallback string names when no tuning is supplied, ordered high→low.
+
+    ``string index 0`` is the lowest string, so the returned list is reversed
+    relative to the tab grid. These names are only a guess (they assume
+    standard EADGBE / BEADG); pass ``tuning`` to :func:`render_tab_text` when
+    you know it, which is the only way to label Drop D or any other tuning
+    correctly.
+    """
     if num_strings == 6:
         return ["E", "B", "G", "D", "A", "E"]  # high E, B, G, D, A, low E
     if num_strings == 5:
@@ -115,15 +129,30 @@ def _string_labels(num_strings: int) -> list[str]:
     return [chr(65 + i) for i in range(num_strings - 1, -1, -1)]
 
 
+_PITCH_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+
+def tuning_string_labels(tuning: list[int]) -> list[str]:
+    """
+    String names derived from the actual tuning, ordered high→low.
+
+    ``tuning[0]`` is the lowest string (low E for a guitar, low B for a
+    5-string bass), so a Drop-D guitar tunes to D2-A2-D3-G3-B3-E4 and renders
+    ``D`` on the bottom line rather than ``E``.
+    """
+    return [_PITCH_NAMES[int(open_note) % 12] for open_note in reversed(tuning)]
+
+
 def render_tab_text(
     tab_data,
     instrument="Guitar",
     num_strings: int | None = None,
+    tuning: list[int] | None = None,
 ) -> str | None:
     """Render tablature to a human-readable text string.
 
-    Groups simultaneous notes (within 50ms) into the same column
-    so chords align vertically across strings.
+    Positions are grouped into columns of simultaneous notes and aligned so a
+    chord reads vertically across the strings.
 
     Returns ``None`` when there is nothing to render.
 
@@ -132,31 +161,30 @@ def render_tab_text(
         instrument: label written in the file header
         num_strings: instrument string count; keeps the displayed grid the same
             size as the instrument even when the highest strings are unused
+        tuning: open-string MIDI notes, lowest first. When given, it sets the
+            grid width *and* the string names, so Drop D renders ``D`` not
+            ``E``. Prefer this over ``num_strings``.
     """
     if not tab_data or not isinstance(tab_data, list):
         return None
 
-    max_used = max(pos["string"] for pos in tab_data) + 1
+    if tuning:
+        num_strings = len(tuning)
+    max_used = max(int(pos["string"]) for pos in tab_data) + 1
     num_strings = max(max_used, num_strings or 0)
 
-    # Group positions by start_time (within 50ms tolerance)
-    groups: list[tuple[float, list]] = []
-    for pos in tab_data:
-        t = pos.get("start_time", 0.0)
-        # Find or create group
-        if groups and abs(groups[-1][0] - t) < 0.05:
-            groups[-1][1].append(pos)
-        else:
-            groups.append((t, [pos]))
+    groups = _group_tab_columns(tab_data)
 
     # Build column grid: one column per time group
     cols: list[list[str]] = []
     for _grp_time, grp_positions in groups:
         cells: list[list[str]] = [[] for _ in range(num_strings)]  # one slot per string
         for pos in grp_positions:
-            cells[pos["string"]].append(_format_position(pos))
-        # Fill untouched strings with "-"; join multiple notes on one string
-        cols.append(["/".join(cell) if cell else "-" for cell in cells])
+            cells[int(pos["string"])].append(_format_position(pos))
+        # Fill untouched strings with "-". A string carries at most one note per
+        # column: anything else is a fingering error, so say so in the output
+        # instead of quietly inventing an unplayable "/" chord.
+        cols.append([cell[0] if len(cell) == 1 else ("+".join(cell) or "-") for cell in cells])
 
     # Determine column widths (widest entry in each column)
     col_widths = [max(len(col[s]) for s in range(num_strings)) for col in cols]
@@ -171,7 +199,7 @@ def render_tab_text(
         for s in range(num_strings):
             lines[s] += col[s].ljust(w) + separator
 
-    labels = _string_labels(num_strings)
+    labels = tuning_string_labels(tuning) if tuning else _string_labels(num_strings)
 
     out = [f"=== {instrument} Tablature ===", ""]
     # Display high strings first (reverse order)
@@ -183,14 +211,51 @@ def render_tab_text(
     return "\n".join(out) + "\n"
 
 
+def _group_tab_columns(tab_data) -> list[tuple[float, list]]:
+    """
+    Group tab positions into columns of simultaneous notes.
+
+    A position joins the open column when it starts within
+    ``TAB_COLUMN_TOLERANCE_S`` of the column's *start* (never of the previous
+    position) and its string is still free. Comparing against the column start
+    is what stops a fast run from chaining itself into one chord, and the
+    free-string test keeps two sequential notes on one string in separate
+    columns even when they were quantised to the same instant.
+
+    Positions that carry no ``start_time`` are grouped by their own onset in
+    list order, which is what the JSON export and the tests use.
+    """
+    ordered = sorted(
+        enumerate(tab_data), key=lambda item: (item[1].get("start_time", 0.0), item[0])
+    )
+
+    groups: list[tuple[float, list]] = []
+    for _idx, pos in ordered:
+        t = float(pos.get("start_time", 0.0))
+        string = int(pos["string"])
+        if groups:
+            start, members = groups[-1]
+            occupied = {int(m["string"]) for m in members}
+            if t - start < TAB_COLUMN_TOLERANCE_S and string not in occupied:
+                members.append(pos)
+                continue
+        groups.append((t, [pos]))
+    return groups
+
+
 def export_tab_to_txt(
     tab_data,
     output_path,
     instrument="Guitar",
     num_strings: int | None = None,
+    tuning: list[int] | None = None,
 ) -> None:
-    """Export tablature to human-readable text format."""
-    text = render_tab_text(tab_data, instrument, num_strings)
+    """Export tablature to human-readable text format.
+
+    ``tuning`` (open strings, lowest first) drives both the grid width and the
+    string names; ``num_strings`` is kept for callers that only know the count.
+    """
+    text = render_tab_text(tab_data, instrument, num_strings, tuning)
     if text is None:
         return
     with open(output_path, "w") as f:
@@ -202,12 +267,16 @@ def export_tab_to_json(
     output_path,
     instrument="Guitar",
     num_strings: int | None = None,
+    tuning: list[int] | None = None,
 ) -> None:
     """Export tablature to JSON format for programmatic use."""
+    if tuning:
+        num_strings = len(tuning)
     data = {
         "instrument": instrument,
         "timestamp": datetime.now().isoformat(),
         "num_strings": num_strings,
+        "tuning": tuning,
         "tablature": tab_data,
     }
 
@@ -533,14 +602,14 @@ def main(argv: list[str] | None = None) -> None:
                     tab,
                     os.path.join(output_dir, f"{song_name}_{suffix}.tab"),
                     label,
-                    num_strings=len(guitar_tuning),
+                    tuning=guitar_tuning,
                 )
             if not args.no_json and tab:
                 export_tab_to_json(
                     tab,
                     os.path.join(output_dir, f"{song_name}_{suffix}.json"),
                     label,
-                    num_strings=len(guitar_tuning),
+                    tuning=guitar_tuning,
                 )
             if notes and not tab:
                 print(f"⚠️  No playable positions for {label} — skipping its tablature.")
@@ -578,14 +647,14 @@ def main(argv: list[str] | None = None) -> None:
                 bass_tab,
                 os.path.join(output_dir, f"{song_name}_bass.tab"),
                 f"{len(bass_tuning)}-String Bass",
-                num_strings=len(bass_tuning),
+                tuning=bass_tuning,
             )
         if not args.no_json and bass_tab:
             export_tab_to_json(
                 bass_tab,
                 os.path.join(output_dir, f"{song_name}_bass.json"),
                 f"{len(bass_tuning)}-String Bass",
-                num_strings=len(bass_tuning),
+                tuning=bass_tuning,
             )
         if bass_notes and not bass_tab:
             print("⚠️  No playable positions for Bass — skipping its tablature.")

@@ -16,6 +16,7 @@ Deployment notes:
 
 import atexit
 import contextlib
+import json
 import os
 import shutil
 import signal
@@ -24,15 +25,13 @@ import tempfile
 import time
 import uuid
 import zipfile
-import json
 from datetime import datetime
 from pathlib import Path
 
 import gradio as gr
 
-from monitoring import get_logger, health
-
 from device import DEVICE_BACKENDS, DeviceConfig, resolve_device
+from monitoring import get_logger, health
 
 
 def _load_dotenv(path: str = ".env") -> None:
@@ -115,7 +114,7 @@ def process_audio(
         progress: Gradio progress callback
 
     Returns:
-        Tuple of (status_message, output_files_zip)
+        Tuple of (status_message, output_files_zip, inline_tab_html)
 
     """
     return _process_audio_impl(
@@ -231,7 +230,6 @@ def _active_device_config() -> DeviceConfig:
     return resolve_device(pref)
 
 
-
 def _process_audio_impl(
     audio_file,
     instrument_type="Guitar",
@@ -239,8 +237,14 @@ def _process_audio_impl(
     include_tab=True,
     include_json=True,
     progress=gr.Progress(),  # noqa: B008 - Gradio documented pattern
-) -> tuple[str, str | None]:
-    """Internal implementation of audio processing."""
+) -> tuple[str, str | None, str | None]:
+    """
+    Internal implementation of audio processing.
+
+    Returns ``(status_message, zip_path, inline_tab_html)``: three values,
+    matching the three Gradio outputs wired at the click handler. The
+    annotation used to claim two, which silently mismatched the UI contract.
+    """
     cleanup_stale_sessions()
 
     if audio_file is None:
@@ -405,7 +409,7 @@ def _process_audio_impl(
                     tab_data,
                     str(tab_path),
                     instrument=f"{instrument_type} - {stem_name}",
-                    num_strings=len(tuning),
+                    tuning=tuning,
                 )
                 counted_files.add(tab_path)
                 written += 1
@@ -416,7 +420,7 @@ def _process_audio_impl(
                     tab_data,
                     str(json_path),
                     instrument=f"{instrument_type} - {stem_name}",
-                    num_strings=len(tuning),
+                    tuning=tuning,
                 )
                 counted_files.add(json_path)
                 written += 1
@@ -443,7 +447,7 @@ def _process_audio_impl(
             tab_text = render_tab_text(
                 lead_tab_data,
                 instrument=f"{instrument_type} - Lead",
-                num_strings=len(tuning),
+                tuning=tuning,
             )
             if tab_text:
                 escaped = tab_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -605,15 +609,13 @@ def create_ui():
 
                 # Backend chip: shows what compute backend is actually active.
                 _chip_cfg = _active_device_config()
-                gr.HTML(
-                    f"""
+                gr.HTML(f"""
                     <div class="tab-agent-chip">
                         <span class="chip-label">Active backend:</span>
                         <span class="chip-value">{_chip_cfg.label}</span>
                         <span class="chip-detail">{_chip_cfg.torch_device}</span>
                     </div>
-                    """
-                )
+                    """)
 
                 with gr.Group():
                     gr.Markdown("**Export formats**")

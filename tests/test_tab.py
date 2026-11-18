@@ -132,27 +132,37 @@ class TestTabAgentGenerateTab(unittest.TestCase):
             assert entry["technique"] in ["pick", "slide", "hammer", "pull"]
 
     def test_technique_detection_slide(self) -> None:
-        """Adjacent notes on same string 1-2 frets apart → slide."""
-        # E2 (open string 0) → F#2 (fret 2 on string 0)
+        """Same string, 3+ frets apart, within the window → slide."""
+        # E2 (open string 0) → G2 (fret 3 on string 0)
         notes = [
             make_note(40, 0.0),  # E2
-            make_note(42, 0.15),  # F#2 — fast, same string, 2 frets apart
+            make_note(43, 0.15),  # G2 — fast, same string, 3 frets apart
         ]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
-        # The DP may choose the same string for efficiency
         techniques = [r["technique"] for r in result]
         assert "slide" in techniques
 
     def test_technique_detection_hammer_on(self) -> None:
-        """Ascending notes on same string → hammer-on."""
-        # E2 (open string 0) → G#2 (fret 4 on string 0)
+        """Ascending notes on same string → hammer-on, not slide."""
+        # E2 (open string 0) → F2 (fret 1 on string 0). A 1-fret legato move is
+        # a hammer-on; calling it a slide was one of the reported defects.
         notes = [
             make_note(40, 0.0),  # E2
-            make_note(44, 0.15),  # G#2 — fast, same string, ascending
+            make_note(41, 0.15),  # F2 — fast, same string, ascending, ringing
         ]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
         techniques = [r["technique"] for r in result]
         assert "hammer" in techniques
+        assert "slide" not in techniques
+
+    def test_technique_detection_requires_ringing_source(self) -> None:
+        """Two separately picked notes on one string are not a hammer-on."""
+        notes = [
+            make_note(40, 0.0, end=0.05),  # released long before the next attack
+            make_note(41, 0.15, end=0.6),
+        ]
+        result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
+        assert [r["technique"] for r in result] == ["pick", "pick"]
 
     def test_technique_detection_pull_off(self) -> None:
         """Descending notes on same string → pull-off."""

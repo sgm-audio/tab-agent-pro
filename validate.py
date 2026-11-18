@@ -483,9 +483,12 @@ def main(argv: list[str] | None = None) -> int:
                 f"{f} has balanced curly braces",
                 content.count("{") == content.count("}"),
             )
-            # Pipeline script needs os.execute; settings script doesn't
+            # The pipeline streams via io.popen + reaper.defer so the UI stays
+            # responsive; os.execute would block REAPER for the whole run.
             if f == "reaper/TabAgent.lua":
-                check(f"{f} uses os.execute for pipeline", "os.execute(" in content)
+                check(f"{f} streams via io.popen", "io.popen(" in content)
+                check(f"{f} does not block on os.execute", "os.execute(" not in content)
+                check(f"{f} imports MIDI on its own tracks", "InsertMedia(path, 1)" in content)
         else:
             check(f"File exists: {f}", False)
 

@@ -216,11 +216,13 @@ local function import_midi(basename, output_dir)
   for _, mf in ipairs(midi_files) do
     local path = output_dir .. "/" .. mf.file
     if reaper.file_exists(path) then
-      -- InsertMedia creates a new track automatically
-      reaper.InsertMedia(path, 0)
-      -- Name the last created track
+      -- InsertMedia mode 0 adds to the last touched track, which is whatever
+      -- track the user happened to select: the MIDI lands on top of existing
+      -- audio, or on some unrelated track. Mode 1 creates a dedicated track.
+      local before = reaper.GetNumTracks()
+      reaper.InsertMedia(path, 1)
       local track = reaper.GetTrack(0, reaper.GetNumTracks() - 1)
-      if track then
+      if reaper.GetNumTracks() > before and track then
         reaper.GetSetMediaTrackInfo_String(track, "P_NAME", basename .. " - " .. mf.name, true)
       end
       imported = imported + 1
@@ -233,8 +235,11 @@ end
 -- MAIN
 -- ============================================================================
 
-reaper.Undo_BeginBlock()
-
+-- No undo block is opened here. Everything up to the end of this script only
+-- *reads* state; a block opened now would have to be closed by a deferred
+-- callback in a later script invocation, and REAPER undo blocks must open and
+-- close within one invocation. The block is opened in import phase below,
+-- immediately before the tracks are created.
 local install_path = find_install_path()
 if not install_path then
   reaper.MB(
@@ -243,13 +248,11 @@ if not install_path then
     "or clone the repo to ~/tab-agent-pro.",
     "Tab Agent — Not Found", 0
   )
-  reaper.Undo_EndBlock("Tab Agent — Cancel", -1)
   return
 end
 
 local audio_path = get_audio_path()
 if not audio_path then
-  reaper.Undo_EndBlock("Tab Agent — Cancel", -1)
   return
 end
 
@@ -281,7 +284,6 @@ if not pipe:start() then
     "Common: pip install -r requirements.txt, install Demucs.",
     "Tab Agent — Error", 0
   )
-  reaper.Undo_EndBlock("Tab Agent — Failed", -1)
   return
 end
 
@@ -298,9 +300,19 @@ local function poll_pipeline()
   if output_dir == "" then
     output_dir = install_path .. "/output"
   end
-  local imported = settings.export_midi and import_midi(basename, output_dir) or 0
-
-  reaper.Undo_EndBlock("Tab Agent — Transcribe " .. basename, -1)
+  -- Open and close the undo block around the only part that modifies the
+  -- project, in this same invocation, so one Ctrl+Z removes every imported
+  -- track. Passing -1 as extraflags would create no undo point at all, so the
+  -- default flags (0) are used.
+  local imported = 0
+  if settings.export_midi then
+    reaper.Undo_BeginBlock()
+    reaper.PreventUIRefresh(1)
+    imported = import_midi(basename, output_dir)
+    reaper.PreventUIRefresh(-1)
+    reaper.Undo_EndBlock("Tab Agent — Import MIDI for " .. basename, 0)
+    reaper.UpdateArrange()
+  end
 
   if not settings.export_midi then
     reaper.ShowConsoleMsg(string.format("\nDone — exports written to %s (MIDI export disabled).\n", output_dir))

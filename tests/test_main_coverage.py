@@ -223,15 +223,34 @@ class TestExportTabToTxtCoverage(unittest.TestCase):
         assert "1215" not in content
         assert "12 15" in content
 
-    def test_notes_on_same_string_in_one_group_are_all_kept(self) -> None:
-        """Previously the later note overwrote the earlier one in the output."""
+    def test_sequential_notes_on_one_string_get_their_own_columns(self) -> None:
+        """Two notes 10 ms apart on one string are sequential, not a chord.
+
+        They used to be joined into one cell as ``15/8p``, which is a chord that
+        cannot be played: a string sounds one note at a time. They are separate
+        columns now, so both notes survive and neither is misrepresented.
+        """
         tab_data = [
             {"string": 3, "fret": 15, "technique": "pick", "start_time": 0.65},
             {"string": 3, "fret": 8, "technique": "pull", "start_time": 0.66},
         ]
         export_tab_to_txt(tab_data, self._path("same.tab"), "Guitar", num_strings=6)
         content = self._read("same.tab")
-        assert "15/8p" in content
+        assert "/" not in content
+        assert "15" in content
+        assert "8p" in content
+
+    def test_same_onset_on_two_strings_stays_one_column(self) -> None:
+        """A real chord (one onset, different strings) is still one column."""
+        tab_data = [
+            {"string": 0, "fret": 0, "technique": "pick", "start_time": 1.0},
+            {"string": 4, "fret": 0, "technique": "pick", "start_time": 1.0},
+        ]
+        export_tab_to_txt(tab_data, self._path("chord2.tab"), "Guitar", num_strings=6)
+        lines = [ln for ln in self._read("chord2.tab").splitlines() if "|" in ln]
+        # Both notes appear on the same column index in their own string row.
+        assert all(ln.split("|")[1].strip() in {"0", "-"} for ln in lines)
+        assert len([ln for ln in lines if ln.split("|")[1].strip() == "0"]) == 2
 
     def test_num_strings_written_to_json(self) -> None:
         export_tab_to_json(

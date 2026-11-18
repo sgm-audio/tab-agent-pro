@@ -219,7 +219,13 @@ class TestTabAgentCalculateCost(unittest.TestCase):
         self.assertAlmostEqual(cost, base_fret + base_string)
 
     def test_cost_bass_preference_low_string_low_fret(self) -> None:
-        """5-string bass: low strings with low frets get extra penalty."""
+        """5-string bass: low strings with low frets get extra penalty.
+
+        The penalty is applied through the shared ``_low_string_penalty``
+        helper. ``calculate_cost`` applies it to ``curr``, and
+        ``_position_cost`` (the absolute cost used when fingering a column) sees
+        it separately — no path applies it twice.
+        """
         prev = {"string": 1, "fret": 3}
         curr = {"string": 0, "fret": 2}  # low string, low fret (0-4 range)
         cost = self.agent_5.calculate_cost(prev, curr, time_delta=0.5)
@@ -227,6 +233,12 @@ class TestTabAgentCalculateCost(unittest.TestCase):
         base_fret = abs(2 - 3) * 1.5
         base_string = abs(0 - 1) * 2.0
         self.assertAlmostEqual(cost, base_fret + base_string + 1.0)
+        # And the absolute-position cost carries the same penalty exactly once.
+        self.assertAlmostEqual(self.agent_5._position_cost(curr), curr["fret"] * 0.35 + 1.0)
+        # A 4-string bass must not pay the 5-string-only penalty.
+        self.assertEqual(self.agent_5.num_strings, 5)
+        four = TabAgent(tuning=[28, 33, 38, 43], num_frets=24)
+        self.assertAlmostEqual(four._position_cost(curr), curr["fret"] * 0.35)
 
     def test_cost_bass_no_preference_for_high_fret(self) -> None:
         """5-string bass: low string with high fret (>=5) gets no extra penalty."""
@@ -312,15 +324,29 @@ class TestTabAgentGenerateTabEdgeCases(unittest.TestCase):
         assert self.agent.generate_tab([]) == []
         assert self.agent.last_skipped_notes == []
 
-    def test_technique_slide_adjacent_1_fret(self) -> None:
-        """1-fret difference on same string fast → slide."""
+    def test_technique_adjacent_1_fret_is_legato_not_slide(self) -> None:
+        """1-fret difference on same string fast → hammer, not slide.
+
+        A 1-fret move is not a slide: it is the classic minimum hammer-on /
+        pull-off, and calling it a slide was one of the reported defects.
+        """
         notes = [
             make_note(40, 0.0),  # E2 string 0 fret 0
-            make_note(41, 0.12),  # F2
+            make_note(41, 0.12),  # F2, still ringing
         ]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
-        if len(result) > 1:
-            assert result[1]["technique"] == "slide"
+        assert len(result) > 1
+        assert result[1]["technique"] == "hammer"
+
+    def test_technique_multi_fret_slide(self) -> None:
+        """3+ frets on the same string within the window → slide."""
+        notes = [
+            make_note(40, 0.0),  # E2 string 0 fret 0
+            make_note(43, 0.12),  # G2, fret 3, still ringing → slide
+        ]
+        result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
+        assert len(result) > 1
+        assert result[1]["technique"] == "slide"
 
     def test_technique_hammer_ascending(self) -> None:
         """Ascending same-string fast → hammer."""
@@ -353,14 +379,14 @@ class TestTabAgentGenerateTabEdgeCases(unittest.TestCase):
             assert result[1]["technique"] == "pick"
 
     def test_technique_window_includes_close_notes(self) -> None:
-        """Close notes within window on same string get 'slide'."""
+        """Close notes within window on same string get a legato marking."""
         notes = [
             make_note(40, 0.0),  # E2 — only on string 0
-            make_note(42, 0.15),  # F#2 — only on string 0, fret diff=2
+            make_note(43, 0.15),  # G2 — only on string 0, fret diff=3 → slide
         ]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
-        if len(result) > 1:
-            assert result[1]["technique"] == "slide"
+        assert len(result) > 1
+        assert result[1]["technique"] == "slide"
 
     def test_technique_window_excludes_distant_notes(self) -> None:
         """Distant notes outside window get 'pick'."""
@@ -849,7 +875,7 @@ class TestSplitterSeparateWithApi(unittest.TestCase):
         )
         api.Separator.return_value = mock_separator
 
-        with patch("agents.torch.cuda.is_available", return_value=False):
+        with patch("torch.cuda.is_available", return_value=False):
             dummy = os.path.join(self.tmpdir, "input.wav")
             with open(dummy, "w") as f:
                 f.write("FAKE")
@@ -873,7 +899,7 @@ class TestSplitterSeparateWithApi(unittest.TestCase):
         )
         api.Separator.return_value = mock_separator
 
-        with patch("agents.torch.cuda.is_available", return_value=True):
+        with patch("torch.cuda.is_available", return_value=True):
             # Re-resolve the splitter so it picks up the mocked CUDA backend.
             self.splitter = SplitterAgent(output_dir=self.tmpdir)
             dummy = os.path.join(self.tmpdir, "i.wav")
@@ -899,7 +925,7 @@ class TestSplitterSeparateWithApi(unittest.TestCase):
         )
         api.Separator.return_value = mock_separator
 
-        with patch("agents.torch.cuda.is_available", return_value=False):
+        with patch("torch.cuda.is_available", return_value=False):
             dummy = os.path.join(self.tmpdir, "x.wav")
             with open(dummy, "w") as f:
                 f.write("FAKE")
@@ -932,21 +958,21 @@ class TestEarAllModelsFailed(unittest.TestCase):
 class TestEarAgentDeviceSelection(unittest.TestCase):
     """Test EarAgent device auto-detection."""
 
-    @patch("agents.torch.cuda.is_available", return_value=True)
+    @patch("torch.cuda.is_available", return_value=True)
     def test_device_auto_selects_cuda(self, mock_cuda) -> None:
         """Auto device selects cuda when available."""
         ear = EarAgent(device="auto")
         assert ear.device == "cuda"
 
-    @patch("agents.torch.cuda.is_available", return_value=False)
-    @patch("agents.torch.backends.mps.is_available", return_value=True)
+    @patch("torch.cuda.is_available", return_value=False)
+    @patch("torch.backends.mps.is_available", return_value=True)
     def test_device_auto_selects_mps(self, mock_mps, mock_cuda) -> None:
         """Auto device selects mps when cuda unavailable."""
         ear = EarAgent(device="auto")
         assert ear.device == "mps"
 
-    @patch("agents.torch.cuda.is_available", return_value=False)
-    @patch("agents.torch.backends.mps.is_available", return_value=False)
+    @patch("torch.cuda.is_available", return_value=False)
+    @patch("torch.backends.mps.is_available", return_value=False)
     def test_device_auto_selects_cpu(self, mock_mps, mock_cuda) -> None:
         """Auto device falls back to cpu."""
         ear = EarAgent(device="auto")
@@ -959,7 +985,7 @@ class TestEarAgentDeviceSelection(unittest.TestCase):
 
     def test_device_explicit_cuda(self) -> None:
         """Explicit cuda string is used directly when CUDA is available."""
-        with patch("agents.torch.cuda.is_available", return_value=True):
+        with patch("torch.cuda.is_available", return_value=True):
             ear = EarAgent(device="cuda")
             assert ear.device == "cuda"
 

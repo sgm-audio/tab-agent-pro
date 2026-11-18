@@ -116,8 +116,8 @@ graph LR
 | **Stem Separation** | Demucs (htdemucs) | Splits the mix into vocals / drums / bass / other; `bass` is transcribed as bass and `other` as guitar |
 | **Spatial Processing** | Mid-Side | Splits lead (centre) from rhythm (sides) by subtraction |
 | **Transcription** | Basic Pitch | Converts audio → MIDI notes |
-| **Tablature** | DP Viterbi | Assigns notes to strings/frets optimally; unplayable notes are skipped |
-| **Technique Detection** | Heuristic | Slides, hammer-ons, pull-offs |
+| **Tablature** | Viterbi over fingered columns | Each onset group is fingered as a chord (distinct strings, <=5-fret span) and the sequence is solved jointly; unplayable notes are skipped, logged and re-validated |
+| **Technique Detection** | Heuristic | Hammer-ons and pull-offs for 1-2 fret legato, slides for 3+ frets, only while the previous note still rings |
 | **Export** | — | MIDI, ASCII tab, JSON |
 
 ---
@@ -192,18 +192,27 @@ nine generated files omitted):
 ```
 === Lead Guitar Tablature ===
 
-E|-  -  -      -  -  -      -  22 -
-B|-  -  15/19h 22 24 -      20 -  -
-G|-  -  -      -  -  -      -  -  -
-D|-  -  -      -  21 24/17p 21 -  -
-A|-  -  -      -  -  -      -  -  19
-E|12 15 19     22 24 -      -  -  -
+E|- -  10 14s -  17 -  19 10 15 22s -  
+B|- -  -  -   -  -  -  -  -  -  -   -  
+G|- -  -  -   -  -  16 -  12 16 -   -  
+D|- -  -  -   12 -  -  -  -  -  -   14 
+A|7 10 -  14  -  -  -  19 -  -  -   -  
+E|- -  -  -   -  -  -  -  -  -  -   -  
 
 Legend: s=slide, h=hammer-on, p=pull-off
 ```
 
-Each column is one onset group (notes within 50 ms); a note is never merged
-into its neighbour, and a string that is unused in a column shows `-`.
+Each column is one onset group: notes whose attacks are within one Basic Pitch
+frame hop (~12 ms) of the column start, and only if they can actually be
+fingered as a chord — distinct strings, within a five-fret hand span. Anything
+that cannot be fingered becomes further columns rather than being printed on top
+of itself, so a string never shows two notes in the same column and a fast run
+never collapses into a chord. Skipped notes are logged with the reason instead
+of being silently dropped, and every generated tab is re-validated against the
+tuning before it is written.
+
+String names come from the tuning, not the string count, so a Drop D tab prints
+`D` on its lowest line and a 5-string bass prints `B E A D G`.
 
 ---
 
