@@ -67,6 +67,26 @@ def test_basic_pitch_cpu_recovers_plucked_chord_and_later_note(tmp_path, cpu_mod
 
 
 @pytest.mark.basic_pitch_model
+def test_real_basic_pitch_cpu_transcribes_known_tone(tmp_path, cpu_model):
+    sr = SAMPLE_RATE
+    t = np.arange(sr * 2) / sr
+    # Sustained harmonic A4 with attack/release, unlike the plucked fixture above.
+    envelope = np.minimum(
+        1, np.minimum(np.maximum(0, (t - 0.2) / 0.05), np.maximum(0, (1.7 - t) / 0.1))
+    )
+    signal = envelope * (0.35 * np.sin(2 * np.pi * 440 * t) + 0.12 * np.sin(2 * np.pi * 880 * t))
+    path = tmp_path / "a4.wav"
+    sf.write(path, signal, sr)
+
+    notes = EarAgent(device="cpu").transcribe_stem(str(path))
+    sessions, model = cpu_model
+    assert sessions == [(model, ["CPUExecutionProvider"])]
+    assert any(n.pitch == 69 and 0 <= n.start_time < n.end_time <= 2 for n in notes), [
+        (n.pitch, n.start_time, n.end_time) for n in notes
+    ]
+
+
+@pytest.mark.basic_pitch_model
 @pytest.mark.parametrize("audio_case", ["silence", "percussion"])
 def test_basic_pitch_cpu_unpitched_audio_is_empty_not_backend_failure(
     tmp_path, cpu_model, audio_case

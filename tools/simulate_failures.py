@@ -180,8 +180,33 @@ def simulate_unwritable_output() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 5. Basic Pitch runtime unavailable despite a successful import
+# 5. Basic Pitch failures despite a successful import
 # ---------------------------------------------------------------------------
+
+
+def simulate_malformed_basic_pitch_output() -> None:
+    """Invalid model output must fail rather than masquerade as an empty transcription."""
+    import agents
+
+    with (
+        patch.object(agents, "BASIC_PITCH_AVAILABLE", True),
+        patch.object(agents, "basic_pitch_predict", return_value=(None, None, None)),
+        patch.object(agents, "health") as health,
+    ):
+        ear = agents.EarAgent(device="cpu")
+        try:
+            ear.transcribe_stem(str(ROOT / "examples" / "guitar_solo.wav"))
+        except RuntimeError as e:
+            check(
+                isinstance(e.__cause__, AttributeError),
+                "malformed Basic Pitch output raises with original cause",
+            )
+        else:
+            check(False, "malformed Basic Pitch output raises", "no exception raised")
+        check(
+            health.set_component.call_args.args == ("basic_pitch", "error: AttributeError"),
+            "malformed Basic Pitch output marks backend error",
+        )
 
 
 def simulate_basic_pitch_runtime_dependency_missing() -> None:
@@ -221,6 +246,7 @@ def main() -> int:
         simulate_transcription_backend_down,
         simulate_demucs_offline,
         simulate_unwritable_output,
+        simulate_malformed_basic_pitch_output,
         simulate_basic_pitch_runtime_dependency_missing,
     ]
     # Importing app registers a shutdown cleanup. Ensure that the simulations

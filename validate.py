@@ -483,6 +483,10 @@ def main(argv: list[str] | None = None) -> int:
                 f"{f} has balanced curly braces",
                 content.count("{") == content.count("}"),
             )
+            # The pipeline streams output and schedules polling via REAPER.
+            if f == "reaper/TabAgent.lua":
+                check(f"{f} streams pipeline output", "io.popen(" in content)
+                check(f"{f} schedules pipeline polling", "reaper.defer(" in content)
         else:
             check(f"File exists: {f}", False)
 

@@ -75,8 +75,9 @@ def test_fret_boundaries_keep_playable_notes_after_a_rejected_event(tuning, fret
         [(41, 0, 0.40), (42, 0, 0.40)],  # simultaneity, not a slide
         [(41, 0, 0.15), (39, 0.1, 0.30), (42, 0.16, 0.40)],  # rejected intermediary
         [(41, 0, 0.07), (41, 0.08, 0.40)],  # same pitch reattack
+        [(40, 0, 0.05), (42, 0.12, 0.22)],  # 70 ms rest after an open-string attack
     ],
-    ids=["rest", "simultaneous", "skipped-intermediary", "repeated-pick"],
+    ids=["rest", "simultaneous", "skipped-intermediary", "repeated-pick", "open-string-rest"],
 )
 def test_no_legato_annotation_without_a_plausible_transition(events):
     agent = TabAgent(STANDARD)
@@ -92,12 +93,13 @@ class StringOccupancyError(AssertionError):
 @pytest.mark.xfail(
     strict=True, raises=StringOccupancyError, reason="sequential DP ignores chord occupancy"
 )
-def test_playable_chord_keeps_all_pitches_on_distinct_strings():
-    # All three notes have an easy simultaneous assignment: the open E, A, D strings.
-    pitches = [40, 45, 50]
+@pytest.mark.parametrize("pitches", [[40, 45, 50], [45, 50, 55]], ids=["E-A-D", "A-D-G"])
+def test_playable_chord_keeps_all_pitches_on_distinct_strings(pitches):
+    # The pitches can be played simultaneously on three open strings.
     tab = TabAgent(STANDARD).generate_tab([make_note(p, 0, 0.5) for p in pitches])
     assert sorted(tab_pitches(tab, STANDARD, 24)) == pitches
-    if len({p["string"] for p in tab}) != 3:
+    assert all(p["technique"] == "pick" for p in tab)
+    if len({p["string"] for p in tab}) != len(pitches):
         raise StringOccupancyError(tab)
 
 

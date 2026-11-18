@@ -229,7 +229,7 @@ Rules that are not negotiable:
 ## 8. Release checklist
 
 - [ ] All gates green: `ruff`, `black --check`, `mypy`, `pytest` (including real CPU ONNX and Lua tests),
-      `simulate_failures.py` (15/15), `check_index.py`, `check_env_example.py`,
+      `simulate_failures.py` (all checks), `check_index.py`, `check_env_example.py`,
       `check_docker_install.py`, `check_lockfile.py` (+ `--static`),
       `check_vulns.py`, `validate.py`. Report model skips and expected failures
       separately; see the [test audit](TEST_AUDIT.md) for release checks.

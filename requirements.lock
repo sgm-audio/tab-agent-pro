@@ -6,9 +6,9 @@
 # is deliberately installed in two steps (see Dockerfile / CI) because
 # basic-pitch declares `tensorflow` on Linux even though the code uses the ONNX
 # backend — installing it for real would add ~1 GB and pull in a tree of
-# packages (tensorflow -> keras -> pillow -> protobuf) that this project never
-# imports. Resolvers therefore report CVEs in packages that are NOT in the
-# image; see SECURITY.md for that accepted-risk reasoning.
+# packages (such as tensorflow and keras) that are not needed by the ONNX
+# backend. Some dependencies such as pillow and protobuf also arrive through
+# other packages and are shipped; this lock includes them for security audits.
 #
 # This file is the lock for what we actually install and ship. It is checked in
 # by tools/check_lockfile.py, which regenerates the list from a clean
@@ -51,7 +51,7 @@ fastapi==0.162.0
 filelock==4.2.9
 flatbuffers==25.12.19
 fsspec==2026.9.0
-gradio==6.31.0
+gradio==6.32.0
 gradio-client==2.7.2
 groovy==0.1.2
 h11==0.16.0
@@ -93,7 +93,7 @@ packaging==26.3
 pandas==3.1.1
 parso==0.8.7
 pexpect==4.9.0
-pillow==12.3.0
+pillow==13.0.0
 platformdirs==4.14.5
 pooch==1.9.0
 pretty-midi==0.2.10
@@ -133,7 +133,7 @@ tomli==2.5.0
 tomlkit==0.14.0
 torch==2.5.1
 torchaudio==2.5.1
-tornado==6.6
+tornado==6.6.1
 tqdm==4.70.1
 traitlets==5.16.1
 truststore==0.10.5

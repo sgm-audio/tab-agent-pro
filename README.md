@@ -100,8 +100,9 @@ python tools/simulate_failures.py     # failure modes still behave (15 checks)
 Install `pytest`, `pytest-cov` and `lupa` for the test suite. The default run
 uses the ONNX weights shipped in the Basic Pitch wheel and needs no GPU or model
 downloads. Real Demucs inference is opt-in with pre-provisioned weights. See the
-[test audit](docs/TEST_AUDIT.md) for lane commands, known tab playability gaps,
-and the checks to run before releasing the REAPER scripts.
+[combined test audit](docs/TEST_AUDIT.md) for lane commands, known tab playability
+gaps, and checks to run before releasing the REAPER scripts. The separate
+[baseline audit](docs/TRANSCRIPTION_TEST_AUDIT.md) records the independent PR #11 findings.
 
 ---
 

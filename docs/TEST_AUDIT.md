@@ -11,9 +11,9 @@ wheels; this was not a Docker/REAPER-host validation. The two bundled WAVs are e
 |---|---|
 | Pytest, clean temp root, `DEVICE` unset | **275 collected: 270 passed, 5 failed.** Failures were the stale `.env.example` key, Docker CPU-index guard, and `validate.py` expecting `os.execute` after the switch to `io.popen`. With ambient `DEVICE=cpu`, the mock CUDA test also failed. |
 | Coverage | With `--cov=. --cov-branch`: **93.3% statements, 75.2% branches** (91% combined, counting tests and some tools). The same run on the seven application modules alone: **89.0% statements, 76.4% branches**. This is not model, Lua, or musical correctness coverage. |
-| `simulate_failures.py` | **11/14 reached**, exit 1. Two simulations bypassed the constructor and used unset fields; an obsolete MT3 test failed before reaching both assertions. The repaired harness runs all 15 checks. |
+| `simulate_failures.py` | **11/14 passed**, exit 1. Two simulations bypassed the constructor and used unset fields; an obsolete MT3 test failed before reaching both assertions. The combined harness now runs 17 checks. |
 | Guards | Static lock check passed; installed closure was missing the `huggingface-hub` pin required by the locked Demucs 4.1.0. ReaPack's pin resolves when the shallow checkout fetches the pinned object. The old Lua guard passed despite never executing the deferred callback and giving `GetMediaSourceFileName` an extra return value. |
-| Dependency audit | The local `check_vulns.py` run still reports unaccepted advisories for the existing Pillow 12.3.0 and Tornado 6.6 pins. No exceptions were added, and this is not a clean dependency-audit or CI sign-off. |
+| Dependency audit | The original lock had three unaccepted Pillow 12.3.0 advisories and one for Tornado 6.6. PR #12's first CI run stopped at the vulnerability scan after verifying the lock; it did not reach pytest. The combined-lock results are below. |
 
 ### Where the old tests gave false confidence
 
@@ -50,33 +50,40 @@ wheels; this was not a Docker/REAPER-host validation. The two bundled WAVs are e
 
 ## Regression tests now in the tree
 
-Local verification: **302 passed, 1 skipped, 3 strict xfailed**; **88.7% statements,
-78.3% branches** on application code. The standalone REAPER guard passed 14 tests,
-the failure harness passed 15/15 checks, and `validate.py --quick` passed 100 checks
-with the Docker build intentionally skipped. In a disposable copy, removing
-accumulated Viterbi cost, routing left rhythm to right audio, and letting REAPER
-import after a failed child each failed the corresponding new regression test.
+After integrating the independent [PR #11 audit](TRANSCRIPTION_TEST_AUDIT.md), local
+verification on Linux/Python 3.11: **318 passed, 1 skipped, 5 strict xfailed**;
+**89.0% statements, 78.5% branches** on application code. The standalone REAPER guard
+passed 16 tests, the failure harness passed 17/17 checks, and `validate.py --quick`
+passed 102 checks with the Docker build intentionally skipped. The combined lock
+pins Gradio 6.32.0, Pillow 13.0.0 and Tornado 6.6.1. Both installed-lock verification
+and the dependency scan passed locally with the existing accepted risks and no new
+exceptions.
+
+In a disposable copy before integration, removing accumulated Viterbi cost, routing
+left rhythm to right audio, and letting REAPER import after a failed child each
+failed its corresponding new regression test.
 
 P0 is playability or project-state safety. The noted expected failures are open bugs,
 not coverage credit; a fix must remove the marker. The strict markers only accept the
-known occupancy failure, not unrelated missing/wrong-note assertions.
+specific occupancy or upper-octave defects, not unrelated missing/wrong-note assertions.
 
 | Priority / test | Must assert | Why the baseline missed it |
 |---|---|---|
 | P0 `test_viterbi_matches_exhaustive_global_cost` | Recover exact pitch and timing and equal a small exhaustive minimum. The fixture's greedy path is strictly worse. | Counting backtracked entries cannot catch greedy or misindexed backpointers. |
 | P0 `test_fret_boundaries_keep_playable_notes_after_a_rejected_event` | Classical 19-fret, Drop D, 4- and 5-string bass hit both inclusive boundaries, skip the pitches one semitone outside, reconstruct tuning exactly, and preserve chronology despite reversed input. | The existing range tests are mostly counts or distant invalid pitches on standard tuning. |
-| P0 `test_playable_chord_keeps_all_pitches_on_distinct_strings` **(strict xfail)** | Simultaneous E2/A2/D3 retain all pitches with three distinct strings. | Renderer fixtures assign strings in advance; the real DP puts all three on low E. |
+| P0 `test_playable_chord_keeps_all_pitches_on_distinct_strings` **(strict xfail)** | Simultaneous E2/A2/D3 and A2/D3/G3 retain all pitches with three distinct strings and no legato annotations. | Renderer fixtures assign strings in advance; the real DP puts all three on low E. |
 | P0 `test_sustained_string_cannot_be_reused_during_a_later_note` **(strict xfail)** | A sustained A2 is on a different string to the later E2 that must use low E; unrelated voices are not annotated as a pull-off. | Start-time-only transition cost ignores still-ringing notes. |
 | P0 `test_impossible_same_string_dyad_reports_the_conflict` **(strict xfail)** | Simultaneous E2/F2 on standard tuning retain one and explicitly report the other as skipped. No invented alternative string or silent loss. | `last_skipped_notes` only reported individually out-of-range notes; both pitches are individually in range. |
+| P0 `test_suno_cleanup_preserves_legitimate_octave_chord` **(strict xfail)** | A genuine E2/E3/B3 chord should keep all three pitches in the Suno path. | Existing octave-cleanup tests assume the upper note is always an artifact. |
 | P0 `test_reaper_settings_dialog_reaches_real_cli_and_controls_outputs` | Execute both scripts, resolve a real persisted Bass-4 profile, exercise explicit/blank thresholds, write only enabled formats under the same directory, and import only MIDI reported by that invocation. Pitch 23 must be filtered on the 4-string profile while open E (28) survives. | String searches did not prove persistence, precedence, range filtering, output routing, or import. |
 | P0 `test_reaper_never_imports_failed_or_stale_midi` / `test_reaper_no_project_mutation_on_selection_or_start_failure` | No insert, rename or undo changes for nonzero exit (including partial output), unreported old MIDI, changed project, missing selection/take/source file or failed launch. No misleading success. | The old stub never drove the deferred EOF or failure paths. |
 | P0 `test_reaper_renames_only_a_successfully_created_track` | New-track insertion mode, name the new track even when it is not last, count no failed import, and close the undo block. | No previous assertion checked the track identity, return status or undo lifecycle. |
-| P0 `test_reaper_posix_literal_paths_reach_the_child_unchanged` / `test_reaper_windows_uses_drive_switch_and_rejects_expansion` / `test_reaper_invalid_threshold_is_not_persisted_or_silently_dropped` | Spaces, quotes, Unicode and a literal dollar-containing path reach POSIX argv intact; Windows changes drives and rejects ambiguous shell characters before launch; invalid thresholds do not silently become defaults. | The old test only matched ordinary substrings in a command and treated a no-op callback as success. The Windows case tests command construction, not native `cmd.exe`. |
+| P0 `test_reaper_posix_literal_paths_reach_the_child_unchanged` / `test_reaper_windows_uses_drive_switch_and_rejects_expansion` / `test_reaper_invalid_threshold_is_not_persisted_or_silently_dropped` | Spaces, quotes, Unicode and literal dollar-containing audio/install/output paths reach POSIX argv intact; Windows changes drives and rejects ambiguous shell characters before launch; invalid thresholds do not silently become defaults. | The old test only matched ordinary substrings in a command and treated a no-op callback as success. The Windows case tests command construction, not native `cmd.exe`. |
 | P1 `test_no_legato_annotation_without_a_plausible_transition` | Exact `pick` annotations for a rest, simultaneous pair, skipped intermediary, and repeated attack; notes still survive where playable. | Simple positive runs and permissive labels missed those cases. The implementation now uses note ends (20 ms jitter tolerance) and sequence adjacency. |
 | P1 `test_cli_all_writes_distinct_lead_rhythm_bass_note_content` | In `--instrument All`, check actual L/R/center PCM and bass filtering, exact role-specific MIDI events, JSON pitches/times, ASCII columns/Drop-D labels and the four MIDI report records. A wide playable dyad must survive on two strings in the same column. | Existing integration tests checked paths and often substituted all the agents with the same note. The new test fakes **only** separation/inference boundaries, not DSP, parser, tuning, or exporters. |
 | P1 `test_incomplete_demucs_outputs_fall_back_to_readable_mix` | Missing API stem and zero-exit CLI with missing, corrupt or empty file cannot reuse old stems or report success. Copies match the real stereo input, run through DSP, and record each failure and degradation. | Happy mocked paths and arbitrary-byte copy fixtures could never catch readable-output failures. |
-| P1 `test_basic_pitch_cpu_recovers_plucked_chord_and_later_note` / `test_basic_pitch_cpu_unpitched_audio_is_empty_not_backend_failure` | Run the shipped ONNX graph on CPU: match each chord member and a later note within 90 ms, permit at most three extra events, and return no notes or backend error for silence and seeded clipped percussion. | Imports, hand-made MIDI and sine/DSP-only tests did not execute or score inference. |
-| P1 `test_basic_pitch_bad_weights_fail_as_runtime_error` / `simulate_basic_pitch_runtime_dependency_missing` | Missing/corrupt weights go through the real loader, report a runtime failure with the cause and count the failed stage; injected missing dependency names the module and degrades health. | A generic `RuntimeError` test accepts the wrong diagnosis or cannot distinguish empty output. |
+| P1 `test_basic_pitch_cpu_recovers_plucked_chord_and_later_note` / `test_basic_pitch_cpu_unpitched_audio_is_empty_not_backend_failure` | Run the shipped ONNX graph on CPU: match each chord member and a later note within 90 ms, permit at most three extra events, and return no notes or backend error for silence and seeded clipped percussion. The additional sustained-tone test requires MIDI pitch 69 from the same CPU provider. | Imports, hand-made MIDI and sine/DSP-only tests did not execute or score inference. |
+| P1 `test_basic_pitch_bad_weights_fail_as_runtime_error` / `simulate_basic_pitch_runtime_dependency_missing` | Missing/corrupt weights go through the real loader, report a runtime failure with the cause and count the failed stage; malformed output preserves its original error, and an injected missing dependency names the module and degrades health. | A generic `RuntimeError` test accepts the wrong diagnosis or cannot distinguish empty output. |
 | P1 `test_cli_with_missing_gpu_and_demucs_runs_real_cpu_inference` | Inject GPU and separator unavailability, not `predict`; decode and transcribe the mix path with actual CPU ONNX and reconstruct the bass events from real MIDI and tab. | Isolated fallback mocks never proved the degraded audio still reached real inference and exports. |
 | P2 `test_demucs_cached_cpu_separates_reference_mix` (provisioned lane) | Load trusted cached `htdemucs` weights and use the real API. No download or fallback. Bass/other must be finite, nonempty, distinct from each other and distinct from the input, at expected shape/rate. | Output-existence checks or a passing passthrough can stand in for true separation. This is an execution smoke, not a source-separation quality benchmark. |
 

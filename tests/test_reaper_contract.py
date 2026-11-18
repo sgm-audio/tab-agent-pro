@@ -213,6 +213,27 @@ def test_reaper_settings_dialog_reaches_real_cli_and_controls_outputs(
     assert host.events("dialogs") == settings_dialogs
 
 
+def test_settings_gui_to_lua_command_to_cli_parser(tmp_path):
+    install = tmp_path / "install path"
+    audio = tmp_path / "song name.wav"
+    out = tmp_path / "out dir"
+    host = ReaperHarness(install, audio)
+    host.globals.DIALOG_INPUT = f"2,{install},Bass,0.62,0.31,{out},0,1,0"
+    host.run("Settings.lua")
+    host.run()
+    tokens = shlex.split(host.command)
+    parsed = main.parse_args(tokens[tokens.index("main.py") + 1 : -1])
+    assert parsed.audio == str(audio)
+    assert parsed.profile == "rock_drop_d"
+    assert parsed.instrument == "Bass"
+    assert main.resolve_thresholds(parsed, {"onset_threshold": 0.1, "frame_threshold": 0.2}) == (
+        0.62,
+        0.31,
+    )
+    assert parsed.output_dir == str(out)
+    assert parsed.no_midi and not parsed.no_tab and parsed.no_json
+
+
 def test_reaper_posix_literal_paths_reach_the_child_unchanged(tmp_path, monkeypatch):
     if os.name != "posix":
         pytest.skip("requires a real POSIX shell")
@@ -221,7 +242,7 @@ def test_reaper_posix_literal_paths_reach_the_child_unchanged(tmp_path, monkeypa
     install.mkdir()
     main_file = install / "main.py"
     main_file.write_text("import json, os, sys\nprint(json.dumps([os.getcwd(), sys.argv[1:]]))\n")
-    audio = tmp_path / 'take "雪".wav'
+    audio = tmp_path / 'take $TAB_AGENT_LITERAL "雪".wav'
     host = ReaperHarness(install, audio)
     host.globals.EXTSTATE.output_dir = "export's $TAB_AGENT_LITERAL"
     host.run()
@@ -270,23 +291,28 @@ def test_reaper_no_project_mutation_on_selection_or_start_failure(bad_input):
     assert host.events("inserted") == host.events("renamed") == host.events("undo") == []
 
 
-@pytest.mark.parametrize("abort", ["nonzero exit", "project changed", "unreported stale file"])
+@pytest.mark.parametrize(
+    "abort", ["nonzero exit", "nonzero exit with partial output", "project changed", "stale file"]
+)
 def test_reaper_never_imports_failed_or_stale_midi(abort):
     host = ReaperHarness("/repo", "/audio/take.wav")
     host.globals.EXISTS["/repo/output/take_bass.mid"] = True
     host.run()
     assert host.events("undo") == []  # not open during inference
-    if abort == "nonzero exit":
+    if abort.startswith("nonzero exit"):
         host.globals.EXIT_CODE = 2
     elif abort == "project changed":
         host.globals.CURRENT_PROJECT = "proj-b"
     lines = ["[tab-agent] Transcribing"]
-    if abort != "unreported stale file":
+    if abort in ("nonzero exit with partial output", "project changed"):
         lines.append("[tab-agent-midi] bass")  # a partial or wrong-project export exists
     host.finish(*lines)
     assert host.globals.EVENTS.closed is True
     assert host.events("inserted") == host.events("renamed") == host.events("undo") == []
-    assert len(host.events("dialogs")) == 1
+    dialogs = host.events("dialogs")
+    assert len(dialogs) == 1
+    if abort.startswith("nonzero exit"):
+        assert "Error" in dialogs[0]
     assert "Done" not in "".join(host.events("console"))
 
 

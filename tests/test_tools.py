@@ -39,6 +39,21 @@ class TestDockerInstallGuard:
         line = 'RUN pip install --no-deps "basic-pitch>=0.4.0,<0.5" "mir_eval>=0.6" && \\'
         assert guard._unquoted_specifier(line) is None
 
+    def test_torch_index_requires_cpu_default_and_actual_install_use(self) -> None:
+        guard = _load("check_docker_install")
+        cpu = "https://download.pytorch.org/whl/cpu"
+        assert guard._has_cpu_torch_install(
+            f'ARG TORCH_INDEX_URL={cpu}\nRUN pip install torch==2.5.1 --index-url "$TORCH_INDEX_URL"'
+        )
+        assert guard._has_cpu_torch_install(f"RUN pip install torch==2.5.1 --index-url {cpu}")
+        assert not guard._has_cpu_torch_install(
+            f"ARG TORCH_INDEX_URL={cpu}\nRUN pip install torch==2.5.1"
+        )
+        assert not guard._has_cpu_torch_install(
+            'ARG TORCH_INDEX_URL=https://example.com\nRUN pip install torch==2.5.1 --index-url "$TORCH_INDEX_URL"'
+        )
+        assert not guard._has_cpu_torch_install(f"# RUN pip install torch --index-url {cpu}")
+
     def test_repo_state_passes(self) -> None:
         result = subprocess.run(
             [sys.executable, str(ROOT / "tools" / "check_docker_install.py")],
@@ -106,6 +121,17 @@ class TestValidationSuite:
 
         rc = validate.main(["--quick"])
         assert rc == 0, "\n".join(r for r in validate.RESULTS if "❌" in r)
+
+    def test_failure_simulations_complete_without_stale_backend_assumptions(self) -> None:
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "simulate_failures.py")],
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "malformed Basic Pitch output raises" in result.stdout
+        assert "demucs unavailable -> raw-audio passthrough" in result.stdout
 
 
 # ---------------------------------------------------------------------------
