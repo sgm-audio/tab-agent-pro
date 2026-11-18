@@ -204,3 +204,72 @@ def test_stereo_mid_side_routing_with_distinct_tones(tmp_path):
     # one inverted (their correlation must not be -1).
     correlation = float(np.corrcoef(left, right)[0, 1])
     assert abs(correlation) < 0.9, f"rhythm L/R are the same signal: r={correlation:.3f}"
+
+
+def _naive_octave_cleanup(notes):
+    """The all-pairs reference the bucketed scan must match exactly."""
+    cleaned = []
+    skip_indices: set[int] = set()
+    for i, note in enumerate(notes):
+        if i in skip_indices:
+            continue
+        is_upper_octave = False
+        for j, other in enumerate(notes):
+            if i == j or j in skip_indices:
+                continue
+            if abs(other.start_time - note.start_time) < 0.05:
+                if note.pitch - other.pitch == 12:
+                    is_upper_octave = True
+                    break
+                if other.pitch - note.pitch == 12:
+                    skip_indices.add(j)
+        if not is_upper_octave:
+            cleaned.append(note)
+    return cleaned
+
+
+def test_octave_cleanup_matches_the_all_pairs_reference() -> None:
+    """Bucketing by onset must not change which notes are dropped."""
+    import random
+
+    import note_seq
+
+    from suno_postprocessor import SunoNotePostprocessor
+
+    rng = random.Random(20261118)
+    processor = SunoNotePostprocessor()
+    for _trial in range(40):
+        notes = [
+            note_seq.NoteSequence.Note(
+                pitch=rng.randint(36, 84),
+                start_time=round(rng.uniform(0.0, 1.0), 3),
+                end_time=0.0,
+            )
+            for _ in range(rng.randint(1, 40))
+        ]
+        for note in notes:
+            note.end_time = note.start_time + 0.2
+        expected = [n.pitch for n in _naive_octave_cleanup(notes)]
+        actual = [n.pitch for n in processor._remove_octave_errors(notes)]
+        assert actual == expected
+
+
+def test_octave_cleanup_is_not_quadratic() -> None:
+    """The old all-pairs scan took ~6 s for 8000 notes and scaled 4x per doubling."""
+    import time
+
+    import note_seq
+
+    from suno_postprocessor import SunoNotePostprocessor
+
+    processor = SunoNotePostprocessor()
+    notes = [
+        note_seq.NoteSequence.Note(pitch=40 + (i % 24), start_time=i * 0.01, end_time=0.0)
+        for i in range(8000)
+    ]
+    for note in notes:
+        note.end_time = note.start_time + 0.05
+    started = time.perf_counter()
+    processor._remove_octave_errors(notes)
+    elapsed = time.perf_counter() - started
+    assert elapsed < 1.0, f"octave cleanup took {elapsed:.2f}s for 8000 notes"

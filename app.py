@@ -77,6 +77,8 @@ GUITAR_TUNING = [40, 45, 50, 55, 59, 64]  # E2-A2-D3-G3-B3-E4
 BASS_TUNING = [23, 28, 33, 38, 43]  # B0-E1-A1-D2-G2
 
 MAX_FILE_SIZE_MB = 50
+# The upload route accepts bytes, not megabytes; keep the two in step.
+MAX_UPLOAD_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 MAX_DURATION_SEC = 300  # 5 minutes
 ALLOWED_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aiff"}
 
@@ -767,9 +769,13 @@ def create_app() -> gr.Blocks:
 
         return default_metrics.summary()
 
-    mount_kwargs: dict = {}
+    # Cap the *upload route*, not just the file once it has landed: the size check
+    # in _validate_audio() only sees a file that has already been written to disk,
+    # and a direct POST to the upload endpoint never reaches it. Unset, the route's
+    # limit is math.inf.
+    mount_kwargs: dict = {"max_file_size": MAX_UPLOAD_BYTES}
     if _gradio_major() >= 6:
-        mount_kwargs = {"theme": gr.themes.Soft(), "css": UI_CSS}
+        mount_kwargs.update({"theme": gr.themes.Soft(), "css": UI_CSS})
 
     return gr.mount_gradio_app(parent_app, demo, path="/", **mount_kwargs)
 

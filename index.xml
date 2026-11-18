@@ -21,25 +21,31 @@
   repository, then update the commit attribute; tools/check_index.py reports
   mismatches.
 -->
-<index version="1" commit="4061696bc2438002dbb3b5f1689385d87665e8b1" name="Tab Agent Pro">
+<index version="1" commit="bf43dc984785de0edb7e767fc100713443d4f066" name="Tab Agent Pro">
   <category name="Transcription">
     <reapack name="Tab Agent" type="script" desc="AI-powered audio-to-tablature transcription">
-      <version name="1.0.1" author="Scott Mills" time="2026-10-04T00:00:00Z">
+      <version name="1.1.0" author="Scott Mills" time="2026-11-18T18:00:00Z">
         <source file="TabAgent.lua">reaper/TabAgent.lua</source>
         <changelog><![CDATA[
-Initial release: Basic Pitch transcription, Demucs stem separation,
-technique detection (slides/hammer-ons/pull-offs), MIDI/tab/JSON export.
-Settings from "Tab Agent Settings" are passed through to main.py.
+1.1.0: the console streams while the run is in flight instead of freezing
+REAPER until the child exits; a project switch mid-run no longer imports into the
+wrong project; only MIDI this run reported is imported, so stale exports are
+ignored; arguments are single-quoted (POSIX) and rejected when they contain
+Windows shell metacharacters; the output directory is always passed explicitly.
+1.0.1: Basic Pitch transcription, Demucs stem separation, technique detection
+(slides/hammer-ons/pull-offs), MIDI/tab/JSON export.
         ]]></changelog>
       </version>
     </reapack>
 
     <reapack name="Tab Agent Settings" type="script" desc="Configure Tab Agent Pro profiles and exports">
-      <version name="1.0.1" author="Scott Mills" time="2026-10-04T00:00:00Z">
+      <version name="1.1.0" author="Scott Mills" time="2026-11-18T18:00:00Z">
         <source file="Settings.lua">reaper/Settings.lua</source>
         <changelog><![CDATA[
-Initial release: 8 preset profiles, instrument selection, install path,
-onset/frame thresholds, output directory, export format toggles.
+1.1.0: settings round-trip preserves empty fields (a blank threshold no longer
+shifts the remaining values); thresholds are validated before they are stored.
+1.0.1: 8 preset profiles, instrument selection, install path, onset/frame
+thresholds, output directory, export format toggles.
         ]]></changelog>
       </version>
     </reapack>

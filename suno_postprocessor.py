@@ -14,6 +14,8 @@ The harmonic peak filter prevents pure tones (test signals, sine sweeps)
 from being falsely flagged regardless of aggressiveness.
 """
 
+import math
+
 import librosa
 import note_seq
 import numpy as np
@@ -273,15 +275,32 @@ class SunoNotePostprocessor:
         cleaned = []
         skip_indices: set[int] = set()
 
+        # Only notes within 50 ms of one another can pair, so bucket by onset and
+        # compare each note with its own bucket and the two neighbours. The naive
+        # all-pairs scan was quadratic: 8000 notes took ~6 s, which is minutes on
+        # a long take. A bucket is 50 ms wide, so the neighbourhood covers every
+        # candidate without changing which pairs are considered.
+        window = 0.05
+        buckets: dict[int, list[int]] = {}
+        for index, note in enumerate(notes):
+            buckets.setdefault(math.floor(note.start_time / window), []).append(index)
+
         for i, note in enumerate(notes):
             if i in skip_indices:
                 continue
 
+            bucket = math.floor(note.start_time / window)
+            candidates: list[int] = []
+            for key in (bucket - 1, bucket, bucket + 1):
+                candidates.extend(buckets.get(key, ()))
+            candidates.sort()
+
             is_upper_octave = False
-            for j, other in enumerate(notes):
+            for j in candidates:
                 if i == j or j in skip_indices:
                     continue
-                if abs(other.start_time - note.start_time) < 0.05:
+                other = notes[j]
+                if abs(other.start_time - note.start_time) < window:
                     if note.pitch - other.pitch == 12:
                         # `note` is an octave above simultaneous `other` -> drop `note`
                         is_upper_octave = True
