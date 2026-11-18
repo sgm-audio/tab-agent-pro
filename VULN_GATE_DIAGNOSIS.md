@@ -115,7 +115,7 @@ advisories by any identifier so CI stops failing on renamed IDs"* and its docstr
 | An expired accepted-risk entry | all 25 entries expire `2027-01-31`; the script prints `EXPIRED` distinctly | not it |
 | A genuinely new advisory | full PyPI advisory sweep over all 118 lock pins: only `torch` and `setuptools` carry advisories, and both sets are already in the ledger | not it |
 | The docs-only diff | the failing step is untouched by the diff; `main` passes the same step | not it |
-| A timeout/flake in the OSV call | a *transport* failure prints `❌ vulnerability scan failed to run` and returns 1, which is indistinguishable from a finding in CI (see §4.2) | possible, but the alias mismatch explains the persistent reds on `91504cfe` |
+| A timeout/flake in the OSV call | a *transport* failure prints `❌ vulnerability scan failed to run` and returns 1, which is indistinguishable from a finding in CI (see §4.2) | possible, but the alias mismatch explains the persistent reds on `91504cfe`. Transport failures now retry and exit 2 (§4.2) |
 
 ---
 
@@ -124,10 +124,10 @@ advisories by any identifier so CI stops failing on renamed IDs"* and its docstr
 1. **Identity matching (the red).** Match `id` ∪ `aliases`; or key the ledger by CVE. Code
    fix preferred — adding ten `GHSA-…` lines re-breaks the next time the feed renames
    something.
-2. **"Scan failed to run" is fatal, and indistinguishable from "found something".** A 429,
-   a DNS hiccup or an OSV outage fails CI with the same exit code as a real finding. A
-   retry with backoff, or a distinct exit status/annotation, would stop this class of
-   false red.
+2. **"Scan failed to run" was fatal and indistinguishable from "found something"** — fixed
+   in this PR. Transport failures retry three times with a backoff, then exit **2** with a
+   GitHub `::error title=Vulnerability scan unavailable::` annotation and a message that
+   says it is not a finding. Tests cover the retry, the give-up path and the exit code.
 3. **The docstring promises severity filtering that does not exist.** `check_vulns.py`
    says it "fails on HIGH/CRITICAL findings"; the loop fails on *every* reported advisory,
    severity-blind. Either pass severity through from the advisory payload or fix the
@@ -154,10 +154,10 @@ Status against `110e045`. "Harness" is `audit_poc/`.
 | R-2/R-3/R-4/R-6/R-7 | undo pairing, wrong project, shell interpolation, default profile, output dir | **fixed** | probe A shows only `MB: Tab Agent — Project Changed` after a switch; probe C's sentinel is not created; `tests/test_reaper_contract.py` covers the rest |
 | R-5 | CSV settings dialog shifts fields | **fixed** | `reaper/Settings.lua:81` preserves empty fields and rejects `<9` parts. Residual: a comma *inside* a value still shifts (inherent to `GetUserInputs`) |
 | R-8 | no cancel, no lock during a run | **still open** | dialogs are error-only; nothing prevents a second run or a mid-run edit |
-| W-1 | upload size enforced only after the bytes land | **still open** | `gr.Blocks(...)` at `app.py:591` passes no `max_file_size`, so the upload route's limit stays `math.inf`; `MAX_FILE_SIZE_MB` is checked in `_validate_audio` *after* Gradio has written the temp file. A direct `POST /gradio_api/upload` never reaches the check |
+| W-1 | upload size enforced only after the bytes land | **fixed in this PR** | `mount_gradio_app(..., max_file_size=MAX_UPLOAD_BYTES)` makes the *route* reject oversize bodies (`blocks.max_file_size` is what `/upload` reads); `_validate_audio` stays as the second line of defence. `tests/test_app_wiring.py::test_upload_route_enforces_the_file_size_cap` asserts the mounted blocks carry the cap |
 | M-2 | zero-note run exits 0 | **partly fixed** | probe B: `exit code: 0`, `files produced: []`, but now prints `⚠️ No notes were transcribed`. Automation still sees success |
-| M-4 | Suno octave cleanup is O(n²) | **still quadratic** | 1k→0.075 s, 2k→0.315 s, 4k→1.372 s, 8k→6.06 s (4× per doubling) |
-| D-x | ReaPack ships a script five commits stale | **newly confirmed** | `index.xml` pins `commit="4061696b"` at version **1.0.1** while `pyproject.toml` is **1.1.0**; `4061696b` is #8, i.e. *before* the streaming rewrite — no `reaper.defer` at all (REAPER freezes for the whole run), no project guard, no report-line protocol. `tools/check_index.py` only checks that the sha exists, so CI stays green |
+| M-4 | Suno octave cleanup is O(n²) | **fixed in this PR** | onsets are bucketed into 50 ms bins and only the neighbouring bins are compared, which is the same candidate set the all-pairs scan considered; 8000 notes went from ~6.06 s to well under a second, and `tests/test_transcription_safety.py` pins both the equivalence against the old scan and the timing |
+| D-x | ReaPack ships a stale script | **fixed in this PR** | `index.xml` now pins `bf43dc9` (the newest commit touching `reaper/`) at version **1.1.0**, so ReaPack clients get the deferred, project-guarded script instead of the pre-#11 one that froze REAPER for the whole run. `tools/check_index.py` fails when the pin predates the newest change to a published source, which is the check that would have caught it |
 | V-1 | gates that cannot fail | **improved** | the chord/tech/demucs guards are now real assertions; `test_transcription_safety.py:129` is the last strict `xfail` |
 
 ### Harness rot fixed in passing
@@ -174,13 +174,11 @@ Status against `110e045`. "Harness" is `audit_poc/`.
 
 ## 6. Suggested order
 
-1. Land the alias-aware matching (`053abd1`, PR #15) — it is the only thing standing
-   between `main` and a repeat of the red, and it needs the test it brings.
-2. Make "scan failed to run" retry, and make severity mean what §4.3 says it means.
-3. Refresh `index.xml` to the current commit and version; have `check_index.py` fail when
-   the pin is behind `HEAD` for a shipped script. Right now the ReaPack channel delivers
-   the pre-#11 REAPER script, which is the blocking one.
+1. ~~Land the alias-aware matching~~ — done in #22 (`5c4e761`); the gate is green.
+2. ~~Make "scan failed to run" retry~~ — done in this PR. Still open: make severity mean
+   what §4.3 says it means (the gate is severity-blind, the docs now say so).
+3. ~~Refresh `index.xml` and gate on staleness~~ — done in this PR.
 4. R-1: read the child's output on a timer/`io.read` slice instead of blocking inside
    `defer`; it is the last finding that stalls the user's REAPER session.
-5. W-1: set `max_file_size` on `gr.Blocks` (and keep `_validate_audio` as the second line
-   of defence).
+5. ~~W-1~~ — done in this PR (`mount_gradio_app(max_file_size=…)`, because Gradio 6.32's
+   `Blocks` does not take the argument itself).
