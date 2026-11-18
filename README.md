@@ -85,8 +85,8 @@ the stem-separation stack.
 ### Validation
 
 ```bash
-python -m pytest tests/            # 291 tests, 91% coverage
-python validate.py                 # end-to-end checklist (PASS/FAIL summary)
+python -m pytest tests/            # reports passes, skips, xfails and coverage
+python validate.py                 # validation checklist (PASS/FAIL summary)
 
 python tools/check_index.py           # ReaPack index format
 python tools/check_env_example.py     # every documented env var is read
@@ -94,8 +94,11 @@ python tools/check_docker_install.py  # basic-pitch pin + required deps
 python tools/check_reaper_settings.py # REAPER settings reach main.py
 python tools/check_lockfile.py        # installed env == requirements.lock
 python tools/check_vulns.py           # advisories: none unaccepted/expired
-python tools/simulate_failures.py     # failure modes still behave (15 checks)
+python tools/simulate_failures.py     # failure-mode simulations
 ```
+
+See [the transcription test audit](docs/TRANSCRIPTION_TEST_AUDIT.md) for known
+failing checks, strict expected failures, and real-inference test instructions.
 
 ---
 
@@ -233,7 +236,7 @@ is what runs.
 ├── validate.py            # End-to-end checklist
 ├── reaper/                # REAPER Lua scripts
 ├── tools/                 # Config/deployment guard scripts
-├── tests/                 # 291 tests
+├── tests/                 # Unit and integration tests
 ├── examples/              # Demo audio
 ├── docs/RUNBOOK.md        # Deploy / monitor / rollback / dependency refresh
 ├── docs/ACCEPTED_RISKS.md # Every known risk, with exposure and expiry

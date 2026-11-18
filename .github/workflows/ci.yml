@@ -133,6 +133,11 @@ jobs:
     - name: Run tests with coverage
       run: pytest tests/ -v --cov=. --cov-report=term-missing
 
+    - name: Real Basic Pitch CPU inference smoke
+      # This job requires the packaged model and ONNX runtime; missing weights
+      # or dependencies must fail, not turn the inference check into a skip.
+      run: TAB_AGENT_REAL_INFERENCE=1 pytest -q -o addopts='' tests/test_real_inference.py
+
     - name: Failure-mode simulations
       run: python tools/simulate_failures.py
 
