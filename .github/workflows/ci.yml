@@ -132,29 +132,14 @@ jobs:
     - name: Type check with mypy
       run: mypy .
 
-    - name: Run tests with coverage
-      run: pytest tests/ -v --cov=. --cov-report=term-missing
-
-    - name: Real Basic Pitch CPU inference smoke
-      # This job requires the packaged model and ONNX runtime; missing weights
-      # or dependencies must fail, not turn the inference check into a skip.
-      run: TAB_AGENT_REAL_INFERENCE=1 pytest -q -o addopts='' tests/test_real_inference.py
+    # Runs the Basic Pitch model tests on CPU, not just an import check, and
+    # the Lua tests that execute both scripts (lupa is a required test dep).
+    # Only the real Demucs lane requires an external, opt-in weights cache.
+    - name: Run tests with branch coverage and real CPU ONNX inference
+      run: python -m pytest -v
 
     - name: Failure-mode simulations
       run: python tools/simulate_failures.py
-
-    # Proves the shipped Docker install line produces a working backend.
-    - name: Smoke test transcription backend
-      run: |
-        python - <<'PY'
-        import agents
-        assert agents.BASIC_PITCH_AVAILABLE, "Basic Pitch is not importable"
-        from basic_pitch.inference import predict  # noqa: F401  (imports mir_eval/resampy too)
-        print("Basic Pitch importable via ONNX")
-        PY
-
-    - name: REAPER settings propagation
-      run: python tools/check_reaper_settings.py
 
     - name: Run validation suite (quick)
       run: python validate.py --quick

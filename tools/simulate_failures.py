@@ -145,8 +145,7 @@ def simulate_demucs_offline() -> None:
     """Demucs failing must degrade to raw audio, not crash the pipeline."""
     import agents
 
-    tmp = _fresh_cwd()
-    splitter = agents.SplitterAgent(output_dir=tmp, device="cpu")
+    splitter = agents.SplitterAgent(output_dir=_fresh_cwd(), device="cpu")
     audio = ROOT / "examples" / "guitar_solo.wav"
     with (
         patch.object(agents, "DEMUCS_API_AVAILABLE", False),
@@ -156,7 +155,8 @@ def simulate_demucs_offline() -> None:
     ):
         stems = splitter.separate_stems(str(audio))
     check(
-        set(stems) == {"guitar", "bass"} and all(Path(p).exists() for p in stems.values()),
+        set(stems) == {"guitar", "bass"}
+        and all(Path(p).read_bytes() == audio.read_bytes() for p in stems.values()),
         "demucs unavailable -> raw-audio passthrough",
         str(list(stems)),
     )
@@ -180,7 +180,7 @@ def simulate_unwritable_output() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 5. Malformed model output
+# 5. Basic Pitch failures despite a successful import
 # ---------------------------------------------------------------------------
 
 
@@ -196,20 +196,46 @@ def simulate_malformed_basic_pitch_output() -> None:
         ear = agents.EarAgent(device="cpu")
         try:
             ear.transcribe_stem(str(ROOT / "examples" / "guitar_solo.wav"))
-        except RuntimeError:
-            check(True, "malformed Basic Pitch output raises")
+        except RuntimeError as e:
+            check(
+                isinstance(e.__cause__, AttributeError),
+                "malformed Basic Pitch output raises with original cause",
+            )
         else:
             check(False, "malformed Basic Pitch output raises", "no exception raised")
         check(
-            any(
-                call.args == ("basic_pitch", "error: AttributeError")
-                for call in health.set_component.call_args_list
-            ),
+            health.set_component.call_args.args == ("basic_pitch", "error: AttributeError"),
             "malformed Basic Pitch output marks backend error",
         )
 
 
+def simulate_basic_pitch_runtime_dependency_missing() -> None:
+    import agents
+
+    missing = ModuleNotFoundError("missing resampy", name="resampy")
+    with (
+        patch.object(agents, "BASIC_PITCH_AVAILABLE", True),
+        patch.object(agents, "basic_pitch_predict", side_effect=missing),
+        patch.object(agents, "health") as health,
+    ):
+        ear = agents.EarAgent(device="cpu")
+        try:
+            ear.transcribe_stem("song.wav")
+        except RuntimeError as e:
+            check(
+                e.__cause__ is missing and "resampy" in str(e),
+                "Basic Pitch identifies the missing runtime dependency",
+            )
+        else:
+            check(False, "Basic Pitch identifies the missing runtime dependency", "no error")
+        check(
+            health.set_component.call_args.args == ("basic_pitch", "error: missing resampy"),
+            "Basic Pitch publishes degraded component state",
+        )
+
+
 def main() -> int:
+    RESULTS.clear()
     simulations = [
         simulate_corrupt_user_memory,
         simulate_invalid_thresholds,
@@ -221,12 +247,19 @@ def main() -> int:
         simulate_demucs_offline,
         simulate_unwritable_output,
         simulate_malformed_basic_pitch_output,
+        simulate_basic_pitch_runtime_dependency_missing,
     ]
-    for sim in simulations:
-        try:
-            sim()
-        except Exception as e:
-            check(False, sim.__name__, f"simulation raised {type(e).__name__}: {e}")
+    # Importing app registers a shutdown cleanup. Ensure that the simulations
+    # neither use nor remove a running server's temp/output directories.
+    with (
+        tempfile.TemporaryDirectory(prefix="tab-failure-simulations-") as scratch,
+        patch.object(tempfile, "tempdir", scratch),
+    ):
+        for sim in simulations:
+            try:
+                sim()
+            except Exception as e:
+                check(False, sim.__name__, f"simulation raised {type(e).__name__}: {e}")
 
     failures = [r for r in RESULTS if not r[0]]
     for ok, name, detail in RESULTS:

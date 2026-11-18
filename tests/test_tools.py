@@ -11,8 +11,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -170,39 +168,3 @@ class TestReaPackIndex:
         assert "<reaper>" in joined or "no <reapack> packages" in joined
         assert guard.main([str(ROOT / "index.xml")]) == 0
         assert guard.main([str(legacy)]) == 1
-
-
-# ---------------------------------------------------------------------------
-# tools/check_reaper_settings.py  (P1-3)
-# ---------------------------------------------------------------------------
-
-
-class TestReaperSettingsGuard:
-    def test_repo_state_passes(self) -> None:
-        pytest.importorskip("lupa")
-        result = subprocess.run(
-            [sys.executable, str(ROOT / "tools" / "check_reaper_settings.py")],
-            capture_output=True,
-            text=True,
-            cwd=ROOT,
-        )
-        assert result.returncode == 0, result.stdout + result.stderr
-
-    def test_tab_agent_lua_forwards_settings(self) -> None:
-        lua = (ROOT / "reaper" / "TabAgent.lua").read_text()
-        for flag in (
-            "--profile",
-            "--instrument",
-            "--onset",
-            "--frame",
-            "--no-midi",
-            "--output-dir",
-        ):
-            # The Lua builds these with string concatenation, e.g. "--onset "
-            token = flag.rstrip("0123456789")
-            assert token in lua, f"TabAgent.lua never passes {flag}"
-
-    def test_settings_lua_exposes_thresholds_and_output_dir(self) -> None:
-        lua = (ROOT / "reaper" / "Settings.lua").read_text()
-        for key in ("onset", "frame", "output_dir"):
-            assert f'"{key}"' in lua, f"Settings.lua does not persist {key}"

@@ -87,7 +87,7 @@ RUN groupadd -r tabagent && useradd -r -g tabagent -d /app -s /sbin/nologin taba
 # Application code is read-only to the runtime user; only the cache dirs are
 # writable, so a request cannot modify code or the image.
 COPY --chown=root:root . .
-RUN mkdir -p /app/.cache/tab_agent /app/user_memory /tmp/tab_agent_outputs \
+RUN mkdir -p /app/.cache /app/user_memory /tmp/tab_agent_outputs \
     && chown -R tabagent:tabagent /app/.cache /app/user_memory /tmp/tab_agent_outputs \
     && chmod -R a-w /app/*.py /app/reaper 2>/dev/null || true
 

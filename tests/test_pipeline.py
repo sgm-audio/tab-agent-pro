@@ -1,18 +1,9 @@
 #!/usr/bin/env python3
 """
-Tab Agent Pro — End-to-End Pipeline Test.
+Smoke tests for DSP, note-to-tab and exporters (no inference).
 
-Generates a synthetic audio clip (sine wave with known notes),
-runs the full pipeline, and validates output files exist.
-
-Usage:
-    python tests/test_pipeline.py
-    python -m pytest tests/test_pipeline.py -v
-
-Requirements:
-    - pytests or unittest runner
-    - Demucs installed (optional — skipped if unavailable)
-    - basic-pitch installed (optional — skipped if unavailable)
+See test_model_inference.py and test_pipeline_contract.py for backend and CLI
+integration tests with content assertions.
 """
 
 import os
@@ -27,13 +18,13 @@ import soundfile as sf
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agents import EarAgent, TabAgent
+from agents import TabAgent
 from main import export_tab_to_json, export_tab_to_txt
 from suno_postprocessor import SunoNotePostprocessor, process_suno_audio
 
 
-class TestEndToEndPipeline(unittest.TestCase):
-    """Full pipeline test using synthetic audio."""
+class TestPipelineComponents(unittest.TestCase):
+    """Smoke tests for individual pipeline components."""
 
     tmpdir: str
     audio_path: str
@@ -72,32 +63,6 @@ class TestEndToEndPipeline(unittest.TestCase):
             output_path=os.path.join(self.tmpdir, "processed.wav"),
         )
         assert not is_suno, "Synthetic audio should not be flagged as AI"
-
-    def test_ear_agent_transcribes_synthetic(self) -> None:
-        """EarAgent transcribes synthetic audio to MIDI notes (mocked)."""
-        import note_seq
-
-        ear = EarAgent(device="cpu")
-
-        mock_notes = [
-            note_seq.NoteSequence.Note(pitch=64, start_time=0.0, end_time=0.4, velocity=80),
-            note_seq.NoteSequence.Note(pitch=67, start_time=0.5, end_time=0.9, velocity=80),
-        ]
-        ear.transcribe_stem = lambda *a, **kw: mock_notes  # type: ignore[method-assign]
-
-        notes_raw = ear.transcribe_stem(
-            self.audio_path,
-            target="Guitar",
-            onset_threshold=0.3,
-            frame_threshold=0.2,
-        )
-        assert notes_raw is not None
-        assert isinstance(notes_raw, list)
-        # Each note should be a note_seq.NoteSequence.Note
-        if notes_raw:
-            assert all(
-                hasattr(n, "pitch") and hasattr(n, "start_time") for n in notes_raw
-            ), "Notes must have pitch and start_time attributes"
 
     def test_tab_agent_generates_tab(self) -> None:
         """TabAgent generates tablature from note data."""

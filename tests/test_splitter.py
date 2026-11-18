@@ -9,6 +9,7 @@ import os
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 import soundfile as sf
@@ -88,15 +89,22 @@ class TestSplitterAgent(unittest.TestCase):
         """_separate_with_subprocess finds Demucs stems under htdemucs/<stem_without_ext>/."""
         from unittest.mock import MagicMock, patch
 
-        # Demucs creates htdemucs/song/ even when song_name is "song.wav"
-        demucs_dir = os.path.join(self.tmpdir, "htdemucs", "song")
-        os.makedirs(demucs_dir, exist_ok=True)
-        for s in ("other", "bass", "drums", "vocals"):
-            open(os.path.join(demucs_dir, f"{s}.wav"), "wb").close()
+        def complete_demucs(command, **kwargs):
+            assert kwargs["check"]
+            assert command[command.index("-d") + 1] == "cpu"
+            demucs_dir = Path(command[command.index("-o") + 1]) / "htdemucs" / "song"
+            demucs_dir.mkdir(parents=True)
+            for stem in ("other", "bass"):
+                sf.write(demucs_dir / f"{stem}.wav", np.zeros(128), 44100)
+            return MagicMock(returncode=0)
 
-        with patch("agents.subprocess.run", return_value=MagicMock(returncode=0)):
-            stems = self.splitter._separate_with_subprocess("/tmp/song.wav", "song.wav")
-        assert stems["guitar"].endswith(os.path.join("htdemucs", "song", "other.wav"))
+        splitter = SplitterAgent(output_dir=self.tmpdir, device="cpu")
+        with patch("agents.subprocess.run", side_effect=complete_demucs):
+            stems = splitter._separate_with_subprocess("/tmp/song.wav", "song.wav")
+        assert Path(stems["guitar"]).name == "other.wav"
+        assert Path(stems["guitar"]).parent.name == "song"
+        assert set(stems) == {"guitar", "bass"}
+        assert all(sf.info(p).frames == 128 for p in stems.values())
 
     def test_separate_stems_failure_records_failed_metric(self) -> None:
         """When Demucs separation fails, default_metrics.stage_errors records the failure."""
@@ -130,17 +138,23 @@ class TestSplitterAgent(unittest.TestCase):
         """SplitterAgent(device='cpu') passes device='cpu' to demucs_api.Separator."""
         from unittest.mock import MagicMock, patch
 
+        import torch
+
         import agents as _a
 
         sp = SplitterAgent(output_dir=self.tmpdir, device="cpu")
         mock_api = MagicMock()
         mock_sep = MagicMock()
-        mock_sep.separate_audio_file.return_value = (None, {})
+        mock_sep.samplerate = 44100
+        mock_sep.separate_audio_file.return_value = (
+            None,
+            {"other": torch.zeros(128), "bass": torch.zeros(128)},
+        )
         mock_api.Separator.return_value = mock_sep
 
         with (
             patch.object(_a, "demucs_api", mock_api, create=True),
-            patch("agents.torch.cuda.is_available", return_value=True),
+            patch("torch.cuda.is_available", return_value=True),
         ):
             sp._separate_with_api("/tmp/song.wav", "song")
 
