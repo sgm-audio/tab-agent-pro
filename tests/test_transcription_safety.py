@@ -32,7 +32,8 @@ def note(pitch, start, duration=0.4):
 )
 def test_viterbi_matches_exhaustive_monophonic_minimum(tuning, frets, pitches, times):
     agent = TabAgent(tuning, frets)
-    result = agent.generate_tab([note(p, t) for p, t in zip(pitches, times, strict=True)])
+    # Keep events disjoint: this oracle scores the monophonic transition cost.
+    result = agent.generate_tab([note(p, t, 0.08) for p, t in zip(pitches, times, strict=True)])
     assert len(result) == len(pitches)
     for p, t, pos in zip(pitches, times, result, strict=True):
         assert 0 <= pos["string"] < len(tuning)

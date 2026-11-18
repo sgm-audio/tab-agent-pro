@@ -136,15 +136,20 @@ def test_cli_all_writes_distinct_lead_rhythm_bass_note_content(
         data = json.loads((output / f"{prefix}.json").read_text())
         tab = data["tablature"]
         assert data["instrument"] == label and data["num_strings"] == len(tuning)
+        assert data["tuning"] == tuning
+        assert data["separation_mode"] == "demucs" and data["skipped_notes"] == []
         pitches = tab_pitches(tab, tuning, 24)
-        assert sorted(zip(pitches, [p["start_time"] for p in tab], strict=True)) == sorted(
-            (pitch, start) for pitch, start, _ in events
-        )
+        assert sorted(
+            (pitch, p["start_time"], p["end_time"]) for pitch, p in zip(pitches, tab, strict=True)
+        ) == sorted(events)
 
+        tab_lines = (output / f"{prefix}.tab").read_text().splitlines()
+        onset_line = next(line for line in tab_lines if line.startswith("t(s)|"))
+        assert onset_line.split("|", 1)[1].split() == sorted(
+            {f"{start:.3f}" for _, start, _ in events}
+        )
         rows = [
-            line.split("|", 1)
-            for line in (output / f"{prefix}.tab").read_text().splitlines()
-            if "|" in line
+            line.strip().split("|", 1) for line in tab_lines if "|" in line and line != onset_line
         ]
         assert [name for name, _ in rows] == (
             ["G", "D", "A", "E", "B"] if suffix == "bass" else ["E", "B", "G", "D", "A", "D"]
@@ -204,6 +209,7 @@ def test_incomplete_demucs_outputs_fall_back_to_readable_mix(
     splitter = agents.SplitterAgent(str(work), device="cpu")
     stems = splitter.separate_stems(str(source))
 
+    assert splitter.separation_mode == "raw_fallback"
     assert set(stems) == {"guitar", "bass"}
     assert len(set(stems.values())) == 2
     assert all(Path(path).read_bytes() == source.read_bytes() for path in stems.values())

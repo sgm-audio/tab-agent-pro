@@ -335,15 +335,15 @@ def main(argv: list[str] | None = None) -> int:
             f"got {len(mixed_tab)} entries, skipped={agent.last_skipped_notes}",
         )
 
-        # Technique detection
+        # Technique hint on a synthetic contiguous same-string transition.
         fast_notes = [
-            note_seq.NoteSequence.Note(pitch=40, start_time=0.0, end_time=0.3, velocity=80),
+            note_seq.NoteSequence.Note(pitch=40, start_time=0.0, end_time=0.15, velocity=80),
             note_seq.NoteSequence.Note(pitch=42, start_time=0.15, end_time=0.45, velocity=80),
         ]
         fast_tab = agent.generate_tab(fast_notes, technique_sensitivity=0.9)
         techniques = [e["technique"] for e in fast_tab]
         check(
-            "Technique detection finds slides/hammer/pull",
+            "Fret transition produces a heuristic technique hint",
             any(t in ("slide", "hammer", "pull") for t in techniques),
         )
     except Exception as e:

@@ -76,6 +76,7 @@ class TestSplitterAgentSeparateStems(unittest.TestCase):
         result = self.splitter.separate_stems(self.dummy_audio)
 
         assert result == expected
+        assert self.splitter.separation_mode == "demucs"
         self.splitter._separate_with_api.assert_called_once()
         mock_health.set_component.assert_called_with("demucs", "loaded")
 
@@ -142,6 +143,7 @@ class TestSplitterAgentRawAudioFallback(unittest.TestCase):
     def test_raw_audio_fallback_creates_files(self) -> None:
         """Fallback copies raw audio to both guitar and bass paths."""
         result = self.splitter._raw_audio_fallback(self.dummy_audio, "song")
+        assert self.splitter.separation_mode == "raw_fallback"
         assert "guitar" in result
         assert "bass" in result
         assert os.path.exists(result["guitar"])
@@ -315,32 +317,32 @@ class TestTabAgentGenerateTabEdgeCases(unittest.TestCase):
     def test_technique_slide_adjacent_1_fret(self) -> None:
         """1-fret difference on same string fast → slide."""
         notes = [
-            make_note(40, 0.0),  # E2 string 0 fret 0
+            make_note(40, 0.0, 0.12),  # E2 string 0 fret 0
             make_note(41, 0.12),  # F2
         ]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
-        if len(result) > 1:
-            assert result[1]["technique"] == "slide"
+        assert len(result) == 2
+        assert result[1]["technique"] == "slide"
 
     def test_technique_hammer_ascending(self) -> None:
         """Ascending same-string fast → hammer."""
         notes = [
-            make_note(40, 0.0),  # E2
-            make_note(45, 0.12),  # A2 — hammer range on same string
+            make_note(40, 0.0, 0.12),  # E2
+            make_note(44, 0.12),  # G#2 — only the low E string is available
         ]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
-        if len(result) > 1:
-            assert result[1]["technique"] in ["slide", "hammer"]
+        assert len(result) == 2
+        assert result[1]["technique"] == "hammer"
 
     def test_technique_pull_descending(self) -> None:
         """Descending same-string fast → pull."""
         notes = [
-            make_note(55, 0.0),  # G3
-            make_note(52, 0.12),  # E3
+            make_note(44, 0.0, 0.12),  # G#2
+            make_note(40, 0.12),  # E2
         ]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
-        if len(result) > 1:
-            assert result[1]["technique"] in ["slide", "hammer", "pull", "pick"]
+        assert len(result) == 2
+        assert result[1]["technique"] == "pull"
 
     def test_slow_transition_is_pick_not_technique(self) -> None:
         """Slow transition on same string → 'pick' (no technique)."""
@@ -355,12 +357,12 @@ class TestTabAgentGenerateTabEdgeCases(unittest.TestCase):
     def test_technique_window_includes_close_notes(self) -> None:
         """Close notes within window on same string get 'slide'."""
         notes = [
-            make_note(40, 0.0),  # E2 — only on string 0
+            make_note(40, 0.0, 0.15),  # E2 — only on string 0
             make_note(42, 0.15),  # F#2 — only on string 0, fret diff=2
         ]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
-        if len(result) > 1:
-            assert result[1]["technique"] == "slide"
+        assert len(result) == 2
+        assert result[1]["technique"] == "slide"
 
     def test_technique_window_excludes_distant_notes(self) -> None:
         """Distant notes outside window get 'pick'."""
@@ -841,6 +843,7 @@ class TestSplitterSeparateWithApi(unittest.TestCase):
         result = self.splitter._separate_with_api("input.wav", "input")
         assert (sf.info(result["guitar"]).channels, sf.info(result["bass"]).channels) == (2, 1)
         assert all(sf.info(p).frames == 128 for p in result.values())
+        assert "segment" not in api.Separator.call_args.kwargs
 
     @patch("torch.cuda.is_available", return_value=True)
     def test_separate_with_api_uses_cuda(self, _mock_cuda) -> None:

@@ -120,6 +120,7 @@ class TestCliProfileWiring(unittest.TestCase):
             patch("main.TabAgent") as tab_cls,
             patch("main.SunoNotePostprocessor"),
         ):
+            splitter_cls.return_value.separation_mode = "demucs"
             splitter_cls.return_value.separate_stems.return_value = {
                 "guitar": "g.wav",
                 "bass": "b.wav",

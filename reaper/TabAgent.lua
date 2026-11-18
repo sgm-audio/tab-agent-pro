@@ -8,10 +8,10 @@
     3. Run this script (Actions → Tab Agent)
     4. MIDI files are imported to new tracks automatically
 
-  Progress is streamed live to the REAPER console while the pipeline runs.
+  Pipeline output is forwarded to the REAPER console.
 
   Requirements:
-    - Python 3.10+ with Tab Agent dependencies (pip install -r requirements.txt)
+    - Python 3.11+ with the ONNX runtime dependencies (see README.md)
     - Tab Agent Pro cloned to a known path (auto-detected or set via Settings)
 
   Settings configured in "Tab Agent Settings" (profile, instrument, thresholds,
@@ -91,8 +91,9 @@ local function get_audio_path()
   local src = reaper.GetMediaItemTake_Source(take)
   if not src then return nil end
 
+  -- ReaScript's Lua binding returns the filename as its only result.
   local fn = reaper.GetMediaSourceFileName(src, "")
-  if not fn or fn == "" or not reaper.file_exists(fn) then
+  if type(fn) ~= "string" or fn == "" or not reaper.file_exists(fn) then
     reaper.MB(
       "This item is not backed by a file on disk.\n\n" ..
       "Glue it first: right-click the item → Glue items\n" ..
