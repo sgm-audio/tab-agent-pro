@@ -67,8 +67,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     # reverse proxy in front of it) can reach the web UI.
     HOST=0.0.0.0 \
     PORT=7860 \
-    # Writable cache location for the owner of /app; models land here.
-    CACHE_DIR=/app/.cache/tab_agent \
+    # Writable cache locations for the owner of /app, including Demucs weights.
     XDG_CACHE_HOME=/app/.cache \
     TORCH_HOME=/app/.cache/torch
 
@@ -88,7 +87,7 @@ RUN groupadd -r tabagent && useradd -r -g tabagent -d /app -s /sbin/nologin taba
 # Application code is read-only to the runtime user; only the cache dirs are
 # writable, so a request cannot modify code or the image.
 COPY --chown=root:root . .
-RUN mkdir -p /app/.cache/tab_agent /app/user_memory /tmp/tab_agent_outputs \
+RUN mkdir -p /app/.cache /app/user_memory /tmp/tab_agent_outputs \
     && chown -R tabagent:tabagent /app/.cache /app/user_memory /tmp/tab_agent_outputs \
     && chmod -R a-w /app/*.py /app/reaper 2>/dev/null || true
 

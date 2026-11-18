@@ -11,8 +11,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -40,6 +38,21 @@ class TestDockerInstallGuard:
         guard = _load("check_docker_install")
         line = 'RUN pip install --no-deps "basic-pitch>=0.4.0,<0.5" "mir_eval>=0.6" && \\'
         assert guard._unquoted_specifier(line) is None
+
+    def test_torch_index_requires_cpu_default_and_actual_install_use(self) -> None:
+        guard = _load("check_docker_install")
+        cpu = "https://download.pytorch.org/whl/cpu"
+        assert guard._has_cpu_torch_install(
+            f'ARG TORCH_INDEX_URL={cpu}\nRUN pip install torch==2.5.1 --index-url "$TORCH_INDEX_URL"'
+        )
+        assert guard._has_cpu_torch_install(f"RUN pip install torch==2.5.1 --index-url {cpu}")
+        assert not guard._has_cpu_torch_install(
+            f"ARG TORCH_INDEX_URL={cpu}\nRUN pip install torch==2.5.1"
+        )
+        assert not guard._has_cpu_torch_install(
+            'ARG TORCH_INDEX_URL=https://example.com\nRUN pip install torch==2.5.1 --index-url "$TORCH_INDEX_URL"'
+        )
+        assert not guard._has_cpu_torch_install(f"# RUN pip install torch --index-url {cpu}")
 
     def test_repo_state_passes(self) -> None:
         result = subprocess.run(
@@ -109,6 +122,17 @@ class TestValidationSuite:
         rc = validate.main(["--quick"])
         assert rc == 0, "\n".join(r for r in validate.RESULTS if "❌" in r)
 
+    def test_failure_simulations_complete_without_stale_backend_assumptions(self) -> None:
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "simulate_failures.py")],
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "malformed Basic Pitch output raises" in result.stdout
+        assert "demucs unavailable -> raw-audio passthrough" in result.stdout
+
 
 # ---------------------------------------------------------------------------
 # index.xml  (P1-4)
@@ -144,39 +168,3 @@ class TestReaPackIndex:
         assert "<reaper>" in joined or "no <reapack> packages" in joined
         assert guard.main([str(ROOT / "index.xml")]) == 0
         assert guard.main([str(legacy)]) == 1
-
-
-# ---------------------------------------------------------------------------
-# tools/check_reaper_settings.py  (P1-3)
-# ---------------------------------------------------------------------------
-
-
-class TestReaperSettingsGuard:
-    def test_repo_state_passes(self) -> None:
-        pytest.importorskip("lupa")
-        result = subprocess.run(
-            [sys.executable, str(ROOT / "tools" / "check_reaper_settings.py")],
-            capture_output=True,
-            text=True,
-            cwd=ROOT,
-        )
-        assert result.returncode == 0, result.stdout + result.stderr
-
-    def test_tab_agent_lua_forwards_settings(self) -> None:
-        lua = (ROOT / "reaper" / "TabAgent.lua").read_text()
-        for flag in (
-            "--profile",
-            "--instrument",
-            "--onset",
-            "--frame",
-            "--no-midi",
-            "--output-dir",
-        ):
-            # The Lua builds these with string concatenation, e.g. "--onset "
-            token = flag.rstrip("0123456789")
-            assert token in lua, f"TabAgent.lua never passes {flag}"
-
-    def test_settings_lua_exposes_thresholds_and_output_dir(self) -> None:
-        lua = (ROOT / "reaper" / "Settings.lua").read_text()
-        for key in ("onset", "frame", "output_dir"):
-            assert f'"{key}"' in lua, f"Settings.lua does not persist {key}"

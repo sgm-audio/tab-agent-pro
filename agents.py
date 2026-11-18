@@ -16,13 +16,14 @@ available through :mod:`device` (CUDA, ROCm, Vulkan, MPS, DirectML).
 """
 
 import os
+import shutil
 import subprocess  # nosec B404 — fixed command list, shell=False, used by Demucs CLI fallback
-from typing import Optional
+import tempfile
+from pathlib import Path
 
 import librosa
 import numpy as np
 import soundfile as sf
-import torch
 from scipy.signal import butter, filtfilt
 
 from device import DeviceConfig, install_onnx_provider_override, resolve_device
@@ -31,11 +32,14 @@ from monitoring import get_logger, health
 
 # Basic Pitch imports (proven and reliable transcription backend)
 basic_pitch_predict = None
+BASIC_PITCH_MODEL: Path | None = None
 try:
+    from basic_pitch import ONNX_PRESENT, FilenameSuffix, build_icassp_2022_model_path
     from basic_pitch.inference import predict as _bp_predict
 
     basic_pitch_predict = _bp_predict
-    BASIC_PITCH_AVAILABLE = True
+    BASIC_PITCH_MODEL = build_icassp_2022_model_path(FilenameSuffix.onnx)
+    BASIC_PITCH_AVAILABLE = ONNX_PRESENT
 except ImportError:
     BASIC_PITCH_AVAILABLE = False
 
@@ -49,12 +53,8 @@ except ImportError:
 
 # Publish backend availability at import time so /health and /ready are
 # meaningful before the first request.
-health.set_component(
-    "basic_pitch", "available" if BASIC_PITCH_AVAILABLE else "unavailable"
-)
-health.set_component(
-    "demucs", "available" if DEMUCS_API_AVAILABLE else "unavailable"
-)
+health.set_component("basic_pitch", "available" if BASIC_PITCH_AVAILABLE else "unavailable")
+health.set_component("demucs", "available" if DEMUCS_API_AVAILABLE else "unavailable")
 health.set_status("up")
 
 
@@ -143,8 +143,6 @@ class SplitterAgent:
         self.log.info("demucs_raw_fallback", file=song_name)
         base_path = os.path.join(self.output_dir, "htdemucs", song_name)
         os.makedirs(base_path, exist_ok=True)
-        import shutil
-
         other_path = os.path.join(base_path, "other.wav")
         bass_path = os.path.join(base_path, "bass.wav")
         shutil.copy2(audio_path, other_path)
@@ -159,7 +157,6 @@ class SplitterAgent:
             shifts=1,
             overlap=0.25,
             split=True,
-            segment=10,
             progress=True,
         )
 
@@ -169,44 +166,42 @@ class SplitterAgent:
         base_path = os.path.join(self.output_dir, "htdemucs", song_name)
         os.makedirs(base_path, exist_ok=True)
 
-        stem_map = {"other": "other", "bass": "bass"}
+        missing = {"other", "bass"} - separated.keys()
+        if missing:
+            raise ValueError(f"Demucs API did not return required stems: {sorted(missing)}")
+        for stem_key in ("other", "bass"):
+            tensor = separated[stem_key]
+            if tensor.ndim == 1:
+                tensor = tensor.unsqueeze(0)
+            stem_path = os.path.join(base_path, f"{stem_key}.wav")
+            sf.write(stem_path, tensor.cpu().numpy().T, separator.samplerate)
 
-        for stem_key, file_key in stem_map.items():
-            if stem_key in separated:
-                tensor = separated[stem_key]
-                if tensor.ndim == 1:
-                    tensor = tensor.unsqueeze(0)
-                stem_path = os.path.join(base_path, f"{file_key}.wav")
-                sf.write(stem_path, tensor.cpu().numpy().T, separator.samplerate)
-
-        return {
-            "guitar": os.path.join(base_path, "other.wav"),
-            "bass": os.path.join(base_path, "bass.wav"),
-        }
+        return self._checked_stems(base_path)
 
     def _separate_with_subprocess(self, audio_path, song_name):
         """Fallback: Demucs via CLI subprocess."""
-        cmd = ["demucs", "-n", "htdemucs", "-o", self.output_dir, audio_path]
-
+        # An exit code alone does not prove stems exist. Read only files
+        # created in this attempt; a previous run may have the same basename.
+        cli_dir = tempfile.mkdtemp(prefix="demucs-cli-", dir=self.output_dir)
+        cmd = ["demucs", "-n", "htdemucs", "-d", self.device, "-o", cli_dir, audio_path]
         try:
-            subprocess.run(
-                cmd,
-                check=True,
-                capture_output=True,
-                text=True,
-            )  # nosec B603
-        except subprocess.CalledProcessError:
+            subprocess.run(cmd, check=True, capture_output=True, text=True)  # nosec B603
+            stem_dir = os.path.splitext(song_name)[0]
+            return self._checked_stems(os.path.join(cli_dir, "htdemucs", stem_dir))
+        except Exception:
+            shutil.rmtree(cli_dir, ignore_errors=True)
             raise
 
-        base_path = os.path.join(self.output_dir, "htdemucs", song_name)
-        stem_dir = os.path.splitext(song_name)[0]
-        alt_base = os.path.join(self.output_dir, "htdemucs", stem_dir)
-        if not os.path.exists(base_path) and os.path.exists(alt_base):
-            base_path = alt_base
-        return {
+    @staticmethod
+    def _checked_stems(base_path: str) -> dict[str, str]:
+        stems = {
             "guitar": os.path.join(base_path, "other.wav"),
             "bass": os.path.join(base_path, "bass.wav"),
         }
+        for path in stems.values():
+            if sf.info(path).frames <= 0:
+                raise ValueError(f"Demucs produced an empty stem: {path}")
+        return stems
 
     def process_guitars(self, guitar_stem_path):
         """
@@ -331,7 +326,7 @@ class EarAgent:
         onset_threshold: float = 0.5,
         frame_threshold: float = 0.3,
         min_note_duration: float = 0.05,
-        min_pitch: Optional[int] = None,
+        min_pitch: int | None = None,
     ) -> list:
         """
         Transcribe audio to MIDI notes.
@@ -345,6 +340,7 @@ class EarAgent:
         log.info("transcribe_start", file=file, target=target, device=self.device)
 
         # ── Try Basic Pitch ───────────────────────────────────────────
+        failure: Exception | None = None
         if BASIC_PITCH_AVAILABLE:
             try:
                 with metrics.track_stage("basic_pitch_transcription"):
@@ -365,17 +361,23 @@ class EarAgent:
                 )
                 return result
             except Exception as e:
+                failure = e
                 log.warning("basic_pitch_failed", file=file, error=str(e))
 
-        # ── Nothing worked: raise error ──────────────────────────────
         log.error("transcribe_all_failed", file=file, target=target)
         health.record_request(success=False, details=f"transcribe: {file}")
-        msg = (
-            f"No transcription models available for {file}. "
-            "Install Basic Pitch (pip install basic-pitch) with its runtime "
-            "dependencies (mir_eval, resampy)."
-        )
-        raise RuntimeError(msg)
+        if isinstance(failure, ModuleNotFoundError):
+            msg = f"Basic Pitch dependency missing: {failure.name}. Check the runtime installation."
+        elif failure is not None:
+            msg = (
+                f"Basic Pitch could not transcribe {file}. Check the audio, ONNX model and runtime."
+            )
+        else:
+            msg = (
+                f"No transcription models available for {file}. "
+                "Install Basic Pitch with ONNX Runtime and its dependencies (mir_eval, resampy)."
+            )
+        raise RuntimeError(msg) from failure
 
     def _transcribe_with_basic_pitch(
         self,
@@ -384,7 +386,7 @@ class EarAgent:
         onset_threshold: float,
         frame_threshold: float,
         min_note_duration: float,
-        min_pitch: Optional[int] = None,
+        min_pitch: int | None = None,
     ) -> list:
         """
         Transcribe using Basic Pitch (Spotify's proven ONNX model).
@@ -397,6 +399,7 @@ class EarAgent:
         try:
             _model_output, midi_data, _note_events = basic_pitch_predict(
                 audio_path,
+                model_or_model_path=BASIC_PITCH_MODEL,
                 onset_threshold=onset_threshold,
                 frame_threshold=frame_threshold,
                 minimum_note_length=int(min_note_duration * 1000),
@@ -453,7 +456,7 @@ class EarAgent:
         self,
         notes: list,
         target: str,
-        min_pitch: Optional[int] = None,
+        min_pitch: int | None = None,
     ) -> list:
         """
         Filter notes by valid instrument range.
@@ -463,8 +466,6 @@ class EarAgent:
         - Guitar (6-string): E2 (40) to E6 (88), or lower when drop-tuned
           (e.g. Drop D passes min_pitch=38)
         """
-        import note_seq
-
         target_lower = target.lower()
 
         if "bass" in target_lower:
@@ -804,8 +805,13 @@ class TabAgent:
         if not midi_notes:
             return []
 
-        # Convert to simplified representation
-        notes = [{"pitch": n.pitch, "start": n.start_time} for n in midi_notes]
+        # Keep note ends and the original (sorted) sequence index so technique
+        # hints cannot bridge a rest or a note rejected by the fretboard.
+        ordered = sorted(midi_notes, key=lambda n: n.start_time)
+        notes = [
+            {"pitch": n.pitch, "start": n.start_time, "end": n.end_time, "index": i}
+            for i, n in enumerate(ordered)
+        ]
 
         # Get valid positions for each note, skipping notes that cannot be played
         # on this instrument (previously one such note discarded the whole track).
@@ -892,7 +898,14 @@ class TabAgent:
                 time_delta = notes[i]["start"] - notes[i - 1]["start"]
                 fret_diff_abs = abs(pos["fret"] - prev["fret"])
 
-                if prev["string"] == pos["string"] and 0 <= time_delta < technique_window:
+                consecutive = notes[i]["index"] == notes[i - 1]["index"] + 1
+                gap = notes[i]["start"] - notes[i - 1]["end"]
+                if (
+                    consecutive
+                    and prev["string"] == pos["string"]
+                    and 0 < time_delta < technique_window
+                    and gap <= 0.02  # tolerate minor timing jitter, not a rest
+                ):
                     # Slide: 1-2 frets apart (priority over hammer/pull)
                     if 1 <= fret_diff_abs <= 2:
                         technique = "slide"
