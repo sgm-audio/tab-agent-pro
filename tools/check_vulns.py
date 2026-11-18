@@ -71,9 +71,7 @@ def advisory_ids(vuln: dict) -> list[str]:
     return ids
 
 
-def lookup(
-    ignores: dict[str, dict[str, str]], vuln: dict
-) -> tuple[str, dict[str, str]] | None:
+def lookup(ignores: dict[str, dict[str, str]], vuln: dict) -> tuple[str, dict[str, str]] | None:
     """Return the accepted-risk entry for an advisory, under whatever name it has."""
     for advisory in advisory_ids(vuln):
         entry = ignores.get(advisory)
