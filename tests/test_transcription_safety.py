@@ -1,10 +1,7 @@
-"""Safety regressions with independent oracles; no inference models are mocked as real.
-
-Strict xfails document known product defects, not acceptable output.  An XPASS
-fails CI so the marker must be removed when the underlying defect is fixed.
-"""
+"""Safety regressions with independent oracles and synthetic fixtures."""
 
 import itertools
+import json
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -122,29 +119,52 @@ def test_cleaner_preserves_distinct_simultaneous_chord_pitches():
     assert [n.pitch for n in ear.humanize_and_clean(chord)] == [40, 47, 52]
 
 
-class UpperOctaveDroppedError(AssertionError):
-    """Suno cleanup removed only the upper member of a real octave pair."""
-
-
-@pytest.mark.xfail(
-    strict=True,
-    raises=UpperOctaveDroppedError,
-    reason="Suno octave cleanup drops legitimate simultaneous octave chord tones",
+@pytest.mark.parametrize(
+    "start,end",
+    [(-0.1, 0.4), (0.2, 0.2), (0.2, 0.1), (0.2, None), (float("nan"), 0.5), (0.1, float("inf"))],
+    ids=["negative", "zero-duration", "reversed", "missing-end", "nan-onset", "infinite-release"],
 )
-def test_suno_cleanup_preserves_legitimate_octave_chord():
+def test_invalid_note_timing_is_reported_without_discarding_valid_notes(start, end):
+    agent = TabAgent(GUITAR, 24)
+    invalid = SimpleNamespace(pitch=40, start_time=start, end_time=end)
+    tab = agent.generate_tab([invalid, note(45, 0.8, 0.2)])
+    (placed,) = tab
+    assert GUITAR[placed["string"]] + placed["fret"] == 45
+    (omitted,) = agent.last_skipped_events
+    assert omitted["pitch"] == 40
+    assert omitted["reason"] == "invalid_timing" and agent.last_skipped_notes == [40]
+    # Non-finite times become null, not JSON NaN / Infinity.
+    json.dumps(omitted, allow_nan=False)
+    assert agent.generate_tab([note(45, 0.8, 0.2)]) == tab
+    assert agent.last_skipped_events == [] and agent.last_skipped_notes == []
+
+
+def test_cleaner_drops_invalid_times_before_midi_export():
+    ear = EarAgent(device="cpu")
+    valid = note(42, 0.2)
+    invalid = [
+        note(44, float("nan")),
+        note(44, 0.2, float("inf")),
+        note(44, -0.1),
+        note(44, 0.3, -0.1),
+    ]
+    assert ear.humanize_and_clean([*invalid, valid]) == [valid]
+
+
+@pytest.mark.parametrize(
+    "pitches", [[40, 52, 59], [76, 88, 90]], ids=["octave-chord", "high-notes"]
+)
+def test_suno_cleanup_preserves_octaves_and_high_notes(pitches):
     import note_seq
 
     from suno_postprocessor import SunoNotePostprocessor
 
     chord = [
         note_seq.NoteSequence.Note(pitch=p, start_time=0, end_time=0.5, velocity=80)
-        for p in (40, 52, 59)
+        for p in pitches
     ]
     result = SunoNotePostprocessor().process(chord, is_suno=True, metrics={})
-    pitches = sorted(n.pitch for n in result)
-    if pitches == [40, 59]:
-        raise UpperOctaveDroppedError(pitches)
-    assert pitches == [40, 52, 59]
+    assert sorted(n.pitch for n in result) == pitches
 
 
 def test_stereo_mid_side_routing_with_distinct_tones(tmp_path):

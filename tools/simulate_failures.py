@@ -246,9 +246,7 @@ def simulate_unplayable_model_notes() -> None:
 
     import agents
 
-    agent = agents.TabAgent(
-        tuning=[40, 45, 50, 55, 59, 64], num_frets=24
-    )
+    agent = agents.TabAgent(tuning=[40, 45, 50, 55, 59, 64], num_frets=24)
     bad = note_seq.NoteSequence.Note(
         pitch=39,  # below the lowest open string (E2=40) -> no valid position
         start_time=0.0,

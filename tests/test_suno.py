@@ -1,6 +1,9 @@
 """
 Tab Agent Pro — Unit Tests: Suno Postprocessor
 Tests for Suno artifact detection, audio preprocessing, and note cleaning.
+
+Tests of the private destructive filters are legacy helper tests only; those
+filters are not used by the public processing pipeline.
 """
 
 import os

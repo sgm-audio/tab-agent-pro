@@ -78,16 +78,14 @@ def _commit_exists(sha: str) -> bool:
         # In a shallow clone the pinned commit may simply not have been
         # fetched even though it exists upstream; do not report a false
         # failure. The full-history CI checkout is where the SHA is verified.
-        if _is_shallow():
-            return True
-        return False
+        return _is_shallow()
     return result.stdout.strip() in {"commit", "tree", "tag"}
 
 
 def _is_shallow() -> bool:
     """True when the local checkout is a shallow (depth-limited) clone."""
     try:
-        result = subprocess.run(  # nosec B603, B607\
+        result = subprocess.run(  # nosec B603, B607
             ["git", "-C", str(ROOT), "rev-parse", "--is-shallow-repository"],
             capture_output=True,
             text=True,

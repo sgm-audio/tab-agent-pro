@@ -118,7 +118,7 @@ class TestCliProfileWiring(unittest.TestCase):
             patch("main.SplitterAgent") as splitter_cls,
             patch("main.EarAgent") as ear_cls,
             patch("main.TabAgent") as tab_cls,
-            patch("main.SunoNotePostprocessor"),
+            patch("main.SunoNotePostprocessor") as post_cls,
         ):
             splitter_cls.return_value.separation_mode = "demucs"
             splitter_cls.return_value.separate_stems.return_value = {
@@ -132,6 +132,7 @@ class TestCliProfileWiring(unittest.TestCase):
             }
             ear_cls.return_value.transcribe_stem.return_value = []
             ear_cls.return_value.humanize_and_clean.return_value = []
+            post_cls.return_value.process.return_value = []
             tab_cls.return_value.generate_tab.return_value = []
 
             main.main([self.audio, "--output-dir", self.out, *extra_args])

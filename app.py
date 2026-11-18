@@ -376,7 +376,6 @@ def _process_audio_impl(
         # Stage 5: Tablature generation
         progress(0.8, desc="📝 Generating tablature...")
 
-        technique_sensitivity = float(user_config.get("technique_sensitivity", 0.7))
         prefer_low_strings = bool(user_config.get("prefer_low_strings", is_bass))
         tab_agent = TabAgent(
             tuning=tuning,
@@ -393,10 +392,7 @@ def _process_audio_impl(
         lead_tab_data: list | None = None
 
         for stem_name, notes in results.items():
-            tab_data = tab_agent.generate_tab(
-                notes,
-                technique_sensitivity=technique_sensitivity,
-            )
+            tab_data = tab_agent.generate_tab(notes)
 
             dropped = tab_agent.last_skipped_events
             if len(dropped) and (include_tab or include_json):

@@ -176,13 +176,15 @@ def render_tab_text(
         out.append("t(s)|" + COLUMN_SEPARATOR.join(times).rstrip())
     for label, row in zip(labels, rows, strict=True):
         out.append(f"{label:>{label_width}}|{COLUMN_SEPARATOR.join(row).rstrip()}")
-    out.extend(
-        (
-            "",
-            "Technique hints (heuristic only): s=slide, h=hammer-on, p=pull-off",
-            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        )
-    )
+    out.append("")
+    if any(
+        pos.get("technique") in (TECHNIQUE_SLIDE, TECHNIQUE_HAMMER, TECHNIQUE_PULL)
+        for pos in tab_data
+    ):
+        out.append("Technique legend (supplied marks): s=slide, h=hammer-on, p=pull-off")
+    else:
+        out.append("Playing techniques not inferred.")
+    out.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     return "\n".join(out) + "\n"
 
 
@@ -226,7 +228,7 @@ def export_tab_to_json(
         "timestamp": datetime.now().isoformat(),
         "num_strings": len(tuning) if tuning is not None else num_strings,
         "tuning": tuning,
-        "technique_basis": "heuristic",
+        "technique_basis": "not_inferred",
         "separation_mode": separation_mode,
         "skipped_notes": skipped_notes or [],
         "tablature": tab_data,
@@ -383,6 +385,11 @@ Examples:
     parser.add_argument(
         "--output-dir", "-o", type=str, default=None, help="Output directory (default: ./output)"
     )
+    parser.add_argument(
+        "--fresh-output-dir",
+        action="store_true",
+        help="Require an explicit, new --output-dir so a run cannot reuse old exports",
+    )
     parser.add_argument("--version", action="version", version="Tab Agent 1.1.0")
     return parser
 
@@ -405,15 +412,16 @@ def _export_cli_tab(
     label: str,
     args,
     separation_mode: str | None,
-    technique_sensitivity: float,
 ) -> None:
     if args.no_tab and args.no_json:
         return
-    tab = agent.generate_tab(notes, technique_sensitivity=technique_sensitivity)
+    tab = agent.generate_tab(notes)
     skipped = agent.last_skipped_events
     if skipped:
+        reasons = ", ".join(sorted({event["reason"] for event in skipped}))
         print(
-            f"⚠️  {label}: {len(skipped)} detected note(s) omitted from the tab.", file=sys.stderr
+            f"⚠️  {label}: {len(skipped)} detected note(s) omitted from the tab ({reasons}).",
+            file=sys.stderr,
         )
     if not tab:
         return
@@ -459,7 +467,18 @@ def main(argv: list[str] | None = None) -> int:
     else:
         output_dir = "./output"
 
-    os.makedirs(output_dir, exist_ok=True)
+    if args.fresh_output_dir:
+        if not args.output_dir:
+            parser.error("--fresh-output-dir requires --output-dir")
+        os.makedirs(os.path.dirname(os.path.abspath(output_dir)), exist_ok=True)
+        # Atomically claim the directory. Never process or report old files if
+        # the chosen path already exists, even when another run just created it.
+        try:
+            os.mkdir(output_dir)
+        except FileExistsError:
+            parser.error(f"Output directory already exists: {output_dir}")
+    else:
+        os.makedirs(output_dir, exist_ok=True)
 
     song_name = os.path.splitext(os.path.basename(audio_path))[0]
 
@@ -534,7 +553,6 @@ def main(argv: list[str] | None = None) -> int:
     guitar_tuning = config.get("guitar_tuning", [40, 45, 50, 55, 59, 64])
     bass_tuning = config.get("bass_tuning", [23, 28, 33, 38, 43])
     num_frets = int(config.get("num_frets", 24))
-    technique_sensitivity = float(config.get("technique_sensitivity", 0.7))
     guitar_prefer_low = (
         bool(config.get("prefer_low_strings", False)) if config.get("active_profile") else False
     )
@@ -607,7 +625,6 @@ def main(argv: list[str] | None = None) -> int:
                 label,
                 args,
                 separation_mode,
-                technique_sensitivity,
             )
 
     if run_bass:
@@ -645,7 +662,6 @@ def main(argv: list[str] | None = None) -> int:
             f"{len(bass_tuning)}-String Bass",
             args,
             separation_mode,
-            technique_sensitivity,
         )
 
     # Log session to memory

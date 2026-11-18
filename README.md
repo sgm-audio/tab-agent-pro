@@ -115,7 +115,7 @@ graph LR
 | **Spatial Processing** | Mid-Side | Splits lead (centre) from rhythm (sides) by subtraction |
 | **Transcription** | Basic Pitch | Converts audio → MIDI notes |
 | **Tablature** | Time-aware search | Assigns notes to free strings within a conservative fret span; omitted notes are reported |
-| **Technique hints** | Timing and fret geometry | Suggests slides and legato marks; does not recognize how a note was played |
+| **Playing techniques** | Not inferred | Note timing and fret choices alone do not establish slides, hammer-ons or pull-offs |
 | **Export** | — | MIDI, ASCII tab, JSON |
 
 ---
@@ -126,8 +126,7 @@ graph LR
 - **Full-mix processing** — Demucs separates the mix; the residual `other` stem (guitars and other instruments) is transcribed as guitar
 - **Multi-track output** — Lead, rhythm L/R and bass estimates in separate files; raw-audio fallback is flagged in the UI/CLI and tab/JSON
 - **Timed tablature** — Identical onsets share a column; held notes reserve their strings until release
-- **AI audio support** — Automatic detection and cleanup for Suno/Udio AI-generated audio
-- **Technique hints** — Slides (`s`), hammer-ons (`h`) and pull-offs (`p`) mark plausible transitions, not verified articulations
+- **AI audio support** — Heuristic detection and preprocessing for Suno/Udio audio. Note postprocessing adjusts timing without deleting octave pairs or high notes based on pitch alone.
 - **Plug-and-play presets** — 8 profiles (standard, drop D, classical, 4/5-string bass, Suno cleanup, live band) applied with `--profile`
 - **REAPER actions** — The Settings script passes its values through to the CLI; see manual loading below
 - **CPU by default, GPU optional** — the transcription stack runs on CPU out of
@@ -198,15 +197,18 @@ t(s)|0.000
    A|2
    E|0
 
-Technique hints (heuristic only): s=slide, h=hammer-on, p=pull-off
+Playing techniques not inferred.
 ```
 
 A column represents one onset; `-` means no new note on that string at that
 onset. JSON includes durations and `skipped_notes`, with a pitch, start time,
-end time and reason for each input event the fingering search could not place.
-MIDI retains those events. A CLI run that transcribes no notes exits with code 2
-instead of reporting success. The search enforces string occupancy and a
-four-fret span for held, fretted notes, not every constraint of human fingering.
+end time and reason for omitted events. The tab solver rejects non-finite,
+negative-onset, or nonpositive-duration events. MIDI retains valid events that
+could not be assigned to strings. The JSON `technique_basis` is `not_inferred`;
+the legacy `pick` value means no technique was marked, not a detected pick attack.
+A CLI run that transcribes no notes exits with code 2. The search enforces
+string occupancy and a four-fret span for held, fretted notes, not every
+constraint of human fingering.
 
 ---
 
@@ -220,11 +222,14 @@ four-fret span for held, fretted notes, not every constraint of human fingering.
 
 `Tab Agent Settings` stores the install path, profile, instrument, onset/frame
 thresholds, output directory and export toggles in REAPER's ExtState. The action
-uses `python3` (`python` on Windows) from REAPER's PATH. Use matching versions
-of the Lua scripts and Python checkout: the action imports only MIDI reported
-by the CLI from the current run. Pipe reads can still block while Python is
-quiet. The Lua API fixture does not replace a native REAPER smoke test, and the
-separately indexed ReaPack release has not been re-verified.
+uses `python3` (`python` on Windows) from REAPER's PATH. Each run creates a
+new `tab-agent-*` subdirectory under the configured export directory (default:
+`output` in the checkout). An existing directory causes the run to abort
+rather than reuse its files. Use matching versions of the Lua scripts and
+Python checkout: the action imports only MIDI reported by the CLI from a
+successful run in the same project. Pipe reads can still block while Python
+is quiet. The Lua API fixture does not replace a native REAPER smoke test, and
+the separately indexed ReaPack release has not been re-verified.
 
 ---
 
