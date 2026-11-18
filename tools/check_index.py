@@ -85,7 +85,7 @@ def _commit_exists(sha: str) -> bool:
 def _is_shallow() -> bool:
     """True when the local checkout is a shallow (depth-limited) clone."""
     try:
-        result = subprocess.run(  # nosec B603, B607\
+        result = subprocess.run(  # nosec B603, B607
             ["git", "-C", str(ROOT), "rev-parse", "--is-shallow-repository"],
             capture_output=True,
             text=True,

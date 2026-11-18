@@ -1,6 +1,9 @@
 """
 Tab Agent Pro — Unit Tests: Suno Postprocessor
 Tests for Suno artifact detection, audio preprocessing, and note cleaning.
+
+Tests of the private destructive filters are legacy helper tests only; those
+filters are not used by the public processing pipeline.
 """
 
 import os
@@ -114,6 +117,58 @@ class TestSunoAudioPreprocessor(unittest.TestCase):
         filtered = self.preprocessor._highpass_filter(signal, sr, cutoff=40)
         # Filtered signal should have lower amplitude (attenuated)
         assert np.max(np.abs(filtered)) < np.max(np.abs(signal))
+
+    def test_highpass_keeps_the_lowest_transcribable_bass_note(self) -> None:
+        """B0 is the lowest note the bass pipeline claims; it must survive.
+
+        A 4th-order Butterworth at 40 Hz cost B0 9.5 dB *before* separation and
+        transcription, so the plugin was quietly deleting the bottom of the
+        instrument range it advertises (B0 = MIDI 23 = 30.9 Hz).
+        """
+        sr = 22050
+        t = np.linspace(0, 1, sr, endpoint=False)
+        for name, freq in (("B0", 30.87), ("C1", 32.70), ("E1", 41.20)):
+            tone = np.sin(2 * np.pi * freq * t).astype(np.float32)
+            filtered = self.preprocessor._highpass_filter(tone, sr)
+            gain_db = 20 * np.log10(np.sqrt(np.mean(filtered**2)) / np.sqrt(np.mean(tone**2)))
+            assert gain_db > -1.5, f"{name} ({freq:.2f} Hz) lost {gain_db:.2f} dB"
+
+    def test_highpass_still_removes_sub_instrument_rumble(self) -> None:
+        """Lowering the cutoff must not turn the stage into a no-op."""
+        sr = 22050
+        t = np.linspace(0, 1, sr, endpoint=False)
+        rumble = np.sin(2 * np.pi * 20 * t).astype(np.float32)
+        filtered = self.preprocessor._highpass_filter(rumble, sr)
+        gain_db = 20 * np.log10(np.sqrt(np.mean(filtered**2)) / np.sqrt(np.mean(rumble**2)))
+        assert gain_db < -6.0, f"20 Hz rumble only lost {-gain_db:.2f} dB"
+
+    def test_spectral_gate_preserves_signal_length(self) -> None:
+        """An unset `length=` drops the partial final frame.
+
+        `_reduce_hi_freq_artifacts` got its `length=` fix; `_spectral_gate` did
+        not, so the gated stem came back shorter than its input and stopped
+        lining up with the source audio.
+        """
+        sr = 22050
+        y = np.random.default_rng(0).normal(0, 0.1, sr).astype(np.float32)
+        out = self.preprocessor._spectral_gate(y, sr)
+        assert len(out) == len(y), f"gate returned {len(out)} samples for {len(y)}"
+
+    def test_hi_freq_reduction_preserves_signal_length(self) -> None:
+        sr = 22050
+        y = np.random.default_rng(1).normal(0, 0.1, sr).astype(np.float32)
+        out = self.preprocessor._reduce_hi_freq_artifacts(y, sr)
+        assert len(out) == len(y)
+
+    def test_process_preserves_length_through_all_stages(self) -> None:
+        """Every stage must be sample-aligned with the next."""
+        sr = 22050
+        y = np.random.default_rng(2).normal(0, 0.1, sr).astype(np.float32)
+        in_path = self._write_wav("length_in.wav", y)
+        out_path = os.path.join(self.tmpdir, "length_out.wav")
+        self.preprocessor.process(in_path, out_path)
+        out, _ = sf.read(out_path)
+        assert len(out) == sr, f"process() returned {len(out)} samples for {sr}"
 
     def test_reduce_hi_freq_artifacts_when_nyquist_below_16khz(self) -> None:
         """_reduce_hi_freq_artifacts attenuates 12-15kHz even when Nyquist < 16kHz (sr=30000)."""

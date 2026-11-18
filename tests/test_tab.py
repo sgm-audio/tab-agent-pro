@@ -121,46 +121,41 @@ class TestTabAgentGenerateTab(unittest.TestCase):
         for entry in result:
             assert "technique" in entry
 
-    def test_every_note_has_technique(self) -> None:
-        """Every output entry has a technique annotation."""
+    def test_every_note_has_the_unmarked_technique_value(self) -> None:
+        """Keep the legacy field, without inferring technique from notes."""
         notes = [
             make_note(60, 0.0),
             make_note(62, 0.3),
             make_note(64, 0.6),
         ]
         result = self.agent.generate_tab(notes)
-        for entry in result:
-            assert "technique" in entry
-            assert entry["technique"] in ["pick", "slide", "hammer", "pull"]
+        assert [entry["technique"] for entry in result] == ["pick"] * len(notes)
 
-    def test_technique_detection_slide(self) -> None:
-        """Adjacent notes on same string 1-2 frets apart → slide."""
+    def test_contiguous_notes_do_not_claim_slide(self) -> None:
+        """Close same-string notes do not prove a slide."""
         # E2 (open string 0) → F#2 (fret 2 on string 0)
         notes = [
             make_note(40, 0.0, 0.15),  # E2 releases at the next onset
             make_note(42, 0.15),  # F#2 — fast, same string, 2 frets apart
         ]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
-        # The DP may choose the same string for efficiency
-        techniques = [r["technique"] for r in result]
-        assert "slide" in techniques
+        assert [r["technique"] for r in result] == ["pick", "pick"]
 
-    def test_technique_detection_hammer_on(self) -> None:
-        """Ascending notes on same string → hammer-on."""
+    def test_ascending_notes_do_not_claim_hammer_on(self) -> None:
+        """Even contiguous ascending notes may be picked separately."""
         # E2 (open string 0) → G#2 (fret 4 on string 0)
         notes = [
             make_note(40, 0.0, 0.15),  # E2 releases at the next onset
             make_note(44, 0.15),  # G#2 — fast, same string, ascending
         ]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
-        techniques = [r["technique"] for r in result]
-        assert "hammer" in techniques
+        assert [r["technique"] for r in result] == ["pick", "pick"]
 
-    def test_technique_detection_pull_off(self) -> None:
+    def test_descending_notes_do_not_claim_pull_off(self) -> None:
         """Descending notes on same string → pull-off."""
         notes = [make_note(44, 0.0, 0.15), make_note(40, 0.15)]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
-        assert [r["technique"] for r in result] == ["pick", "pull"]
+        assert [r["technique"] for r in result] == ["pick", "pick"]
 
     def test_bass_five_string_tuning(self) -> None:
         """5-string bass tuning works correctly."""
@@ -178,13 +173,7 @@ class TestTabAgentGenerateTab(unittest.TestCase):
 
 
 class TestTabAgentChordFeasibility(unittest.TestCase):
-    """A chord must never place two notes on the same string.
-
-    Regression: the Viterbi DP used to assign simultaneous notes to the same
-    string at different frets (e.g. low-E fret 0 *and* fret 19 in one column),
-    which is physically impossible to finger. The DP now penalises same-string
-    simultaneous transitions so it re-voices the collision onto another string.
-    """
+    """Simultaneous pitches must occupy distinct strings in playable chords."""
 
     def setUp(self) -> None:
         self.agent = TabAgent(tuning=GUITAR_TUNING, num_frets=24)
@@ -193,7 +182,7 @@ class TestTabAgentChordFeasibility(unittest.TestCase):
         """No time-group may contain two notes on the same string."""
         groups: dict[float, list[int]] = {}
         for pos in tab:
-            key = round(pos["start_time"], 2)
+            key = pos["start_time"]
             groups.setdefault(key, []).append(pos["string"])
         for strings in groups.values():
             assert len(strings) == len(set(strings)), f"chord collides on a string: {strings}"
@@ -201,8 +190,8 @@ class TestTabAgentChordFeasibility(unittest.TestCase):
     def test_impossible_chord_is_feasible(self) -> None:
         """E2 + E6 + B3 simultaneous must not emit two frets on one string.
 
-        E2(40) -> low E fret 0; E6(88) -> high E fret 24; B3(59) is playable
-        on the low E (fret 19), B (fret 14), G (fret 9) or D (fret 4) string.
+        E2(40) uses open low E, E6(88) uses high E fret 24, and B3(59)
+        can stay open on the B string without exceeding the fret span.
         Without a chord-feasibility constraint B3 was placed on the low E
         string (fret 19), colliding with E2 (fret 0). The DP must keep all
         three notes and place them on distinct strings.
@@ -231,18 +220,12 @@ class TestTabAgentChordFeasibility(unittest.TestCase):
         # The penalty dominates the legato bonus, so same-string is never cheaper.
         assert cost_same >= 1000.0
 
-    def test_legato_slide_bonus_still_applies_to_sequential_notes(self) -> None:
-        """Short *sequential* same-string transitions keep the slide bonus.
-
-        The chord constraint only fires for truly simultaneous notes
-        (time_delta < CHORD_TOLERANCE). A 100 ms same-string transition is a
-        slide/hammer-on candidate and must stay cheap.
-        """
+    def test_rapid_sequential_motion_has_no_chord_penalty(self) -> None:
+        """A 20 ms gap between onsets is not evidence of a chord or a slide."""
         prev = {"string": 0, "fret": 0}
         curr = {"string": 0, "fret": 2}
-        cost = self.agent.calculate_cost(prev, curr, time_delta=0.1)
-        # base = 2*1.5 = 3.0, legato bonus -5.0 -> -2.0 (no chord penalty).
-        assert cost == 3.0 - 5.0
+        cost = self.agent.calculate_cost(prev, curr, time_delta=0.02)
+        assert cost == 3.0 - 5.0  # two-fret motion, favor economical string reuse
 
     def test_normal_chord_still_renders(self) -> None:
         """A normal playable chord is unaffected by the constraint."""
@@ -281,7 +264,7 @@ class TestTabAgentChordFeasibility(unittest.TestCase):
         notes = [make_note(40, 0.0), make_note(88, 0.0), make_note(59, 0.0)]
         tab = self.agent.generate_tab(notes)
         text = main.render_tab_text(tab)
-        assert text is not None, "render_tab_text returned None for a valid tab"
+        assert text is not None
         # Split on the column separator and check no cell contains '/'.
         for line in text.splitlines():
             if "|" in line and not line.startswith("Legend"):

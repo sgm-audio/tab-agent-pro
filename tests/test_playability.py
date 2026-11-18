@@ -69,19 +69,24 @@ def test_overlapping_frets_outside_hand_span_are_not_combined() -> None:
     assert agent.last_skipped_events[0]["reason"] == "fingering_conflict"
 
 
-def test_instant_notes_at_the_same_onset_also_need_distinct_strings() -> None:
+def test_zero_duration_notes_are_reported_not_assigned() -> None:
     agent = TabAgent(STANDARD)
-    assert len(agent.generate_tab([note(40, 0, 0), note(42, 0, 0)])) == 1
-    assert len(agent.last_skipped_events) == 1
+    assert agent.generate_tab([note(40, 0, 0), note(42, 0, 0)]) == []
+    assert agent.last_skipped_notes == [40, 42]
+    assert [e["reason"] for e in agent.last_skipped_events] == ["invalid_timing"] * 2
 
 
-def test_note_can_start_at_release_but_empty_gap_is_not_labeled_legato() -> None:
+def test_fast_notes_can_reuse_a_released_string_without_inferred_technique() -> None:
     agent = TabAgent(STANDARD)
-    contiguous = agent.generate_tab([note(40, 0, 0.12), note(42, 0.12, 0.2)])
-    gapped = agent.generate_tab([note(40, 0, 0.05), note(42, 0.12, 0.2)])
-    assert len(contiguous) == len(gapped) == 2
-    assert contiguous[1]["technique"] == "slide"
-    assert gapped[1]["technique"] == "pick"
+    # The first note releases before the next onset, less than 50 ms later.
+    tab = agent.generate_tab([note(40, 0, 0.02), note(42, 0.02, 0.1)], technique_sensitivity=0.9)
+    assert [(p["string"], p["fret"], p["technique"]) for p in tab] == [
+        (0, 0, "pick"),
+        (0, 2, "pick"),
+    ]
+    text = render_tab_text(tab, tuning=STANDARD)
+    assert text is not None and "t(s)|0.000 0.020" in text
+    assert agent.last_skipped_events == []
 
 
 def test_small_polyphonic_search_matches_exhaustive_oracle() -> None:
@@ -155,7 +160,7 @@ def test_exports_retain_drop_d_timing_and_omissions(tmp_path) -> None:
     assert data["num_strings"] == 6 and data["tuning"] == tuning
     assert data["tablature"][0]["end_time"] == 0.4
     assert data["skipped_notes"][0]["reason"] == "out_of_range"
-    assert data["technique_basis"] == "heuristic" and data["separation_mode"] == "raw_fallback"
+    assert data["technique_basis"] == "not_inferred" and data["separation_mode"] == "raw_fallback"
 
 
 def test_range_filter_uses_both_tuning_boundaries() -> None:

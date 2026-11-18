@@ -172,21 +172,31 @@ class SplitterAgent:
 
         _, separated = separator.separate_audio_file(audio_path)
 
-        # Write stems to expected paths for backward compat
-        base_path = os.path.join(self.output_dir, "htdemucs", song_name)
-        os.makedirs(base_path, exist_ok=True)
-
         missing = {"other", "bass"} - separated.keys()
         if missing:
             raise ValueError(f"Demucs API did not return required stems: {sorted(missing)}")
-        for stem_key in ("other", "bass"):
-            tensor = separated[stem_key]
-            if tensor.ndim == 1:
-                tensor = tensor.unsqueeze(0)
-            stem_path = os.path.join(base_path, f"{stem_key}.wav")
-            sf.write(stem_path, tensor.cpu().numpy().T, separator.samplerate)
 
-        return self._checked_stems(base_path)
+        base_path = tempfile.mkdtemp(prefix="demucs-api-", dir=self.output_dir)
+        try:
+            for stem_key in ("other", "bass"):
+                samples = separated[stem_key].cpu().numpy()
+                if samples.ndim == 1:
+                    samples = samples[np.newaxis, :]
+                # Check before writing: PCM encoding can hide non-finite samples.
+                if (
+                    samples.ndim != 2
+                    or samples.shape[0] not in (1, 2)
+                    or samples.shape[1] == 0
+                    or not np.isfinite(samples).all()
+                ):
+                    raise ValueError(f"Invalid Demucs API stem: {stem_key}")
+                sf.write(
+                    os.path.join(base_path, f"{stem_key}.wav"), samples.T, separator.samplerate
+                )
+            return self._checked_stems(base_path)
+        except Exception:
+            shutil.rmtree(base_path, ignore_errors=True)
+            raise
 
     def _separate_with_subprocess(self, audio_path, song_name):
         """Fallback: Demucs via CLI subprocess."""
@@ -208,9 +218,25 @@ class SplitterAgent:
             "guitar": os.path.join(base_path, "other.wav"),
             "bass": os.path.join(base_path, "bass.wav"),
         }
+        expected = None
         for path in stems.values():
-            if sf.info(path).frames <= 0:
-                raise ValueError(f"Demucs produced an empty stem: {path}")
+            try:
+                with sf.SoundFile(path) as stem:
+                    shape = (stem.frames, stem.samplerate, stem.channels)
+                    if stem.frames <= 0 or stem.samplerate <= 0 or stem.channels not in (1, 2):
+                        raise ValueError(f"Invalid Demucs stem format: {path}")
+                    if expected is not None and shape != expected:
+                        raise ValueError("Demucs stems have inconsistent length or format")
+                    expected = shape
+                    frames = 0
+                    for block in stem.blocks(blocksize=65536, dtype="float32"):
+                        if not np.isfinite(block).all():
+                            raise ValueError(f"Non-finite samples in Demucs stem: {path}")
+                        frames += len(block)
+                    if frames != stem.frames:
+                        raise ValueError(f"Incomplete Demucs stem: {path}")
+            except (OSError, RuntimeError) as exc:
+                raise ValueError(f"Demucs stem is missing or unreadable: {path}") from exc
         return stems
 
     def process_guitars(self, guitar_stem_path):
@@ -515,7 +541,7 @@ class EarAgent:
         Clean transcription artifacts.
 
         Removes:
-        - Ultra-short notes (<0.05s) - likely transcription errors
+        - Invalid or ultra-short notes (<0.05s)
         - Notes above the requested range (default for bass: above G4)
         - Duplicate notes at the same timestamp
         """
@@ -524,9 +550,9 @@ class EarAgent:
         seen_pitches: dict = {}  # Track pitches by start time
 
         for note in raw_notes:
-            # Filter ultra-short notes
-            duration = note.end_time - note.start_time
-            if duration < 0.05:
+            # Invalid timing must not reach MIDI or tab export.
+            start, end = note.start_time, note.end_time
+            if not (math.isfinite(start) and math.isfinite(end)) or start < 0 or end - start < 0.05:
                 continue
 
             if upper_bound is not None and note.pitch > upper_bound:
@@ -567,13 +593,8 @@ class EarAgent:
 # STAGE 5: THE LUTHIER (Tablature generation)
 # ============================================================================
 
-# A chord is a group of notes whose onsets fall within this tolerance (it
-# matches the 50 ms grouping used when rendering columns). Two notes that land
-# in the same chord cannot share a string: one string produces one pitch at a
-# time, so a "chord" with two frets on the same string is physically impossible
-# to finger. This is enforced as a large transition penalty so the Viterbi DP
-# re-voices such collisions onto another string instead of emitting them.
-CHORD_TOLERANCE = 0.05
+# Keep a high cost for a hypothetical same-string, same-onset transition.
+# Actual collisions are rejected by the solver's duration-aware occupancy rule.
 SAME_STRING_CHORD_PENALTY = 1000.0
 
 
@@ -659,7 +680,7 @@ class TabAgent:
         Cost factors:
         - Fret distance (hand position shifts)
         - String changes (picking efficiency)
-        - Time delta (legato vs. separate notes)
+        - Time between onsets
         - Instrument-specific preferences
 
         Args:
@@ -688,13 +709,8 @@ class TabAgent:
                 # String skip on fast run = awkward
                 cost += 5.0  # Penalize
 
-        # Chord feasibility: notes that are truly simultaneous (a chord, within
-        # the render grouping tolerance) must not collide on one string. The
-        # legato bonus above applies to short *sequential* transitions
-        # (slides/hammer-ons); a chord note on an already-sounding string is
-        # physically impossible, so penalise it heavily. The penalty dominates
-        # the legato bonus, steering the DP to re-voice the note elsewhere.
-        if 0 <= time_delta < CHORD_TOLERANCE and prev["string"] == curr["string"]:
+        # Nearby onsets may be successive releases and attacks, not a chord.
+        if time_delta == 0 and string_distance == 0:
             cost += SAME_STRING_CHORD_PENALTY
 
         # 5-string bass heuristic: slight penalty for low fretted notes (1-4)
@@ -715,10 +731,8 @@ class TabAgent:
         latest_end = -math.inf
         flags = []
         for i, note in enumerate(notes):
-            before = note.start < latest_end or (i > 0 and note.start == notes[i - 1].start)
-            after = i + 1 < len(notes) and (
-                notes[i + 1].start < note.end or notes[i + 1].start == note.start
-            )
+            before = note.start < latest_end
+            after = i + 1 < len(notes) and notes[i + 1].start < note.end
             flags.append(before or after)
             latest_end = max(latest_end, note.end)
         return flags
@@ -744,12 +758,7 @@ class TabAgent:
             next_paths: dict[tuple, _TabPath] = {}
             for path in paths:
                 occupied = tuple(
-                    (
-                        k
-                        if k >= 0 and (notes[k].end > note.start or notes[k].start == note.start)
-                        else -1
-                    )
-                    for k in path.occupied
+                    k if k >= 0 and notes[k].end > note.start else -1 for k in path.occupied
                 )
                 # A skip is useful when retaining a note can block another one.
                 # Disjoint notes collapse to the original per-position DP.
@@ -795,45 +804,40 @@ class TabAgent:
             node = node.previous
         return placed
 
-    @staticmethod
-    def _technique_hint(prev: dict, curr: dict, window: float) -> str:
-        """Geometry-only suggestion, never evidence of how a note was played."""
-        onset_delta = curr["start_time"] - prev["start_time"]
-        gap = curr["start_time"] - prev["end_time"]
-        if curr["string"] != prev["string"] or not (0 < onset_delta < window and 0 <= gap <= 0.03):
-            return "pick"  # unmarked, not a detected pick attack
-        delta = curr["fret"] - prev["fret"]
-        if 1 <= abs(delta) <= 2:
-            return "slide"
-        if delta > 0:
-            return "hammer"
-        return "pull" if delta < 0 else "pick"
-
     def generate_tab(self, midi_notes: list, technique_sensitivity: float = 0.7) -> list[dict]:
-        """Generate string/fret entries with timings; report unmatched input events.
+        """Assign valid events and report any omissions with their reasons.
 
-        A zero-duration event occupies a string at its onset. Otherwise notes
-        use half-open intervals, so a new note can begin exactly at release.
-        Technique hints are limited to adjacent, near-contiguous solo notes;
-        the labels are not inferred from audio articulation.
+        Notes must have finite, nonnegative onsets and positive durations. The
+        intervals are half-open, so a note can begin exactly at another's release.
+        The legacy ``technique_sensitivity`` argument is ignored: ``pick`` is
+        an unmarked note, not evidence of a picked attack.
         """
         self.last_skipped_notes = []
         self.last_skipped_events = []
         notes = []
         for note in midi_notes:
             start = note.start_time
-            end = getattr(note, "end_time", start)
-            if not (math.isfinite(start) and math.isfinite(end)):
-                raise ValueError("Note start and end times must be finite")
-            notes.append(_TabNote(start, note.pitch, max(start, end)))
+            end: float | None = getattr(note, "end_time", None)
+            if end is not None and not math.isfinite(end):
+                end = None
+            finite_start = math.isfinite(start)
+            if not finite_start or start < 0 or end is None or end <= start:
+                self.last_skipped_notes.append(note.pitch)
+                self.last_skipped_events.append(
+                    {
+                        "pitch": note.pitch,
+                        "start_time": start if finite_start else None,
+                        "end_time": end,
+                        "reason": "invalid_timing",
+                    }
+                )
+                continue
+            notes.append(_TabNote(start, note.pitch, end))
         notes.sort()
 
         positions = [self.get_valid_positions(n.pitch) for n in notes]
-        polyphonic = self._polyphonic_notes(notes)
-        assigned = self._assign_positions(notes, positions, polyphonic)
-        window = 0.05 + technique_sensitivity * 0.25
+        assigned = self._assign_positions(notes, positions, self._polyphonic_notes(notes))
         tab: list[dict] = []
-        prev_index = -2
         for i, note in enumerate(notes):
             if i not in assigned:
                 self.last_skipped_notes.append(note.pitch)
@@ -846,16 +850,14 @@ class TabAgent:
                     }
                 )
                 continue
-            entry = {
-                **assigned[i],
-                "start_time": note.start,
-                "end_time": note.end,
-                "technique": "pick",
-            }
-            if prev_index == i - 1 and not (polyphonic[i] or polyphonic[prev_index]):
-                entry["technique"] = self._technique_hint(tab[-1], entry, window)
-            tab.append(entry)
-            prev_index = i
+            tab.append(
+                {
+                    **assigned[i],
+                    "start_time": note.start,
+                    "end_time": note.end,
+                    "technique": "pick",
+                }
+            )
 
         if self.last_skipped_notes:
             get_logger("tab_agent").warning(

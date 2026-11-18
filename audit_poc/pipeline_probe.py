@@ -83,6 +83,10 @@ silent = silent_wav(TMP / "silent.wav")
 
 
 class FakeSplitter:
+    # main.py reads this to label the export (SplitterAgent sets "demucs" or
+    # "raw_fallback"); the probe's fake separation is a passthrough.
+    separation_mode = "raw_fallback"
+
     def __init__(self, output_dir=None, device=None):
         self.output_dir = output_dir or str(TMP / "stems")
         os.makedirs(self.output_dir, exist_ok=True)

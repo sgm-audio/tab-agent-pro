@@ -98,6 +98,16 @@ io.popen = function(command, mode)
     end,
   }
 end
+local session_number = 0
+os.tmpname = function()
+  if not TEMP_OK then error("temporary directory unavailable") end
+  session_number = session_number + 1
+  return "/tmp/session-" .. session_number
+end
+os.remove = function(path)
+  assert(path:match("^/tmp/session%-%d+$"))
+  return true
+end
 os.execute = function() error("unexpected shell execution") end
 """
 
@@ -114,7 +124,7 @@ class ReaperHarness:
         g.CURRENT_PROJECT = "proj-a"
         g.CHILD_LINES = self.lua.table()
         g.EXIT_CODE = 0
-        g.HAS_ITEM = g.HAS_TAKE = g.INSERT_OK = g.START_OK = True
+        g.HAS_ITEM = g.HAS_TAKE = g.INSERT_OK = g.START_OK = g.TEMP_OK = True
         self.lua.execute(STUB)
 
     def run(self, script="TabAgent.lua"):
@@ -127,6 +137,10 @@ class ReaperHarness:
     @property
     def command(self):
         return self.globals.EVENTS.command
+
+    def cli_argv(self):
+        tokens = shlex.split(self.command)
+        return tokens[tokens.index("main.py") + 1 : -1]
 
     def events(self, key):
         events = self.globals.EVENTS[key]
@@ -188,14 +202,20 @@ def test_reaper_settings_dialog_reaches_real_cli_and_controls_outputs(
         return None, midi, []
 
     monkeypatch.setattr(agents, "basic_pitch_predict", predict)
-    out = install / "mix exports"
-    out.mkdir()
+    output_root = install / "mix exports"
+    output_root.mkdir()
     # This stem belongs to a previous guitar run and should never be imported.
-    stale = out / f"{audio.stem}_lead_guitar.mid"
+    stale = output_root / f"{audio.stem}_lead_guitar.mid"
     stale.write_bytes(b"previous file")
-    main.main(tokens[5:-1])
+    host.globals.EXISTS[str(stale)] = True
+    opts = main.parse_args(tokens[5:-1])
+    out = Path(opts.output_dir)
+    assert opts.fresh_output_dir and out.parent == output_root and not out.exists()
+    assert out.name.startswith("tab-agent-")
+    assert main.main(tokens[5:-1]) == 0
     assert calls == [("processed_bass_clean.wav", 0.62, 0.26 if frame else 0.35)]
-    fresh = {p.name for p in out.iterdir() if p.is_file() and p != stale}
+    assert stale.read_bytes() == b"previous file"
+    fresh = {p.name for p in out.iterdir() if p.is_file()}
     extensions = ("mid", "json") if include_midi else ("tab",)
     assert fresh == {f"{audio.stem}_bass.{ext}" for ext in extensions}
     if include_midi:
@@ -235,7 +255,7 @@ def test_settings_gui_to_lua_command_to_cli_parser(tmp_path):
         0.62,
         0.31,
     )
-    assert parsed.output_dir == str(out)
+    assert parsed.fresh_output_dir and Path(parsed.output_dir).parent == out
     assert parsed.no_midi and not parsed.no_tab and parsed.no_json
 
 
@@ -260,7 +280,8 @@ def test_reaper_posix_literal_paths_reach_the_child_unchanged(tmp_path, monkeypa
     assert Path(cwd).resolve() == install.resolve()
     opts = main.parse_args(argv)
     assert opts.audio == str(audio)
-    assert opts.output_dir == str(install / "export's $TAB_AGENT_LITERAL")
+    assert opts.fresh_output_dir
+    assert Path(opts.output_dir).parent == install / "export's $TAB_AGENT_LITERAL"
 
 
 def test_reaper_windows_uses_drive_switch_and_rejects_expansion():
@@ -279,7 +300,15 @@ def test_reaper_windows_uses_drive_switch_and_rejects_expansion():
 
 
 @pytest.mark.parametrize(
-    "bad_input", ["no item", "no take", "no source file", "nil source filename", "start failure"]
+    "bad_input",
+    [
+        "no item",
+        "no take",
+        "no source file",
+        "nil source filename",
+        "start failure",
+        "temp failure",
+    ],
 )
 def test_reaper_no_project_mutation_on_selection_or_start_failure(bad_input):
     host = ReaperHarness("/repo", "/audio/take.wav")
@@ -291,6 +320,8 @@ def test_reaper_no_project_mutation_on_selection_or_start_failure(bad_input):
         host.globals.AUDIO = ""  # e.g. in-project MIDI
     elif bad_input == "nil source filename":
         host.globals.AUDIO = None
+    elif bad_input == "temp failure":
+        host.globals.TEMP_OK = False
     else:
         host.globals.START_OK = False
     host.run()
@@ -308,6 +339,9 @@ def test_reaper_never_imports_failed_or_stale_midi(abort):
     host.globals.EXISTS["/repo/output/take_bass.mid"] = True
     host.run()
     assert host.events("undo") == []  # not open during inference
+    if abort in ("nonzero exit with partial output", "project changed"):
+        out = Path(main.parse_args(host.cli_argv()).output_dir)
+        host.globals.EXISTS[str(out / "take_bass.mid")] = True
     if abort.startswith("nonzero exit"):
         host.globals.EXIT_CODE = 2
     elif abort == "project changed":
@@ -328,14 +362,14 @@ def test_reaper_never_imports_failed_or_stale_midi(abort):
 @pytest.mark.parametrize("succeed", [True, False], ids=["track-created", "insert-failed"])
 def test_reaper_renames_only_a_successfully_created_track(succeed):
     host = ReaperHarness("/repo", "/audio/part.multi.wav")
-    host.globals.EXISTS["/repo/output/part.multi_rhythm_R.mid"] = True
     host.globals.INSERT_OK = succeed
     host.run()
+    out = Path(main.parse_args(host.cli_argv()).output_dir)
+    midi_path = str(out / "part.multi_rhythm_R.mid")
+    host.globals.EXISTS[midi_path] = True
     host.finish("[tab-agent-midi] rhythm_R")
     assert host.events("undo") == ["begin", "end"]
-    assert [[entry[1], entry[2]] for entry in host.events("inserted")] == [
-        ["/repo/output/part.multi_rhythm_R.mid", 1]
-    ]
+    assert [[entry[1], entry[2]] for entry in host.events("inserted")] == [[midi_path, 1]]
     assert [[entry[1], entry[2]] for entry in host.events("renamed")] == (
         [["new-1", "part.multi - Rhythm Guitar R"]] if succeed else []
     )
@@ -353,3 +387,43 @@ def test_reaper_invalid_threshold_is_not_persisted_or_silently_dropped():
     host.run()
     assert host.command is None
     assert "Invalid frame threshold" in "".join(host.events("console"))
+
+
+def test_reaper_uses_a_distinct_output_dir_for_each_run():
+    host = ReaperHarness("/repo", "/audio/take.wav")
+    host.run()
+    first = main.parse_args(host.cli_argv())
+    host.finish()
+    host.globals.EVENTS.closed = None
+    host.run()
+    second = main.parse_args(host.cli_argv())
+    host.finish()
+    assert first.fresh_output_dir and second.fresh_output_dir
+    assert first.output_dir != second.output_dir
+    assert Path(first.output_dir).parent == Path(second.output_dir).parent == Path("/repo/output")
+
+
+def test_reaper_output_collision_does_not_process_or_import(tmp_path, monkeypatch, capsys):
+    audio = tmp_path / "take.wav"
+    audio.touch()
+    host = ReaperHarness(tmp_path / "repo", audio)
+    host.run()
+    argv = host.cli_argv()
+    out = Path(main.parse_args(argv).output_dir)
+    out.mkdir(parents=True)
+    stale = out / "take_bass.mid"
+    stale.write_bytes(b"stale MIDI")
+    host.globals.EXISTS[str(stale)] = True
+    monkeypatch.setattr(main, "load_user_memory", lambda: pytest.fail("processed an occupied path"))
+
+    with pytest.raises(SystemExit) as exc:
+        main.main(argv)
+    assert exc.value.code != 0
+    child_output = capsys.readouterr()
+    assert "Output directory already exists" in child_output.err
+    assert "[tab-agent-midi]" not in child_output.out
+    assert stale.read_bytes() == b"stale MIDI"
+    host.globals.EXIT_CODE = exc.value.code
+    host.finish(*child_output.out.splitlines())
+    assert host.events("inserted") == host.events("renamed") == host.events("undo") == []
+    assert len(host.events("dialogs")) == 1 and "Error" in host.events("dialogs")[0]
