@@ -214,3 +214,116 @@ class TestReaPackIndex:
         assert "<reaper>" in joined or "no <reapack> packages" in joined
         assert guard.main([str(ROOT / "index.xml")]) == 0
         assert guard.main([str(legacy)]) == 1
+
+
+# ---------------------------------------------------------------------------
+# tools/check_vulns.py  (advisory identity matching)
+#
+# An advisory answers to several identifiers. pip-audit collapses records that
+# share an alias set and keeps whichever one the advisory server returned
+# first, so the reported `id` flips between PYSEC-*, GHSA-* and CVE-* between
+# refreshes without the vulnerability changing. The gate must therefore match
+# the ledger on any identifier, or a rename fails the build for an advisory a
+# reviewer already accepted (this is what happened on 2026-11-18).
+# ---------------------------------------------------------------------------
+
+
+class TestVulnGateAcceptsAnyIdentifier:
+    @staticmethod
+    def _ledger(tmp_path, *lines: str):
+        path = tmp_path / "audit-ignore"
+        path.write_text("\n".join(lines) + "\n")
+        return path
+
+    @staticmethod
+    def _deps(*vulns: dict) -> list[dict]:
+        return [{"name": "torch", "version": "2.5.1", "vulns": list(vulns)}]
+
+    def test_advisory_reported_as_ghsa_is_accepted_under_its_pysec_entry(
+        self, tmp_path, monkeypatch, capsys
+    ) -> None:
+        guard = _load("check_vulns")
+        ledger = self._ledger(
+            tmp_path, "PYSEC-2025-191  2099-01-01  torch training path, not used here"
+        )
+        monkeypatch.setattr(
+            guard,
+            "audit",
+            lambda: self._deps(
+                {
+                    "id": "GHSA-3749-ghw9-m3mg",
+                    "aliases": ["CVE-2025-2953", "PYSEC-2025-191"],
+                    "fix_versions": [],
+                }
+            ),
+        )
+        assert guard.main([], ignore_path=ledger) == 0
+        assert "No unaccepted vulnerabilities" in capsys.readouterr().out
+
+    def test_advisory_reported_as_cve_is_accepted_under_its_ghsa_entry(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        guard = _load("check_vulns")
+        ledger = self._ledger(tmp_path, "GHSA-xmj3-9gf7-h52w  2099-01-01  dev tool")
+        monkeypatch.setattr(
+            guard,
+            "audit",
+            lambda: self._deps(
+                {
+                    "id": "CVE-2026-114134",
+                    "aliases": ["GHSA-xmj3-9gf7-h52w"],
+                }
+            ),
+        )
+        assert guard.main([], ignore_path=ledger) == 0
+
+    def test_unaccepted_advisory_is_reported_with_its_aliases(
+        self, tmp_path, monkeypatch, capsys
+    ) -> None:
+        """A new finding must fail, and the message must show the other names."""
+        guard = _load("check_vulns")
+        ledger = self._ledger(tmp_path)  # empty ledger
+        monkeypatch.setattr(
+            guard,
+            "audit",
+            lambda: self._deps(
+                {
+                    "id": "GHSA-aaaa-bbbb-cccc",
+                    "aliases": ["CVE-2099-0001", "PYSEC-2099-1"],
+                }
+            ),
+        )
+        assert guard.main([], ignore_path=ledger) == 1
+        err = capsys.readouterr().err
+        assert "GHSA-aaaa-bbbb-cccc" in err
+        assert "CVE-2099-0001" in err and "PYSEC-2099-1" in err
+
+    def test_expiry_is_enforced_on_the_matched_identifier(
+        self, tmp_path, monkeypatch, capsys
+    ) -> None:
+        guard = _load("check_vulns")
+        ledger = self._ledger(tmp_path, "PYSEC-2020-1  2020-01-01  stale acceptance")
+        monkeypatch.setattr(
+            guard,
+            "audit",
+            lambda: self._deps({"id": "GHSA-zzzz-yyyy-xxxx", "aliases": ["PYSEC-2020-1"]}),
+        )
+        assert guard.main([], ignore_path=ledger) == 1
+        err = capsys.readouterr().err
+        assert "EXPIRED" in err and "PYSEC-2020-1" in err
+
+    def test_advisory_without_aliases_still_matches_by_id(self, tmp_path, monkeypatch) -> None:
+        guard = _load("check_vulns")
+        ledger = self._ledger(tmp_path, "PYSEC-2099-7  2099-01-01  no aliases reported")
+        monkeypatch.setattr(guard, "audit", lambda: self._deps({"id": "PYSEC-2099-7"}))
+        assert guard.main([], ignore_path=ledger) == 0
+
+    def test_advisory_ids_are_deduplicated_and_ordered(self) -> None:
+        guard = _load("check_vulns")
+        vuln = {
+            "id": "GHSA-1",
+            "aliases": ["PYSEC-1", "GHSA-1", "CVE-1", "PYSEC-1"],
+        }
+        assert guard.advisory_ids(vuln) == ["GHSA-1", "PYSEC-1", "CVE-1"]
+        assert guard.describe(vuln) == "GHSA-1 (aliases: PYSEC-1, CVE-1)"
+        assert guard.describe({"id": "PYSEC-2"}) == "PYSEC-2"
