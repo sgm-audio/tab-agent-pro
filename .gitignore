@@ -29,6 +29,7 @@ venv*/
 ENV/
 env/
 .venv
+.venv-*/
 tabagent_env/
 
 # PyTorch
