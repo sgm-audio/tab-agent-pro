@@ -6,5 +6,6 @@ class NoteSequence:
             self.start_time = start_time
             self.end_time = end_time
             self.velocity = velocity
+
         def __repr__(self):
             return f"Note(pitch={self.pitch}, start={self.start_time})"

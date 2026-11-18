@@ -55,9 +55,7 @@ def _voicing_score(v, prev):
     score = _hand(v) * 1.0
     if prev is not None:
         score += abs(_hand(v) - _hand(prev)) * 1.5
-        moved = sum(
-            1 for a, b in zip(prev, v) if a["string"] != b["string"]
-        )
+        moved = sum(1 for a, b in zip(prev, v) if a["string"] != b["string"])
         score += moved * 0.75
     return score
 
@@ -68,8 +66,10 @@ def generate_tab(agent, midi_notes, technique_sensitivity=0.7, annotate_techniqu
         return []
 
     notes = sorted(
-        ({"pitch": int(n.pitch), "start": float(n.start_time), "end": float(n.end_time)}
-         for n in midi_notes),
+        (
+            {"pitch": int(n.pitch), "start": float(n.start_time), "end": float(n.end_time)}
+            for n in midi_notes
+        ),
         key=lambda n: (round(n["start"], 3), n["pitch"]),
     )
 
@@ -133,8 +133,12 @@ def generate_tab(agent, midi_notes, technique_sensitivity=0.7, annotate_techniqu
         v = voicings[idx]
         is_single = len(group) == 1
         for note, pos in zip(group, v):
-            item = {"string": pos["string"], "fret": pos["fret"],
-                    "technique": "pick", "start_time": note["start"]}
+            item = {
+                "string": pos["string"],
+                "fret": pos["fret"],
+                "technique": "pick",
+                "start_time": note["start"],
+            }
             if annotate_techniques and is_single and prev_single is not None:
                 prev_note, prev_pos = prev_single
                 gap = note["start"] - prev_note["start"]

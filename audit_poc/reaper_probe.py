@@ -119,11 +119,14 @@ def factory(lines, delay=0.0):
     def _popen(cmd, mode):
         LAST_CMD["cmd"] = cmd
         return FakeStream(lines, delay)
+
     return _popen
 
 
 print("=== A. undo block spans idle cycles + project switch ===")
-lua = setup({"install_path": "/tmp/fake-install", "output_dir": OUTPUT_DIR}, factory(["l1\n", "l2\n"]))
+lua = setup(
+    {"install_path": "/tmp/fake-install", "output_dir": OUTPUT_DIR}, factory(["l1\n", "l2\n"])
+)
 print("script body          :", events(lua))
 lua.globals().ACTIVE_PROJECT = "PROJECT-B"  # user switches project tab while it runs
 tick = 0
@@ -146,8 +149,7 @@ print(f"one poll() blocked the main thread for {time.time() - t0:.2f}s while the
 
 print("\n=== C. quoting of ExtState values ===")
 lua = setup(
-    {"install_path": "/tmp/fake-install",
-     "profile": "$(echo INJECTED > /tmp/tabagent_pwned)"},
+    {"install_path": "/tmp/fake-install", "profile": "$(echo INJECTED > /tmp/tabagent_pwned)"},
     factory([]),
 )
 print("generated command:")

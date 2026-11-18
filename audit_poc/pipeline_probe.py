@@ -54,8 +54,14 @@ class FakeSeparator:
 
 src = silent_wav(TMP / "song.wav")
 splitter = agents.SplitterAgent(output_dir=str(TMP / "stems"), device="cpu")
-with patch.object(agents, "DEMUCS_API_AVAILABLE", True), patch.object(
-    agents.demucs_api if hasattr(agents, "demucs_api") else agents, "Separator", FakeSeparator, create=True
+with (
+    patch.object(agents, "DEMUCS_API_AVAILABLE", True),
+    patch.object(
+        agents.demucs_api if hasattr(agents, "demucs_api") else agents,
+        "Separator",
+        FakeSeparator,
+        create=True,
+    ),
 ):
     agents.demucs_api = type("m", (), {"Separator": FakeSeparator})
     stems = splitter.separate_stems(str(src))
@@ -110,9 +116,12 @@ class NoopSuno:
         return notes
 
 
-with patch.object(main, "process_suno_audio", lambda *a, **k: (str(silent), False, {})), patch.object(
-    main, "SplitterAgent", FakeSplitter
-), patch.object(main, "EarAgent", FakeEar), patch.object(main, "SunoNotePostprocessor", NoopSuno):
+with (
+    patch.object(main, "process_suno_audio", lambda *a, **k: (str(silent), False, {})),
+    patch.object(main, "SplitterAgent", FakeSplitter),
+    patch.object(main, "EarAgent", FakeEar),
+    patch.object(main, "SunoNotePostprocessor", NoopSuno),
+):
     try:
         main.main([str(silent), "-o", str(out)])
         code = 0
@@ -126,9 +135,12 @@ print("\n=== C. stale MIDI survives the zero-note run ===")
 stale = out / "silent_lead_guitar.mid"
 stale.write_bytes(b"MThd" + b"\0" * 20)
 print("stale file present before re-run:", stale.exists())
-with patch.object(main, "process_suno_audio", lambda *a, **k: (str(silent), False, {})), patch.object(
-    main, "SplitterAgent", FakeSplitter
-), patch.object(main, "EarAgent", FakeEar), patch.object(main, "SunoNotePostprocessor", NoopSuno):
+with (
+    patch.object(main, "process_suno_audio", lambda *a, **k: (str(silent), False, {})),
+    patch.object(main, "SplitterAgent", FakeSplitter),
+    patch.object(main, "EarAgent", FakeEar),
+    patch.object(main, "SunoNotePostprocessor", NoopSuno),
+):
     main.main([str(silent), "-o", str(out)])
 print("stale file still present, untouched:", stale.exists())
 print("REAPER import_midi() would import this file and report success")
@@ -137,8 +149,12 @@ print("REAPER import_midi() would import this file and report success")
 print("\n=== D. 60-minute input, memory arithmetic (44.1 kHz) ===")
 sec, sr, ch = 3600, 44100, 2
 f32 = 4
-print(f"  Demucs mix load      : {sec*sr*ch*f32/1e9:.2f} GB (+4 stems ~{4*sec*sr*ch*f32/1e9:.2f} GB)")
-print(f"  process_guitars L/R  : {sec*sr*ch*f32/1e9:.2f} GB in, ~{3*sec*sr*f32/1e9:.2f} GB of mid/L/R copies")
+print(
+    f"  Demucs mix load      : {sec*sr*ch*f32/1e9:.2f} GB (+4 stems ~{4*sec*sr*ch*f32/1e9:.2f} GB)"
+)
+print(
+    f"  process_guitars L/R  : {sec*sr*ch*f32/1e9:.2f} GB in, ~{3*sec*sr*f32/1e9:.2f} GB of mid/L/R copies"
+)
 n_fft, hop, bins = 2048, 512, 1025
 frames = int(sec * 22050 / hop)
 print(

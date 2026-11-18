@@ -26,7 +26,10 @@ STANDARD = [40, 45, 50, 55, 59, 64]  # E2 A2 D3 G3 B3 E4
 
 def note(pitch, start, end=None, vel=80):
     return note_seq.NoteSequence.Note(
-        pitch=pitch, start_time=start, end_time=end if end is not None else start + 0.2, velocity=vel
+        pitch=pitch,
+        start_time=start,
+        end_time=end if end is not None else start + 0.2,
+        velocity=vel,
     )
 
 
