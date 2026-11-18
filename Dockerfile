@@ -35,23 +35,18 @@ RUN pip install --upgrade pip
 # e.g. onnxruntime-gpu for CUDA or onnxruntime-vulkan for AMD Vulkan.
 RUN pip install torch==2.5.1 torchaudio==2.5.1 --index-url "$TORCH_INDEX_URL"
 
-COPY requirements.txt .
-# basic-pitch declares a TensorFlow dependency on Linux, but uses ONNX here.
-# Install it with --no-deps and add back the runtime deps it actually imports
-# (mir_eval + resampy are imported by basic_pitch.note_creation and are not
-# pulled in by anything else in requirements.txt). The version must be quoted,
-# otherwise the shell treats ">=0.4.0" as a redirection.
-RUN pip install --no-deps "basic-pitch>=0.4.0,<0.5" "mir_eval>=0.6" "resampy>=0.2.2,<0.4.3" && \
-    grep -v '^basic-pitch' requirements.txt > /tmp/req-nobp.txt && \
-    pip install -r /tmp/req-nobp.txt
+COPY requirements.txt requirements.lock pyproject.toml ./
+COPY tools/check_lockfile.py ./tools/
 
-# requirements.txt is range-based, so the resolve above can drift from what was
-# tested. Re-apply the lock (--no-deps: satisfied packages are skipped and
-# TensorFlow cannot be pulled back in), then fail the build if the installed
-# set and the lock disagree. The interpreter check runs first so a lock that
-# cannot install on this Python fails immediately.
-COPY requirements.lock pyproject.toml ./
-COPY tools ./tools
+# Install the ONNX-backed Basic Pitch without its default TensorFlow dependency.
+# Constrain resolution to the runtime lock; mir_eval and resampy are explicitly
+# declared in requirements.txt because Basic Pitch imports them at runtime.
+RUN pip install --no-deps -c requirements.lock "basic-pitch>=0.4.0,<0.5" "mir_eval>=0.6" "resampy>=0.2.2,<0.4.3" && \
+    grep -v '^basic-pitch' requirements.txt > /tmp/req-nobp.txt && \
+    pip install -c requirements.lock -r /tmp/req-nobp.txt
+
+# Re-apply the lock without resolving deps (including those installed with
+# Torch), and fail the build if the installed set or its closure disagrees.
 RUN python tools/check_lockfile.py --interpreter && \
     pip install --no-deps -r requirements.lock && \
     python tools/check_lockfile.py
@@ -68,7 +63,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HOST=0.0.0.0 \
     PORT=7860 \
     # Writable cache location for the owner of /app; models land here.
-    CACHE_DIR=/app/.cache/tab_agent \
     XDG_CACHE_HOME=/app/.cache \
     TORCH_HOME=/app/.cache/torch
 
@@ -85,12 +79,12 @@ ENV PATH="/venv/bin:$PATH"
 
 RUN groupadd -r tabagent && useradd -r -g tabagent -d /app -s /sbin/nologin tabagent
 
-# Application code is read-only to the runtime user; only the cache dirs are
-# writable, so a request cannot modify code or the image.
+# Application code is read-only to the runtime user; make only the required
+# cache, preferences and output paths writable.
 COPY --chown=root:root . .
-RUN mkdir -p /app/.cache/tab_agent /app/user_memory /tmp/tab_agent_outputs \
+RUN mkdir -p /app/.cache /app/user_memory /tmp/tab_agent_outputs \
     && chown -R tabagent:tabagent /app/.cache /app/user_memory /tmp/tab_agent_outputs \
-    && chmod -R a-w /app/*.py /app/reaper 2>/dev/null || true
+    && chmod a-w /app/*.py
 
 USER tabagent
 

@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+- Tablature assignments reserve strings for the duration of each note and enforce
+  a four-fret span for simultaneously held fretted notes. The bounded search
+  reports omitted events instead of placing them on occupied strings.
+- Text tabs show onset times and the actual tuning. JSON retains release times
+  and omitted-note details. Technique marks are identified as heuristic hints.
+- CLI and web exports flag unseparated audio. A CLI run with no detected notes
+  exits with status 2 instead of reporting success. Demucs uses the model's
+  native segment length rather than an incompatible 10-second override.
+- Web process shutdown only removes sessions owned by that process, so exiting
+  a separate worker or validation script does not delete another run's outputs.
+- The checked-in REAPER action reads the filename using the Lua API's return
+  contract and stops before importing MIDI when the child process fails.
+- The wheel includes `device.py`. CI validates the installed dependency closure
+  (including missing packages), and installs against the lock as constraints.
+  Updated Gradio/Pillow and Tornado to address the baseline advisory findings;
+  locked the model-hub client and the setuptools version needed by resampy.
+
+Native REAPER/ReaPack, the Python 3.12 CPU image, and successful real-mix
+separation still need verification. This pass does not validate transcription
+accuracy or confirm that a suggested fingering is comfortable for a player.
+
 ## 1.1.0 (2026-11-07)
 
 Production-readiness pass: the seven-phase audit chain (repo audit → claim

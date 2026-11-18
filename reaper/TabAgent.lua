@@ -8,10 +8,10 @@
     3. Run this script (Actions → Tab Agent)
     4. MIDI files are imported to new tracks automatically
 
-  Progress is streamed live to the REAPER console while the pipeline runs.
+  Pipeline output is forwarded to the REAPER console.
 
   Requirements:
-    - Python 3.10+ with Tab Agent dependencies (pip install -r requirements.txt)
+    - Python 3.11+ with Tab Agent dependencies (pip install -r requirements.txt)
     - Tab Agent Pro cloned to a known path (auto-detected or set via Settings)
 
   Settings configured in "Tab Agent Settings" (profile, instrument, thresholds,
@@ -89,8 +89,9 @@ local function get_audio_path()
   local src = reaper.GetMediaItemTake_Source(take)
   if not src then return nil end
 
-  local _, fn = reaper.GetMediaSourceFileName(src, "")
-  if fn == "" or not reaper.file_exists(fn) then
+  -- ReaScript's Lua binding returns the filename as its only result.
+  local fn = reaper.GetMediaSourceFileName(src, "")
+  if type(fn) ~= "string" or fn == "" or not reaper.file_exists(fn) then
     reaper.MB(
       "This item is not backed by a file on disk.\n\n" ..
       "Glue it first: right-click the item → Glue items\n" ..
@@ -141,10 +142,8 @@ end
 -- ============================================================================
 -- PIPELINE RUNNER WITH STREAMED CONSOLE OUTPUT
 --
--- Runs main.py via io.popen so its stdout/stderr ([tab-agent] progress lines)
--- are forwarded to the REAPER console in real time. Uses reaper.defer to poll
--- for output so REAPER stays responsive during a long transcription instead of
--- blocking on os.execute.
+-- Runs main.py via io.popen to forward stdout/stderr to the REAPER console.
+-- Each deferred callback reads one line; a read can block while Python is idle.
 -- ============================================================================
 
 local Pipeline = {}
@@ -285,7 +284,7 @@ if not pipe:start() then
   return
 end
 
--- Poll the pipeline stream on REAPER's idle loop so the UI stays responsive.
+-- Forward the pipeline stream on REAPER's idle loop.
 local function poll_pipeline()
   local phase, success = pipe:poll()
   if phase == "streaming" then
@@ -293,7 +292,19 @@ local function poll_pipeline()
     return
   end
 
-  -- Pipeline finished: import MIDI and close out.
+  -- Files from previous runs can share this basename. Never import on failure.
+  if not success then
+    reaper.Undo_EndBlock("Tab Agent — Failed", -1)
+    reaper.MB(
+      "Transcription failed.\n\n" ..
+      "Check the REAPER console for details.\n" ..
+      "Common: pip install -r requirements.txt, install Demucs.",
+      "Tab Agent — Error", 0
+    )
+    return
+  end
+
+  -- Pipeline finished successfully: import MIDI and close out.
   local output_dir = settings.output_dir
   if output_dir == "" then
     output_dir = install_path .. "/output"
@@ -311,15 +322,6 @@ local function poll_pipeline()
       "Transcription finished but no MIDI files found in:\n  " .. output_dir ..
         "\n\nCheck the REAPER console for details.",
       "Tab Agent — No Output", 0
-    )
-  end
-
-  if not success then
-    reaper.MB(
-      "Transcription failed.\n\n" ..
-      "Check the REAPER console for details.\n" ..
-      "Common: pip install -r requirements.txt, install Demucs.",
-      "Tab Agent — Error", 0
     )
   end
 end

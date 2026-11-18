@@ -1,5 +1,5 @@
 # Tab Agent - Local GPU Requirements
-gradio>=4.44,<7
+gradio>=6.32,<7
 
 # Core transcription (Basic Pitch with ONNX backend)
 # ONNX runtime is auto-detected by basic-pitch; no TensorFlow needed on Linux.
@@ -11,6 +11,8 @@ gradio>=4.44,<7
 basic-pitch>=0.4.0,<0.5
 mir_eval>=0.6
 resampy>=0.2.2,<0.4.3
+# Basic Pitch 0.4.0 requires resampy<0.4.3, which imports pkg_resources.
+setuptools==80.10.2
 onnxruntime>=1.17.0
 numpy>=1.18,<3
 
@@ -23,9 +25,7 @@ soundfile==0.12.1
 scipy>=1.11.0
 
 # MIDI handling
-# pretty-midi 0.2.10 imports pkg_resources, removed from setuptools >= 81
-setuptools<81
-pretty-midi==0.2.10
+pretty-midi==0.2.11.post0
 note-seq==0.0.5
 IPython>=8.0,<8.30
 
