@@ -17,12 +17,11 @@ available through :mod:`device` (CUDA, ROCm, Vulkan, MPS, DirectML).
 
 import os
 import subprocess  # nosec B404 — fixed command list, shell=False, used by Demucs CLI fallback
-from typing import Optional
 
 import librosa
 import numpy as np
 import soundfile as sf
-import torch
+import torch  # noqa: F401 — retained for callers that patch agents.torch
 from scipy.signal import butter, filtfilt
 
 from device import DeviceConfig, install_onnx_provider_override, resolve_device
@@ -49,12 +48,8 @@ except ImportError:
 
 # Publish backend availability at import time so /health and /ready are
 # meaningful before the first request.
-health.set_component(
-    "basic_pitch", "available" if BASIC_PITCH_AVAILABLE else "unavailable"
-)
-health.set_component(
-    "demucs", "available" if DEMUCS_API_AVAILABLE else "unavailable"
-)
+health.set_component("basic_pitch", "available" if BASIC_PITCH_AVAILABLE else "unavailable")
+health.set_component("demucs", "available" if DEMUCS_API_AVAILABLE else "unavailable")
 health.set_status("up")
 
 
@@ -307,7 +302,7 @@ class EarAgent:
         onset_threshold: float = 0.5,
         frame_threshold: float = 0.3,
         min_note_duration: float = 0.05,
-        min_pitch: Optional[int] = None,
+        min_pitch: int | None = None,
     ) -> list:
         """
         Transcribe audio to MIDI notes.
@@ -360,7 +355,7 @@ class EarAgent:
         onset_threshold: float,
         frame_threshold: float,
         min_note_duration: float,
-        min_pitch: Optional[int] = None,
+        min_pitch: int | None = None,
     ) -> list:
         """
         Transcribe using Basic Pitch (Spotify's proven ONNX model).
@@ -429,7 +424,7 @@ class EarAgent:
         self,
         notes: list,
         target: str,
-        min_pitch: Optional[int] = None,
+        min_pitch: int | None = None,
     ) -> list:
         """
         Filter notes by valid instrument range.
@@ -439,7 +434,6 @@ class EarAgent:
         - Guitar (6-string): E2 (40) to E6 (88), or lower when drop-tuned
           (e.g. Drop D passes min_pitch=38)
         """
-        import note_seq
 
         target_lower = target.lower()
 
