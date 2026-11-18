@@ -650,3 +650,37 @@ Demucs-weights dependency, P2-3 live-Space drift) are documented with the
 limitation stated rather than hidden, and P2-3 additionally gained a deployment
 script that ships the exact file list. Ten further issues were found and fixed
 during this pass. No finding is left silently unaddressed.
+
+---
+
+## AI-audio / playability audit — findings & remediation status
+
+A second, skeptical pass over the AI-assisted pipeline (Demucs → Basic Pitch →
+DP Viterbi → Gradio/CLI/Docker/REAPER) asked whether the tree actually
+produces *playable* tabs on real material. Original verdict: **NO-GO**. The
+findings below were remediated and each fix was verified by reproduction, not
+assertion. Status is recorded here so the remediation is traceable.
+
+| # | Severity | Finding | Remediation | Status |
+|---|---|---|---|---|
+| A-1 | **Critical** | The Viterbi DP emitted physically impossible chords — two notes on one string in a single column (reproduced: `E2+E6+B3` at t=0 rendered `E\|24` + `E\|0/19`). The chain DP's pairwise cost cannot see a chord *set* constraint. | Resolved by a polyphonic DP (`_assign_positions` with `_polyphonic_notes`/`_TabPath` string-occupancy tracking) that enforces chord feasibility *during* the DP, plus a same-string chord penalty in `calculate_cost`. A note with no free position is dropped and reported via `last_skipped_events` with reason `fingering_conflict`. Regression/playability tests in `tests/test_tab.py` and `tests/test_tab_playability.py`. Verified: `E2+E6+B3` now yields three distinct-string positions, no collision. | ✅ Fixed & verified |
+| A-2 | **Critical** | `requirements.lock` omitted `huggingface-hub`, required by `gradio_client`; a lock-only install broke `import app`. | Added `huggingface-hub==2.4.0` to the lock (satisfies `gradio-client 2.7.2`'s `<3.0,>=1.16.0`); corrected the header pin count to 117. `check_lockfile.py --verify` passes. | ✅ Fixed & verified |
+| A-3 | **High** | HEAD CI red: 7 failing tests in `tests/test_tools.py`. | All resolved (see A-4/A-5/A-6/A-7). Full suite now **281 passed**. | ✅ Fixed |
+| A-4 | **High** | Stale guards: `check_docker_install.py` grepped a literal CPU index URL; `validate.py` asserted `os.execute` in `TabAgent.lua` (which uses `io.popen`); `.env.example` documented `CACHE_DIR` with no consumer. | `check_docker_install.py` accepts the parameterized `TORCH_INDEX_URL` (CPU default); `validate.py` checks for `io.popen`; `CACHE_DIR` is now wired to `HF_HOME`/`XDG_CACHE_HOME`/`DEMUCS_DIR` via `agents._apply_cache_dir()`. | ✅ Fixed & verified |
+| A-5 | **High** | `tools/simulate_failures.py` referenced removed MT3 code (`_parse_mt3_tokens`) and bypassed-`__init__` agents missing `log`/`device` attributes → 6/11 checks failed. | Replaced the MT3 sim with a real unplayable-note skip sim; supplied the attributes the bypassed agents need. Now **15/15** pass. | ✅ Fixed & verified |
+| A-6 | **High** | `check_index.py` reported the pinned ReaPack commit as missing in shallow clones (false positive). | `_commit_exists` now skips the SHA check when the local checkout is shallow (the full-history CI checkout still verifies it). | ✅ Fixed |
+| A-7 | **High** | Technique detection is a fret/time heuristic, not audio-verified (a fast picked run was mislabeled as slides). | Documented as a heuristic in the README; no audio-verified technique model exists. | ⚠️ Documented limitation |
+| A-8 | **Medium** | The `other` stem (all non-V/D/B instruments) is transcribed as guitar; "works on full mixes" overstated. | README intro corrected to state the `other`-stem limitation and point to `ACCEPTED_RISKS.md`. | ✅ Corrected |
+| A-9 | **Medium** | Mid-side lead/rhythm split degenerates on mono input (lead + Rhythm L/R near-duplicates). | Documented; requires real stereo material to resolve. | ⚠️ Documented limitation |
+| A-10 | **Medium** | No real-audio ground-truth test; `app.py` coverage was low. | Added chord-feasibility + rendered-output playability tests; `app.py` coverage now 80%, core pipeline 94%, total 93%. Real-audio ground truth remains a gap (no DI reference set in repo). | ⚠️ Partial — tests added; ground truth pending real recordings |
+| A-11 | **Claim drift** | README claimed 291 tests / 118 pins; lock header claimed 131; `ACCEPTED_RISKS` claimed 164; `app.py` footer said Python 3.10+. | Corrected across README, `ACCEPTED_RISKS.md`, `CHANGELOG.md`, `RELEASE_NOTES_1.1.0.md`, `app.py`; README example tab updated to collision-free output. Subsequently merged `main`'s `110e045` refactor, which further corrected the claims (descriptive, no brittle counts) and expanded the suite; final merged state: **344 tests, 118 pins, Python 3.11+**. | ✅ Corrected |
+
+**Re-verified after remediation (merged with `main`'s `110e045` refactor):**
+`pytest` 344 passed · `check_lockfile.py --verify` OK (118 packages) ·
+`check_docker_install.py` / `check_env_example.py` / `check_reaper_settings.py` /
+`check_index.py` exit 0 · `validate.py --quick` 102 PASS / 0 FAIL ·
+`simulate_failures.py` 19/19 · end-to-end `main.py examples/guitar_solo.wav`
+produces collision-free tablature. The original NO-GO was driven by A-1/A-2
+(broken core correctness + broken install); both are resolved and verified,
+moving the project toward GO. The remaining ⚠️ items are documented
+limitations, not silent failures.

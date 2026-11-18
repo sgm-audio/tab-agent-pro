@@ -73,8 +73,27 @@ def _commit_exists(sha: str) -> bool:
         return True
     if result.returncode != 0:
         # Outside a git checkout the sha cannot be resolved: do not fail.
-        return "not a git repository" in (result.stderr or "").lower()
+        if "not a git repository" in (result.stderr or "").lower():
+            return True
+        # In a shallow clone the pinned commit may simply not have been
+        # fetched even though it exists upstream; do not report a false
+        # failure. The full-history CI checkout is where the SHA is verified.
+        return _is_shallow()
     return result.stdout.strip() in {"commit", "tree", "tag"}
+
+
+def _is_shallow() -> bool:
+    """True when the local checkout is a shallow (depth-limited) clone."""
+    try:
+        result = subprocess.run(  # nosec B603, B607
+            ["git", "-C", str(ROOT), "rev-parse", "--is-shallow-repository"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and result.stdout.strip() == "true"
 
 
 def check_index(path: Path) -> list[str]:

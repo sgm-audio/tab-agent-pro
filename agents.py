@@ -62,6 +62,28 @@ health.set_component("demucs", "available" if DEMUCS_API_AVAILABLE else "unavail
 health.set_status("up")
 
 
+def _apply_cache_dir() -> str | None:
+    """Honour the documented CACHE_DIR env var for model/weight caches.
+
+    Demucs and Basic Pitch download model weights on first use; both consult
+    environment variables for their cache location. When ``CACHE_DIR`` is set
+    (via .env or the real environment) we point those caches at it so the
+    documented variable actually controls where weights are stored. Returns the
+    resolved cache directory, or ``None`` when unset.
+    """
+    cache_dir = os.environ.get("CACHE_DIR")
+    if not cache_dir:
+        return None
+    cache_dir = os.path.expanduser(cache_dir)
+    os.makedirs(cache_dir, exist_ok=True)
+    # HuggingFace hub (Basic Pitch ONNX model) and XDG-aware tools.
+    os.environ.setdefault("HF_HOME", cache_dir)
+    os.environ.setdefault("XDG_CACHE_HOME", cache_dir)
+    # Demucs stores downloaded checkpoints under a per-user dir.
+    os.environ.setdefault("DEMUCS_DIR", cache_dir)
+    return cache_dir
+
+
 # ============================================================================
 # STAGE 1-3: THE SPLITTER (Demucs stem separation)
 # ============================================================================
@@ -88,6 +110,7 @@ class SplitterAgent:
         self.log = get_logger("splitter")
         self.separation_mode: str | None = None
         os.makedirs(output_dir, exist_ok=True)
+        _apply_cache_dir()
         self.log.info(
             "splitter_init",
             device=self.device,
@@ -315,6 +338,7 @@ class EarAgent:
         self.label: str = config.label
         self.sample_rate = 16000
         self.log = get_logger("ear_agent")
+        _apply_cache_dir()
 
         health.set_component(
             "basic_pitch",
@@ -569,6 +593,10 @@ class EarAgent:
 # STAGE 5: THE LUTHIER (Tablature generation)
 # ============================================================================
 
+# Keep a high cost for a hypothetical same-string, same-onset transition.
+# Actual collisions are rejected by the solver's duration-aware occupancy rule.
+SAME_STRING_CHORD_PENALTY = 1000.0
+
 
 @dataclass(frozen=True, order=True, slots=True)
 class _TabNote:
@@ -680,6 +708,10 @@ class TabAgent:
             else:
                 # String skip on fast run = awkward
                 cost += 5.0  # Penalize
+
+        # Nearby onsets may be successive releases and attacks, not a chord.
+        if time_delta == 0 and string_distance == 0:
+            cost += SAME_STRING_CHORD_PENALTY
 
         # 5-string bass heuristic: slight penalty for low fretted notes (1-4)
         # on the lowest strings (B0/E1, indices 0-1)

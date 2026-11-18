@@ -208,7 +208,7 @@ class SunoAudioPreprocessor:
 
 
 class SunoNotePostprocessor:
-    """Post-process transcribed notes to fix common Suno errors."""
+    """Adjust note timing for suspected Suno audio without changing pitches."""
 
     def process(
         self,
@@ -217,7 +217,7 @@ class SunoNotePostprocessor:
         metrics: dict,
     ) -> list[note_seq.NoteSequence.Note]:
         """
-        Apply post-processing to fix Suno-specific transcription errors.
+        Apply timing quantization to suspected Suno notes.
 
         Args:
             notes: Transcribed notes
