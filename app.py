@@ -674,7 +674,7 @@ def create_ui():
             <div class="tab-agent-footer">
                 MIT · <a href="https://github.com/sgm-audio/tab-agent-pro">Tab Agent</a> ·
                 Built with <a href="https://github.com/spotify/basic-pitch">Basic Pitch</a> ·
-                Python 3.10+
+                Python 3.11+
             </div>
             """)
 

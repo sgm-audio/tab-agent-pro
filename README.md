@@ -7,8 +7,11 @@
 **Upload guitar or bass audio. Get tablature, MIDI, and JSON back.**
 
 Tab Agent transcribes guitar and bass recordings into playable tablature using
-a multi-engine AI pipeline. Works on anything from a clean DI track to a full
-mix with drums and vocals.
+a multi-engine AI pipeline. It is tuned for clean guitar/bass audio — a solo
+DI, a rhythm track, or a lead. For a full mix, Demucs separates the stems and
+the guitar/bass stems are transcribed; note that the residual `other` stem is
+transcribed as guitar, so non-guitar content in that stem is labelled as
+guitar (see `docs/ACCEPTED_RISKS.md`).
 
 ---
 
@@ -33,7 +36,7 @@ python app.py
 > pip install --no-deps -r requirements.lock   # exact, tested versions
 > ```
 
-**Reproducible install:** `requirements.lock` pins the 118 distributions that
+**Reproducible install:** `requirements.lock` pins the 117 distributions that
 actually ship — the runtime closure of the declared dependencies, including
 transitive ones, and excluding the TensorFlow tree and NVIDIA CUDA wheels that
 this project never installs. CI and the Docker build install from it and then
@@ -85,7 +88,7 @@ the stem-separation stack.
 ### Validation
 
 ```bash
-python -m pytest tests/            # 291 tests, 91% coverage
+python -m pytest tests/            # 281 tests, 93% coverage
 python validate.py                 # end-to-end checklist (PASS/FAIL summary)
 
 python tools/check_index.py           # ReaPack index format
@@ -192,12 +195,12 @@ nine generated files omitted):
 ```
 === Lead Guitar Tablature ===
 
-E|-  -  -      -  -  -      -  22 -
-B|-  -  15/19h 22 24 -      20 -  -
-G|-  -  -      -  -  -      -  -  -
-D|-  -  -      -  21 24/17p 21 -  -
-A|-  -  -      -  -  -      -  -  19
-E|12 15 19     22 24 -      -  -  -
+E|-  -  14 17 19 -  -  22 -
+B|-  -  15 -  -  -  20 -  -
+G|-  -  -  -  16 19 -  -  -
+D|-  -  -  -  -  17 21 -  -
+A|-  -  14 17 19 -  -  -  19
+E|12 15 -  -  -  -  -  -  -
 
 Legend: s=slide, h=hammer-on, p=pull-off
 ```
@@ -233,12 +236,12 @@ is what runs.
 ├── validate.py            # End-to-end checklist
 ├── reaper/                # REAPER Lua scripts
 ├── tools/                 # Config/deployment guard scripts
-├── tests/                 # 291 tests
+├── tests/                 # 281 tests
 ├── examples/              # Demo audio
 ├── docs/RUNBOOK.md        # Deploy / monitor / rollback / dependency refresh
 ├── docs/ACCEPTED_RISKS.md # Every known risk, with exposure and expiry
 ├── SECURITY.md            # Threat model + disclosure process
-├── requirements.lock      # 118 exact pins (runtime closure, CPU-only)
+├── requirements.lock      # 117 exact pins (runtime closure, CPU-only)
 ├── .pip-audit-ignore      # Accepted advisories; CI fails when one expires
 ├── pyproject.toml         # Project config
 ├── Dockerfile             # Local / GPU container build (non-root, read-only code)

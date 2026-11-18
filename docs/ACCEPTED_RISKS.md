@@ -9,7 +9,7 @@ entry is a reviewable act; leaving one to rot is not possible.
 - **All entries expire:** `2027-01-31` — on that date CI turns red until each
   one is re-reviewed and either re-justified or fixed.
 - **Scope of the scan:** the *installed* environment, i.e. exactly what ships
-  (`requirements.lock`, 164 distributions), not the looser `requirements.txt`.
+  (`requirements.lock`, 117 distributions), not the looser `requirements.txt`.
 - **Baseline at sign-off:** 70 advisories across 4 packages, 0 unaccepted.
 
 ---

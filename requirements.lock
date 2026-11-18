@@ -18,7 +18,7 @@
 #   python tools/check_lockfile.py --write
 #
 # Scope: this is the *runtime* closure only - the declared dependencies plus
-# everything they transitively require (131 packages). Lint, test and audit
+# everything they transitively require (117 packages). Lint, test and audit
 # tooling (ruff, black, mypy, pytest, bandit, pip-audit, coverage, lupa ...) is
 # deliberately absent: it is not installed in the image.
 #
@@ -61,6 +61,7 @@ httpcore==1.0.9
 httpcore2==2.16.0
 httpx==0.28.1
 httpx2==2.16.0
+huggingface-hub==2.4.0
 idna==3.20
 intervaltree==3.2.1
 ipython==8.29.0

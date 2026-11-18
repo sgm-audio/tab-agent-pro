@@ -106,9 +106,20 @@ def check_hardening() -> None:
             "Dockerfile CMD must use exec form so SIGTERM reaches the server " "(graceful shutdown)"
         )
 
-    if "--index-url https://download.pytorch.org/whl/cpu" not in text:
+    # torch must install from a CPU-only index by default. The Dockerfile
+    # parameterizes this as ARG TORCH_INDEX_URL (defaulting to the CPU index)
+    # so a CUDA/ROCm build can override it; accept either the literal CPU index
+    # or the parameterized form that defaults to it.
+    if not (
+        "--index-url https://download.pytorch.org/whl/cpu" in text
+        or (
+            "TORCH_INDEX_URL" in text
+            and "https://download.pytorch.org/whl/cpu" in text
+        )
+    ):
         failures.append(
-            "torch must install from the CPU-only index; the PyPI wheel pulls "
+            "torch must install from the CPU-only index (literal or via a "
+            "TORCH_INDEX_URL arg defaulting to it); the PyPI wheel pulls "
             "~2.5 GB of unusable NVIDIA CUDA packages"
         )
 

@@ -184,5 +184,118 @@ class TestTabAgentGenerateTab(unittest.TestCase):
         assert any(p["fret"] == 0 for p in positions)
 
 
+class TestTabAgentChordFeasibility(unittest.TestCase):
+    """A chord must never place two notes on the same string.
+
+    Regression: the Viterbi DP used to assign simultaneous notes to the same
+    string at different frets (e.g. low-E fret 0 *and* fret 19 in one column),
+    which is physically impossible to finger. The DP now penalises same-string
+    simultaneous transitions so it re-voices the collision onto another string.
+    """
+
+    def setUp(self) -> None:
+        self.agent = TabAgent(tuning=GUITAR_TUNING, num_frets=24)
+
+    def _assert_no_same_string_chord(self, tab: list) -> None:
+        """No time-group may contain two notes on the same string."""
+        groups: dict[float, list[int]] = {}
+        for pos in tab:
+            key = round(pos["start_time"], 2)
+            groups.setdefault(key, []).append(pos["string"])
+        for strings in groups.values():
+            assert len(strings) == len(set(strings)), (
+                f"chord collides on a string: {strings}"
+            )
+
+    def test_impossible_chord_is_revoiced(self) -> None:
+        """E2 + E6 + B3 simultaneous must not emit two frets on one string."""
+        # E2(40) -> low E fret 0; E6(88) -> high E fret 24; B3(59) -> low E
+        # fret 19 *or* B string fret 14. Without the constraint B3 was placed
+        # on the low E string (fret 19), colliding with E2 (fret 0).
+        notes = [
+            make_note(40, 0.0),  # E2
+            make_note(88, 0.0),  # E6
+            make_note(59, 0.0),  # B3
+        ]
+        tab = self.agent.generate_tab(notes)
+        assert len(tab) == 3
+        self._assert_no_same_string_chord(tab)
+        # B3 must have moved off the low-E string (string 0).
+        b3 = [e for e in tab if e["start_time"] == 0.0 and e["fret"] in (14, 19)]
+        assert b3, "B3 should still be present"
+        assert all(e["string"] != 0 for e in b3), "B3 must not share the low-E string with E2"
+
+    def test_same_string_chord_cost_is_penalised(self) -> None:
+        """A simultaneous same-string transition carries the chord penalty."""
+        prev = {"string": 0, "fret": 0}
+        curr_same = {"string": 0, "fret": 19}
+        curr_diff = {"string": 1, "fret": 14}
+        cost_same = self.agent.calculate_cost(prev, curr_same, time_delta=0.0)
+        cost_diff = self.agent.calculate_cost(prev, curr_diff, time_delta=0.0)
+        assert cost_same > cost_diff
+        # The penalty dominates the legato bonus, so same-string is never cheaper.
+        assert cost_same >= 1000.0
+
+    def test_legato_slide_bonus_still_applies_to_sequential_notes(self) -> None:
+        """Short *sequential* same-string transitions keep the slide bonus.
+
+        The chord constraint only fires for truly simultaneous notes
+        (time_delta < CHORD_TOLERANCE). A 100 ms same-string transition is a
+        slide/hammer-on candidate and must stay cheap.
+        """
+        prev = {"string": 0, "fret": 0}
+        curr = {"string": 0, "fret": 2}
+        cost = self.agent.calculate_cost(prev, curr, time_delta=0.1)
+        # base = 2*1.5 = 3.0, legato bonus -5.0 -> -2.0 (no chord penalty).
+        assert cost == 3.0 - 5.0
+
+    def test_normal_chord_still_renders(self) -> None:
+        """A normal playable chord is unaffected by the constraint."""
+        # C major: C3(48) E3(52) G3(55) — spread across different strings.
+        notes = [make_note(48, 0.0), make_note(52, 0.0), make_note(55, 0.0)]
+        tab = self.agent.generate_tab(notes)
+        assert len(tab) == 3
+        self._assert_no_same_string_chord(tab)
+
+    def test_realistic_chord_voicings_are_feasible(self) -> None:
+        """Common chord shapes never emit a same-string collision."""
+        # Power chord (root + fifth), major triad, and a dense 4-note chord,
+        # each as a single simultaneous onset.
+        voicings = [
+            [40, 47],            # E2 + B2 (power chord)
+            [48, 52, 55],        # C3 + E3 + G3 (C major)
+            [40, 45, 52, 55],    # E2 + A2 + E3 + G3 (E major shape)
+            [55, 59, 64, 67],    # G3 + B3 + E4 + G4 (G major shape)
+        ]
+        for pitches in voicings:
+            tab = self.agent.generate_tab(
+                [make_note(p, 0.0) for p in pitches]
+            )
+            # Every note must survive (these are all playable chords).
+            assert len(tab) == len(pitches), (
+                f"chord {pitches} lost notes: {len(tab)}/{len(pitches)}"
+            )
+            self._assert_no_same_string_chord(tab)
+
+    def test_rendered_output_has_no_collision_markers(self) -> None:
+        """The rendered ASCII tab must never join two frets with '/'.
+
+        render_tab_text joins two same-string positions in one column with
+        'x/y'; a collision marker in the output means the constraint leaked.
+        """
+        import main
+
+        notes = [make_note(40, 0.0), make_note(88, 0.0), make_note(59, 0.0)]
+        tab = self.agent.generate_tab(notes)
+        text = main.render_tab_text(tab)
+        # Split on the column separator and check no cell contains '/'.
+        for line in text.splitlines():
+            if "|" in line and not line.startswith("Legend"):
+                for cell in line.split("|")[1:]:
+                    assert "/" not in cell, (
+                        f"collision marker '/' in rendered cell: {cell!r}"
+                    )
+
+
 if __name__ == "__main__":
     unittest.main()

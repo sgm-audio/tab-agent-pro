@@ -58,6 +58,28 @@ health.set_component(
 health.set_status("up")
 
 
+def _apply_cache_dir() -> str | None:
+    """Honour the documented CACHE_DIR env var for model/weight caches.
+
+    Demucs and Basic Pitch download model weights on first use; both consult
+    environment variables for their cache location. When ``CACHE_DIR`` is set
+    (via .env or the real environment) we point those caches at it so the
+    documented variable actually controls where weights are stored. Returns the
+    resolved cache directory, or ``None`` when unset.
+    """
+    cache_dir = os.environ.get("CACHE_DIR")
+    if not cache_dir:
+        return None
+    cache_dir = os.path.expanduser(cache_dir)
+    os.makedirs(cache_dir, exist_ok=True)
+    # HuggingFace hub (Basic Pitch ONNX model) and XDG-aware tools.
+    os.environ.setdefault("HF_HOME", cache_dir)
+    os.environ.setdefault("XDG_CACHE_HOME", cache_dir)
+    # Demucs stores downloaded checkpoints under a per-user dir.
+    os.environ.setdefault("DEMUCS_DIR", cache_dir)
+    return cache_dir
+
+
 # ============================================================================
 # STAGE 1-3: THE SPLITTER (Demucs stem separation)
 # ============================================================================
@@ -83,6 +105,7 @@ class SplitterAgent:
         self.label: str = config.label
         self.log = get_logger("splitter")
         os.makedirs(output_dir, exist_ok=True)
+        _apply_cache_dir()
         self.log.info(
             "splitter_init",
             device=self.device,
@@ -284,6 +307,7 @@ class EarAgent:
         self.label: str = config.label
         self.sample_rate = 16000
         self.log = get_logger("ear_agent")
+        _apply_cache_dir()
 
         health.set_component(
             "basic_pitch",
@@ -523,6 +547,15 @@ class EarAgent:
 # STAGE 5: THE LUTHIER (Tablature generation)
 # ============================================================================
 
+# A chord is a group of notes whose onsets fall within this tolerance (it
+# matches the 50 ms grouping used when rendering columns). Two notes that land
+# in the same chord cannot share a string: one string produces one pitch at a
+# time, so a "chord" with two frets on the same string is physically impossible
+# to finger. This is enforced as a large transition penalty so the Viterbi DP
+# re-voices such collisions onto another string instead of emitting them.
+CHORD_TOLERANCE = 0.05
+SAME_STRING_CHORD_PENALTY = 1000.0
+
 
 class TabAgent:
     """
@@ -612,6 +645,15 @@ class TabAgent:
                 # String skip on fast run = awkward
                 cost += 5.0  # Penalize
 
+        # Chord feasibility: notes that are truly simultaneous (a chord, within
+        # the render grouping tolerance) must not collide on one string. The
+        # legato bonus above applies to short *sequential* transitions
+        # (slides/hammer-ons); a chord note on an already-sounding string is
+        # physically impossible, so penalise it heavily. The penalty dominates
+        # the legato bonus, steering the DP to re-voice the note elsewhere.
+        if 0 <= time_delta < CHORD_TOLERANCE and prev["string"] == curr["string"]:
+            cost += SAME_STRING_CHORD_PENALTY
+
         # 5-string bass heuristic: slight penalty for low fretted notes (1-4)
         # on the lowest strings (B0/E1, indices 0-1)
         if self.num_strings == 5 and curr["string"] < 2 and 0 < curr["fret"] < 5:
@@ -623,6 +665,111 @@ class TabAgent:
             cost += 1.0
 
         return cost
+
+    def _enforce_chord_feasibility(
+        self,
+        best_path: list,
+        notes: list,
+        tolerance: float = CHORD_TOLERANCE,
+    ) -> list:
+        """Re-voice chords so no two simultaneous notes share a string.
+
+        The Viterbi DP optimizes pairwise transition costs between consecutive
+        notes; it cannot see a chord *set* constraint when the colliding notes
+        are not adjacent in the note list. This post-DP stage groups notes into
+        simultaneous chords (matching the render grouping tolerance) and, for
+        any chord that places two notes on one string, re-voices the offending
+        note to a free valid position. A note with no free valid position is
+        dropped (and reported via ``last_skipped_notes``) rather than emitted as
+        an impossible chord.
+
+        Args:
+            best_path: Chosen position dicts from the DP, aligned with notes.
+            notes: Note dicts with 'pitch' and 'start', aligned with best_path.
+            tolerance: Seconds within which notes are treated as simultaneous.
+
+        Returns:
+            A (best_path, notes) tuple, both filtered/repaired and still
+            aligned; notes dropped for being unplayable in their chord are
+            removed from both.
+        """
+        if len(best_path) != len(notes):
+            return best_path, notes
+
+        # Group note indices into simultaneous chords, mirroring the render
+        # grouping: consecutive notes within `tolerance` of the group time.
+        groups: list[list[int]] = []
+        for idx, note in enumerate(notes):
+            t = note["start"]
+            if groups and abs(notes[groups[-1][0]]["start"] - t) < tolerance:
+                groups[-1].append(idx)
+            else:
+                groups.append([idx])
+
+        repaired = list(best_path)
+        skipped: list[int] = []
+
+        for group in groups:
+            if len(group) < 2:
+                continue
+            # occupied maps string -> index of the note currently on it.
+            occupied: dict[int, int] = {}
+            for idx in group:
+                pos = dict(repaired[idx])
+                s = pos["string"]
+                if s in occupied:
+                    # Collision: re-voice `idx` to a free string.
+                    alt = self._best_free_position(
+                        notes[idx]["pitch"], pos["fret"], occupied
+                    )
+                    if alt is None:
+                        skipped.append(int(notes[idx]["pitch"]))
+                        repaired[idx] = None
+                        continue
+                    pos = alt
+                occupied[pos["string"]] = idx
+                repaired[idx] = pos
+
+        if skipped:
+            self.last_skipped_notes = sorted(
+                set(self.last_skipped_notes + skipped)
+            )
+            get_logger("tab_agent").warning(
+                "chord_notes_revoiced_or_skipped",
+                skipped=sorted(set(skipped)),
+            )
+
+        # Return the repaired path and the notes that survived, still aligned
+        # so downstream technique annotation indexes correctly.
+        surviving = [
+            (notes[idx], pos) for idx, pos in enumerate(repaired) if pos is not None
+        ]
+        return [
+            p for _n, p in surviving
+        ], [n for n, _p in surviving]
+
+    def _best_free_position(
+        self,
+        pitch: int,
+        current_fret: int,
+        occupied: dict[int, int],
+    ) -> dict | None:
+        """Pick the cheapest valid position for a pitch on a non-occupied string.
+
+        Prefers the alternative with the smallest fret distance to the note's
+        current fret (preserving voicing), tie-broken by string then fret.
+        """
+        candidates = [
+            p
+            for p in self.get_valid_positions(pitch)
+            if p["string"] not in occupied
+        ]
+        if not candidates:
+            return None
+        candidates.sort(
+            key=lambda p: (abs(p["fret"] - current_fret), p["string"], p["fret"])
+        )
+        return candidates[0]
 
     def generate_tab(
         self,
@@ -727,6 +874,11 @@ class TabAgent:
 
         # Reverse to get chronological order
         best_path.reverse()
+
+        # Enforce chord feasibility: re-voice any simultaneous notes that the
+        # pairwise DP placed on the same string, and drop notes that have no
+        # free valid position (see CRITICAL-1 in AUDIT.md).
+        best_path, notes = self._enforce_chord_feasibility(best_path, notes)
 
         # Annotate techniques (slides, hammer-ons, pull-offs)
         final_tab: list = []

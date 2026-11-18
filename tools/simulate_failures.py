@@ -134,6 +134,8 @@ def simulate_transcription_backend_down() -> None:
     ear = agents.EarAgent.__new__(agents.EarAgent)
     ear.model = None
     ear.processor = None
+    ear.log = agents.get_logger("ear_agent")
+    ear.device = "cpu"
     with patch.object(agents, "BASIC_PITCH_AVAILABLE", False), patch.object(agents, "health"):
         try:
             ear.transcribe_stem(str(ROOT / "examples" / "guitar_solo.wav"))
@@ -150,6 +152,9 @@ def simulate_demucs_offline() -> None:
     splitter = agents.SplitterAgent.__new__(agents.SplitterAgent)
     tmp = _fresh_cwd()
     splitter.output_dir = tmp
+    splitter.device = "cpu"
+    splitter.backend = "cpu"
+    splitter.label = "cpu"
     splitter.log = agents.get_logger("splitter")
     audio = ROOT / "examples" / "guitar_solo.wav"
     with (
@@ -188,16 +193,44 @@ def simulate_unwritable_output() -> None:
 # ---------------------------------------------------------------------------
 
 
-def simulate_malformed_mt3_tokens(capsys) -> None:
+def simulate_unplayable_model_notes() -> None:
+    """A transcription backend emitting notes outside the instrument's range.
+
+    Basic Pitch can return pitches that have no valid string/fret position on
+    the configured instrument (e.g. below the lowest open string). The
+    TabAgent must skip such notes and log them — never crash or silently drop
+    the whole track.
+    """
+    import note_seq
+
     import agents
 
-    ear = agents.EarAgent.__new__(agents.EarAgent)
-    notes = ear._parse_mt3_tokens(
-        ["NOTE_ON", "sixty", "TIME_SHIFT", "0.5", "NOTE_OFF", "60"], min_duration=0.05
+    agent = agents.TabAgent(
+        tuning=[40, 45, 50, 55, 59, 64], num_frets=24
     )
-    out = capsys.readouterr().out
-    check(notes == [], "malformed MT3 tokens yield no notes")
-    check("mt3_token_skipped" in out, "malformed MT3 tokens are logged", out.strip()[:120])
+    bad = note_seq.NoteSequence.Note(
+        pitch=39,  # below the lowest open string (E2=40) -> no valid position
+        start_time=0.0,
+        end_time=0.5,
+        velocity=80,
+    )
+    good = note_seq.NoteSequence.Note(
+        pitch=64,  # E4, playable on the high-E string
+        start_time=0.5,
+        end_time=1.0,
+        velocity=80,
+    )
+    tab = agent.generate_tab([bad, good])
+    check(
+        len(tab) == 1,
+        "unplayable model note is skipped, playable note survives",
+        f"tab={tab}",
+    )
+    check(
+        39 in agent.last_skipped_notes,
+        "unplayable model note is reported in last_skipped_notes",
+        str(agent.last_skipped_notes),
+    )
 
 
 def main() -> int:
@@ -211,23 +244,13 @@ def main() -> int:
         simulate_transcription_backend_down,
         simulate_demucs_offline,
         simulate_unwritable_output,
+        simulate_unplayable_model_notes,
     ]
     for sim in simulations:
         try:
             sim()
         except Exception as e:
             check(False, sim.__name__, f"simulation raised {type(e).__name__}: {e}")
-
-    # Needs capsys; run separately through pytest-compatible capture.
-    import contextlib
-    import io
-
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        try:
-            simulate_malformed_mt3_tokens(type("C", (), {"readouterr": lambda self: type("R", (), {"out": buf.getvalue()})()})())  # type: ignore[arg-type]
-        except Exception as e:
-            check(False, "simulate_malformed_mt3_tokens", str(e))
 
     failures = [r for r in RESULTS if not r[0]]
     for ok, name, detail in RESULTS:
