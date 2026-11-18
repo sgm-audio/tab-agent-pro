@@ -1,5 +1,5 @@
-# ruff: noqa
 #!/usr/bin/env python3
+# ruff: noqa
 """
 Reproductions for the reliability review. Run from the repo root:
 

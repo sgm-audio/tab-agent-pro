@@ -1,5 +1,5 @@
-# ruff: noqa
 #!/usr/bin/env python3
+# ruff: noqa
 """
 Pipeline-level failure reproductions (real agents.py / main.py, stubbed backends).
 
@@ -126,7 +126,7 @@ with (
         main.main([str(silent), "-o", str(out)])
         code = 0
     except SystemExit as e:
-        code = e.code
+        code = int(e.code or 0)
 print("exit code:", code)
 print("files produced:", sorted(p.name for p in out.rglob("*") if p.is_file()))
 

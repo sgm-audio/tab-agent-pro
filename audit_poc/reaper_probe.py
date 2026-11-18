@@ -1,5 +1,5 @@
-# ruff: noqa
 #!/usr/bin/env python3
+# ruff: noqa
 """
 Drive the REAL reaper/TabAgent.lua under a stubbed REAPER API (lupa).
 
@@ -25,6 +25,9 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "reaper"
 
 OUTPUT_DIR = tempfile.mkdtemp(prefix="tabagent-out-")
+# Deliberate, sandboxed sentinels for the injection demo in section C.
+FAKE_INSTALL = "/tmp/fake-install"  # nosec B108 - sandboxed audit probe
+SENTINEL = "/tmp/tabagent_pwned"  # nosec B108 - harmless marker file
 BASENAME = "song"
 for suffix in ("lead_guitar", "rhythm_L", "rhythm_R", "bass"):
     Path(OUTPUT_DIR, f"{BASENAME}_{suffix}.mid").write_bytes(b"MThd")
@@ -112,7 +115,7 @@ class FakeStream:
         return True, None, 0
 
 
-LAST_CMD = {}
+LAST_CMD: dict[str, str] = {}
 
 
 def factory(lines, delay=0.0):
@@ -125,7 +128,8 @@ def factory(lines, delay=0.0):
 
 print("=== A. undo block spans idle cycles + project switch ===")
 lua = setup(
-    {"install_path": "/tmp/fake-install", "output_dir": OUTPUT_DIR}, factory(["l1\n", "l2\n"])
+    {"install_path": FAKE_INSTALL, "output_dir": OUTPUT_DIR},
+    factory(["l1\n", "l2\n"]),
 )
 print("script body          :", events(lua))
 lua.globals().ACTIVE_PROJECT = "PROJECT-B"  # user switches project tab while it runs
@@ -141,7 +145,7 @@ print("=> one Undo_BeginBlock, Undo_EndBlock only after", tick, "defer ticks")
 print("=> MIDI imported into:", [e for e in events(lua) if e.startswith("InsertMedia")])
 
 print("\n=== B. read('*l') blocks the deferred callback ===")
-lua = setup({"install_path": "/tmp/fake-install"}, factory(["late\n"], delay=3.0))
+lua = setup({"install_path": FAKE_INSTALL}, factory(["late\n"], delay=3.0))
 cb = take_callback(lua)
 t0 = time.time()
 cb()
@@ -149,16 +153,21 @@ print(f"one poll() blocked the main thread for {time.time() - t0:.2f}s while the
 
 print("\n=== C. quoting of ExtState values ===")
 lua = setup(
-    {"install_path": "/tmp/fake-install", "profile": "$(echo INJECTED > /tmp/tabagent_pwned)"},
+    {
+        "install_path": FAKE_INSTALL,
+        "profile": f"$(echo INJECTED > {SENTINEL})",
+    },
     factory([]),
 )
 print("generated command:")
 print("   ", LAST_CMD["cmd"])
 
 # Prove the substitution really happens in sh (harmless sentinel file).
-marker = "/tmp/tabagent_pwned"
+marker = SENTINEL
 if os.path.exists(marker):
     os.unlink(marker)
-os.makedirs("/tmp/fake-install", exist_ok=True)
-os.system(LAST_CMD["cmd"].replace("python3", "true") + " >/dev/null 2>&1")
+os.makedirs(FAKE_INSTALL, exist_ok=True)
+os.system(
+    LAST_CMD["cmd"].replace("python3", "true") + " >/dev/null 2>&1"
+)  # nosec B605 — deliberate, sandboxed audit probe
 print("sentinel file created by shell substitution:", os.path.exists(marker))
