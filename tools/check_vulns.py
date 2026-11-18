@@ -37,6 +37,12 @@ def load_ignores(path: Path = IGNORE_FILE) -> dict[str, dict[str, str]]:
 
     Format (one entry per advisory, '#' comments allowed):
         <ADVISORY-ID>  <YYYY-MM-DD expiry>  <reason...>
+
+    The advisory ID may be any of the one advisory's identifiers. PyPI/OSV
+    re-canonicalise as issues are processed: torch advisories accepted as
+    ``PYSEC-2025-191`` started being reported as ``GHSA-3749-ghw9-m3mg`` with no
+    change to the vulnerability. Matching only the reported ID would fail the
+    build for an advisory a reviewer has already accepted under another name.
     """
     entries: dict[str, dict[str, str]] = {}
     if not path.exists():
@@ -52,6 +58,32 @@ def load_ignores(path: Path = IGNORE_FILE) -> dict[str, dict[str, str]]:
         advisory, expiry, reason = parts
         entries[advisory] = {"expiry": expiry, "reason": reason}
     return entries
+
+
+def advisory_ids(vuln: dict) -> list[str]:
+    """
+    Every identifier an advisory is known by, most canonical first.
+
+    pip-audit reports ``id`` plus, when the source provides them, ``aliases``
+    (CVE / GHSA / PYSEC). Which one is "the" id is not stable between advisory
+    DB refreshes, so all of them are usable keys in .pip-audit-ignore.
+    """
+    ids = [vuln.get("id") or "UNKNOWN"]
+    ids.extend(vuln.get("aliases") or [])
+    seen: list[str] = []
+    for advisory in ids:
+        if advisory and advisory not in seen:
+            seen.append(advisory)
+    return seen
+
+
+def lookup(ignores: dict[str, dict[str, str]], vuln: dict) -> tuple[str, dict] | None:
+    """Find the accepted-risk entry for an advisory under any of its names."""
+    for advisory in advisory_ids(vuln):
+        entry = ignores.get(advisory)
+        if entry is not None:
+            return advisory, entry
+    return None
 
 
 def audit() -> list[dict]:
@@ -94,16 +126,16 @@ def main(argv: list[str] | None = None) -> int:
 
     for dep in deps:
         for vuln in dep.get("vulns") or []:
-            advisory = vuln.get("id", "UNKNOWN")
-            entry: dict[str, str] | None = ignores.get(advisory)
-            if entry:
+            match = lookup(ignores, vuln)
+            if match:
+                advisory, entry = match
                 if dt.date.fromisoformat(entry["expiry"]) < today:
                     expired.append(advisory)
                     unaccepted.append((dep["name"], dep["version"], advisory))
                 else:
                     accepted.append((advisory, dep["name"]))
                 continue
-            unaccepted.append((dep["name"], dep["version"], advisory))
+            unaccepted.append((dep["name"], dep["version"], vuln.get("id", "UNKNOWN")))
 
     for advisory in sorted(set(expired)):
         print(

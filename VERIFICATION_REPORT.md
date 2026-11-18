@@ -60,6 +60,19 @@ wrong reason:
   emit an impossible tab. The correct property — optimality among *playable* paths
   — is what `feasible_minimum` in `tests/audio_fixtures.py` checks.
 
+**A CI failure that was real, and not this branch's.** The `Dependency
+vulnerability scan (shipped set)` step failed on this branch while passing on
+`main` minutes earlier, with identical dependency files. The cause was not in
+this branch: `tools/check_vulns.py` matched advisories by the single `id`
+pip-audit reported, but PyPI/OSV had re-canonicalised 10 torch advisories from
+`PYSEC-*` to `GHSA-*` without changing the vulnerabilities. `.pip-audit-ignore`
+lists the `PYSEC` identifiers, so the gate saw them as unaccepted. Verified
+against the exact locked version (`torch==2.5.1`, not the dev venv's 2.15.0):
+**26/26 advisories alias to an accepted entry**. The gate now matches on any
+identifier an advisory carries, and `tests/test_check_vulns.py` pins that
+behaviour. This also means the "0 issues" runs earlier in the audit were passing
+over an environment whose torch version did not match the lock.
+
 **A false failure worth recording.** Throughout this audit, two
 `TestReaPackIndex` tests failed in the sandbox and were reported as pre-existing
 repo-guard bugs. That was **wrong**: the workspace clone is shallow
