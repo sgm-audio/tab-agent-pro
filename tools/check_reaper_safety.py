@@ -30,7 +30,9 @@ try:
 except ImportError:  # pragma: no cover - optional dev dependency
     lupa = None
 
-ROOT = Path("/home/user/tab-agent-pro")
+# Derive from this file's location, not a hardcoded checkout path: CI runs from
+# /home/runner/work/..., and an absolute sandbox path silently breaks there.
+ROOT = Path(__file__).resolve().parent.parent
 MIDI_SUFFIXES = ("lead_guitar", "rhythm_L", "rhythm_R", "bass")
 
 STUB = r"""
