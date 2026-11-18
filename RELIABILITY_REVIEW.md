@@ -1,9 +1,9 @@
 # Tab Agent Pro — Reliability Review
 
 **Subject:** `sgm-audio/tab-agent-pro` @ `a4814b2` (`refactor: remove Hugging Face, add local GPU, stream REAPER console`)
-— the base of branch `arena/18940913-tab-agent-pro`. Re-verified at `6d1dbd9`
-("Audit and strengthen transcription and REAPER safety tests") before merge; §0 lists what
-that commit fixed, acknowledged, or left alone.
+— the base of branch `arena/18940913-tab-agent-pro`. Re-verified at `6d1dbd9` before the
+merge (§0) and again at `b116a07` afterwards (§0.1), which fixed M-1, R-2, R-3, R-4, R-6,
+R-7 and half of M-2; §5 carries the REAPER probe transcript.
 **Review date:** 2026-11-18
 **Focus:** defects that produce unusable tabs, hang the UI, or damage a REAPER project —
 plus the build/lockfile/check-tool drift that lets them ship.
@@ -56,9 +56,27 @@ Two consequences worth stating up front:
   (`audit_poc/repro.py`, `reaper_probe.py`). They are honest about this; the risk is a
   reader treating "tested" as "handled".
 * One **new** test asserts the M-3 behaviour as correct
-  (`tests/test_transcription_safety.py:125` requires
+  (`tests/test_transcription_safety.py::test_basic_pitch_failure_updates_health_and_does_not_return_empty_success` requires
   `health.set_component("basic_pitch", "error: missing mir_eval")` after a *request*
   failure), so fixing readiness will require changing that test, not just the code.
+
+### 0.1 PR #12 (`b116a07`) landed after this review was merged
+
+`b116a07` ("Audit and strengthen transcription and REAPER regression tests") rewrote
+`reaper/TabAgent.lua`, most of the Demucs path, `main.py`'s MIDI reporting and the test
+layout. Re-running the same harnesses on that tree:
+
+| Finding | Status on `b116a07` | Evidence |
+|---|---|---|
+| **M-1** | **fixed** | stems are validated (`_checked_stems`, `ValueError` on a missing stem); the probe now shows existing passthrough files and `demucs: unavailable` |
+| **M-2** | **REAPER half fixed** | imports are driven by `[tab-agent-midi] <suffix>` lines that `main.py` prints only for MIDI it actually wrote, so stale files are no longer imported. The CLI still exits 0 and leaves the old artifacts in place |
+| **R-2**, **R-3**, **R-4** (POSIX), **R-6**, **R-7** | **fixed** | see the probe transcript and table in §5 |
+| **T-1** | **unchanged** | still one string for narrow chords; the chord-occupancy tests are now three strict `xfail`s in `tests/test_tab_playability.py` |
+| **T-2** | **narrowed** | labels now require consecutive notes with no rest (≤ 20 ms), so simultaneous notes and 70 ms-rest pairs are `pick`; overlapping same-string pairs are still labelled from timing alone (repro case 2) |
+| everything else | unchanged | T-3, M-3, M-4, M-5, W-1…W-7, R-1, R-5, R-8, D-1, D-4…D-8, L-1…L-3, V-1 |
+
+Where §0 and §0.1 disagree, §0.1 is current. Line references in the body are for
+`6d1dbd9`; function names are stable across both.
 
 ---
 
@@ -67,10 +85,10 @@ Two consequences worth stating up front:
 | # | Severity | Finding | User-visible effect |
 |---|---|---|---|
 | **T-1** | High | Chord notes are assigned to a single string; positions drift to the 19th fret (*known defect: strict xfail*) | Tab is physically unplayable for most dyads/triads |
-| **T-2** | High | Slides / hammer-ons / pull-offs are fabricated from timing alone, order-dependent (*known defect: strict xfail*) | Every fast run is mislabelled; no bend data even exists |
+| **T-2** | Medium | Slides / hammer-ons / pull-offs are fabricated from timing alone; **narrowed in `b116a07`** (rests respected, overlapping pairs still labelled) | Fast legato-looking runs are mislabelled; no bend data even exists |
 | **T-3** | Medium | Per-note drops are invisible in the exported artifacts | Silent note loss; audit says it is reported |
-| **M-1** | High | Demucs "succeeds" with no stem files; documented fallback is skipped (*known defect: strict xfail*) | Generic failure instead of passthrough; health says `loaded` |
-| **M-2** | High | Zero-note transcription reports success (CLI exit 0 + "Done"); REAPER imports stale MIDI (*known defect: strict xfail*) | Silent empty/incorrect output |
+| **M-1** | High → **fixed in `b116a07`** | Demucs "succeeded" with no stem files; documented fallback was skipped | Stems are now validated; the fallback runs and health reports `unavailable` |
+| **M-2** | Medium | Zero-note transcription reports success (CLI exit 0 + "Done"); **REAPER half fixed in `b116a07`** via per-run report lines | CLI still leaves stale artifacts and reports success |
 | **M-3** | High | One failed request writes `error:` into component health → `/ready` 503 | Instance leaves rotation permanently |
 | **M-4** | Medium | Any Basic Pitch exception is reported as "no models installed" | Misleading diagnosis |
 | **M-5** | Medium | Suno detector reads 30 s; post-processor silently deletes notes/octaves | Garbage-in, "success" out |
@@ -80,12 +98,12 @@ Two consequences worth stating up front:
 | **W-4** | Medium | Device choice is process-global and sticky in the ONNX patcher | One user changes/ignores everyone's device |
 | **W-5** | Medium | `atexit` wipes the shared output dir; stale-session pruning can delete live work | Multi-instance / long-job corruption |
 | **R-1** | High | `stream:read("*l")` inside `reaper.defer` blocks REAPER's main thread | DAW freezes during long silent stages |
-| **R-2** | High | `Undo_BeginBlock`/`Undo_EndBlock` are paired across idle cycles | Unrelated edits folded into / excluded from undo |
-| **R-3** | High | MIDI is imported into whatever project is active when the poll finishes | Tracks land in the wrong project |
-| **R-4** | High | ExtState values are interpolated into a shell command (*known defect: strict xfail*) | `$(…)` execution; broken quoting on Windows |
+| **R-2** | High → **fixed in `b116a07`** | `Undo_BeginBlock`/`Undo_EndBlock` were paired across idle cycles | Block now opens and closes inside the completion callback |
+| **R-3** | High → **fixed in `b116a07`** | MIDI was imported into whatever project was active when the poll finished | A project switch now refuses and imports nothing |
+| **R-4** | High → **fixed on POSIX in `b116a07`** | ExtState values were interpolated into a double-quoted shell command | Single quotes stop `$(…)`; Windows and embedded quotes remain unchecked |
 | **R-5** | Medium | Comma-joined settings dialog misassigns fields | Thresholds/exports silently shifted |
-| **R-6** | Medium | REAPER default profile rewrites shared prefs on every run | Web UI device/tuning changes lost |
-| **R-7** | Medium | Script and CLI disagree on the default output dir; stale MIDI re-imported | "No Output" or wrong tracks |
+| **R-6** | Medium → **fixed in `b116a07`** | REAPER defaulted `profile` to `rock_standard` and rewrote shared prefs | Runtime default is now `""`, so `--profile` is opt-in |
+| **R-7** | Medium → **fixed in `b116a07`** | Script and CLI disagreed on the default output dir | `--output-dir` is always passed explicitly |
 | **R-8** | Medium | No confirmation, cancel, run lock, or orphan cleanup | Concurrent runs clobber each other |
 | **D-1** | High | `.dockerignore` excludes `tools/` while the Dockerfile `COPY`s it | Image cannot build |
 | **D-2** | High → **fixed** | `requirements.lock` omitted `huggingface-hub` (gradio + demucs require it) | Image build failed at the lock check; now pinned on main |
@@ -223,10 +241,11 @@ that part holds. But `AUDIT.md` §4 row 5/6 (“column-aligned chords”, “tec
 detection verified”) and `README` (“Assigns notes to strings/frets optimally”) do **not**
 hold: the DP assigns chords to impossible positions.
 
-On `6d1dbd9` this is **acknowledged rather than fixed**: `tests/test_transcription_safety.py:65`
-is a strict `xfail` named `test_simultaneous_playable_chord_uses_distinct_strings`, reason
-"DP assigns chord tones independently to the same string", and
-`docs/TRANSCRIPTION_TEST_AUDIT.md` lists it as a P0 known defect. A strict xfail turns an
+This is **acknowledged rather than fixed**. As of `b116a07` the chord behaviour is covered
+by three strict `xfail`s in `tests/test_tab_playability.py` (`:93` chord occupancy, `:106`
+sustained-string reuse, `:119` impossible dyad), all raising a dedicated
+`StringOccupancyError`; `6d1dbd9` had a single `test_simultaneous_playable_chord_uses_distinct_strings`,
+and `docs/TRANSCRIPTION_TEST_AUDIT.md` lists the class as a P0 known defect. A strict xfail turns an
 unexpected *pass* into a failure, so it does guard against a silent regression — but the
 shipped behaviour is unchanged. The test's own chord (`45, 50, 55`) is precisely a case
 the DP collapses — on the merged tree it yields
@@ -237,6 +256,8 @@ suite's "6 xfailed" is not a clean bill of health.
 ---
 
 ### T-2 (High) — Techniques are fabricated and depend on input note order
+
+**Status: narrowed in `b116a07`.** The heuristic now requires consecutive notes with no rest (`gap <= 0.02`) and a non-zero time delta, which removes the simultaneous-note and 70 ms-rest false positives. Overlapping same-string pairs inside `0.05 + 0.7·0.25 s` are still labelled slide/hammer/pull with no acoustic evidence, and slides are still emitted although no bend data exists.
 
 **Location:** `agents.py:725-750` (annotation), `agents.py:351-403`
 (`multiple_pitch_bends=False`).
@@ -300,11 +321,11 @@ is evidence that the code emits the labels, not that they are correct. The older
 vacuous: `tests/test_agents_edge.py:335-343` asserts the pull-off result is *in*
 `["slide", "hammer", "pull", "pick"]`, and the hammer test accepts `slide` or `hammer`.
 
-On `6d1dbd9` there is a real regression test, `tests/test_transcription_safety.py:76`
-(`test_separate_picked_notes_are_not_automatically_slides`), strict `xfail`, reason "onset
-proximity alone is not evidence of a slide" — an acknowledged defect, not a fix. Its
-fixture uses a 70 ms gap between notes, while the shipped heuristic fires for any gap under
-`0.05 + 0.7·0.25 = 0.225 s`: picked 16ths 125 ms apart are still labelled slides.
+`b116a07` narrowed this without removing it: the heuristic now also requires consecutive
+notes with no rest (`gap <= 0.02`) and a non-zero time delta, so simultaneous notes and the
+70 ms-rest pair that used to xfail are `pick`. Overlap is treated as legato, so two plucked
+16ths whose notes ring into each other (repro case 2: 0.2 s notes, 125 ms apart) are still
+labelled `slide`, and the `slide` label still has no bend evidence behind it.
 
 ---
 
@@ -363,6 +384,8 @@ mentioned.
 ## 3. Model backends and "success with empty/garbage output"
 
 ### M-1 (High) — Demucs reports success with no stems, so the fallback never runs
+
+**Status: fixed in `b116a07`.** Stems are checked (`_checked_stems`) and a missing stem raises, which routes into the raw-audio fallback. Kept below as the description of the defect and the reasoning for the check.
 
 **Location:** `agents.py:126-157` (`_separate_with_api`), `agents.py:159-181`
 (`_separate_with_subprocess`), `agents.py:87-112` (`separate_stems`).
@@ -431,6 +454,8 @@ that returns successfully but writes nothing, which is the path that breaks.
 ---
 
 ### M-2 (High) — A zero-note run reports success, and REAPER imports stale MIDI
+
+**Status: REAPER half fixed in `b116a07`.** The script imports only the suffixes `main.py` reports on stdout (`[tab-agent-midi] <suffix>`), which fixes both the stale-file and the wrong-project import. The CLI half — exit 0 with no artifacts, old files left in the output directory — is unchanged.
 
 **Location:** `agents.py:298-350` (`transcribe_stem` returns `[]` as success),
 `agents.py:504-519` (`export_midi` silently no-ops on empty), `main.py:378-625`,
@@ -555,7 +580,7 @@ error rate so a single bad upload does not take an otherwise healthy instance ou
 rotation.” It is not independent. `AUDIT.md` N-1 and Appendix C P1-1 claim the readiness
 split fixed the conflation of liveness and readiness — it fixed the *startup* case only.
 
-`6d1dbd9` goes the other way: `tests/test_transcription_safety.py:125`
+`6d1dbd9` goes the other way: `tests/test_transcription_safety.py::test_basic_pitch_failure_updates_health_and_does_not_return_empty_success`
 (`test_basic_pitch_failure_updates_health_and_does_not_return_empty_success`) *asserts*
 `health.set_component("basic_pitch", "error: missing mir_eval")` after a failed
 prediction. Fixing M-3 therefore means changing that test as well — the suite currently
@@ -842,6 +867,41 @@ Findings here are reproduced by driving the real `reaper/TabAgent.lua` under a s
 REAPER API (`audit_poc/reaper_probe.py`), which records undo calls, the active project at
 import time, and the wall-clock duration of one deferred callback.
 
+**Status after `b116a07` (#12), which rewrote most of `TabAgent.lua`.** Re-run on that
+tree (the probe now provides a glued item, a track table and the
+`[tab-agent-midi] <suffix>` report lines the script consumes):
+
+```
+=== A1. same project: where do the undo block and the import happen? ===
+script body : []
+after 4 defer tick(s): ['Undo_BeginBlock', 'InsertMedia_into_PROJECT-A',
+                        'Rename:song - Lead Guitar', 'InsertMedia_into_PROJECT-A',
+                        'Rename:song - Bass', 'Undo_EndBlock']
+=== A2. project switched mid-run ===
+script body : []
+after 4 defer tick(s): ['MB:Tab Agent — Project Changed']
+=== B. read('*l') blocks the deferred callback ===
+one poll() blocked the main thread for 3.00s while the child was quiet
+=== C. quoting of ExtState values ===
+cd '/tmp/fake-install' && python3 main.py --reaper-report-midi --output-dir '/tmp/fake-install/output' --profile '$(echo INJECTED > /tmp/tabagent_pwned)' -- '/tmp/song.wav' 2>&1
+sentinel file created by shell substitution: False
+```
+
+| Finding | Status on `b116a07` |
+|---|---|
+| R-1 blocking `read` in `defer` | **still broken** — 3.00 s stall, unchanged |
+| R-2 undo block across idle cycles | **fixed** — block opens and closes inside the completion callback, wrapping exactly the inserts |
+| R-3 import into the wrong project | **fixed** — the start project is captured and compared; a switch now refuses and imports nothing |
+| R-4 shell interpolation | **fixed on POSIX** — the command is now single-quoted and the substitution does not run; single quotes inside a value are still unescaped, and the Windows path is separate |
+| R-5 CSV settings dialog | still broken |
+| R-6 default profile rewrites prefs | **fixed at runtime** — `profile` now defaults to `""`, so `--profile` is only passed when chosen |
+| R-7 output-directory disagreement | **fixed** — `--output-dir` is always passed explicitly |
+| R-8 no confirm/cancel/lock | still broken (a glue/selection check was added) |
+
+The sections below keep the `6d1dbd9` analysis; their line references are for that commit
+(the `poll`/`import` code now lives at `reaper/TabAgent.lua:217-235` and `:324-366`).
+
+
 ### R-1 (High) — The deferred poll blocks REAPER's main thread
 
 **Location:** `reaper/TabAgent.lua:164-206`.
@@ -903,6 +963,8 @@ safe only after R-4 replaces `quote()`; apply both together.)
 
 ### R-2 (High) — The undo block spans idle cycles
 
+**Status: fixed in `b116a07`.** `Undo_BeginBlock`/`Undo_EndBlock` now wrap only the import inside the completion callback (§5, probe A1).
+
 **Location:** `reaper/TabAgent.lua:236` (`Undo_BeginBlock`), `:303` (`Undo_EndBlock`),
 `:272-283` (`reaper.defer`).
 
@@ -946,6 +1008,8 @@ calls at 246/252/284 are no-ops and should go with it).
 
 ### R-3 (High) — MIDI is imported into whichever project is active at completion
 
+**Status: fixed in `b116a07`.** The start project is captured and compared; a switch refuses and imports nothing (§5, probe A2).
+
 **Location:** `reaper/TabAgent.lua:288-315`.
 
 The script never records the project it started in. `reaper.defer` keeps running across
@@ -977,6 +1041,8 @@ position rather than wherever the cursor is at completion.
 ---
 
 ### R-4 (High) — ExtState values are interpolated into a shell command
+
+**Status: fixed on POSIX in `b116a07`.** The command is single-quoted and the `$(…)` in the probe no longer runs. A single quote inside a value is still unescaped, and the Windows path is a separate quoting problem.
 
 **Location:** `reaper/TabAgent.lua:109-136` (`quote`, `build_args`), `:167`.
 
@@ -1052,6 +1118,8 @@ every subsequent run fail in argparse, with the reason only visible in the conso
 
 ### R-6 (Medium) — The REAPER default profile rewrites the shared configuration
 
+**Status: fixed in `b116a07`.** `TabAgent.lua` now defaults `profile` to `""`, so `--profile` is passed only when the user picks one.
+
 **Location:** `reaper/Settings.lua:46-74`, `reaper/TabAgent.lua:117-119`,
 `main.py:226-247` (`apply_profile`), `init_memory.py:128-170` (`save_profile`).
 
@@ -1073,6 +1141,8 @@ passes `--profile rock_standard`, and `apply_profile` → `save_profile` **repla
 ---
 
 ### R-7 (Medium) — Output-directory disagreement, and stale MIDI is imported
+
+**Status: fixed in `b116a07`.** `--output-dir` is always passed explicitly and imports are scoped to the run's report lines.
 
 The script assumes `install_path .. "/output"`; `main.py:395-401` uses `/app/output` if it
 exists, else `./output`. Any install under `/app` (including the Docker image layout) makes
@@ -1414,20 +1484,21 @@ subdirectory (`mkdtemp` or the run id from R-7).
 ## 8. Test and guard gaps that let all of this ship
 
 **V-1 (Medium) —** at `a4814b2` every guard that should have caught the findings above was
-either vacuous or never executed the code path. `6d1dbd9` adds real tests for six of them,
-but marks them strict `xfail`: they *document* the defects and fail on an unexpected pass,
-while the shipped behaviour is unchanged (see §0). One test goes further and asserts the
-buggy behaviour as correct.
+either vacuous or never executed the code path. `6d1dbd9` added real tests for six of them
+but marked them strict `xfail`; `b116a07` then fixed four of those defects and replaced the
+tests with passing assertions, leaving three chord-occupancy `xfail`s and one octave-cleanup
+`xfail`. An `xfail` still *documents* a defect rather than preventing it, and one test
+asserts the M-3 behaviour as correct. Status as of `b116a07`:
 
 | Guard | Why it does not catch the defect |
 |---|---|
-| `tests/test_transcription_safety.py:65,76,112` and `tests/test_reaper_safety.py:46,67`, `tests/test_transcription_safety.py:150` | strict `xfail` — they encode T-1, T-2, M-1, R-4, M-2 and the octave deletion as known failures. Useful as regression sentinels; they are not passing safety guarantees, and `docs/TRANSCRIPTION_TEST_AUDIT.md` says so |
-| `tests/test_transcription_safety.py:125` | asserts `health.set_component(..., "error: …")` after a *request* failure — codifies M-3 |
+| `tests/test_tab_playability.py:93,106,119` and `tests/test_transcription_safety.py:128` | strict `xfail` — chord occupancy (T-1, including sustained strings and impossible dyads) and the Suno octave deletion. Useful as regression sentinels, not as passing safety guarantees; `docs/TRANSCRIPTION_TEST_AUDIT.md` says so |
+| `tests/test_transcription_safety.py` (`test_basic_pitch_failure_updates_health_and_does_not_return_empty_success`) | asserts `health.set_component(..., "error: …")` after a *request* failure — codifies M-3 |
 | `tests/test_agents_edge.py::test_technique_pull_descending` | asserts the value is in `["slide","hammer","pull","pick"]` — always true |
 | `…::test_technique_hammer_ascending` | accepts `slide` **or** `hammer` |
-| No chord test that passes | the only chord test is the xfail above; every *passing* `generate_tab` test uses single notes, so T-1 is unguarded |
+| No chord test that passes | every *passing* `generate_tab` test uses single notes; the chord tests are the xfails above, so T-1 stays unguarded by a green run |
 | `tests/test_hardening.py::test_concurrent_sessions_get_distinct_directories` | calls `tempfile.mkdtemp` twice itself; never enters `_process_audio_impl` |
-| `tools/check_reaper_settings.py` | stubs `reaper.defer` to a no-op, so `poll_pipeline`, `import_midi`, undo pairing and project capture never execute; the "no spurious No Output" assertion is in a branch that cannot run |
+| `tools/check_reaper_settings.py` | still stubs `reaper.defer` to a no-op, so `poll_pipeline`, `import_midi` and the undo pairing never execute; `b116a07` added `tests/test_reaper_contract.py`, which does drive the callback — that is the better harness |
 | `tools/simulate_failures.py::simulate_demucs_offline` | only covers `DEMUCS_API_AVAILABLE=False` + a raising subprocess; not "API returns without writing stems" (M-1) |
 | `tests/test_app_integration.py` | mocks `SplitterAgent`/`EarAgent`, so backend contract violations (empty notes, missing stems) are invisible |
 | `validate.py --quick` | skips Docker and the LLM-heavy checks; does not run `run.sh` or the lock regeneration |
@@ -1485,7 +1556,7 @@ harness invoke the deferred callback at least twice with an `EnumProjects` probe
 | P0-4 | Zero-GPU claim corrected | ✅ |
 | P1-1 | `/ready` + derived health | 🟡 — M-3 |
 | P1-2 | `--profile` applied | ✅ for the CLI; in REAPER it is forced on every run (R-6) |
-| P1-3 | REAPER settings reach `main.py` | 🟡 — they are passed, but can be misparsed (R-5), injected (R-4), or destructive (R-6) |
+| P1-3 | REAPER settings reach `main.py` | 🟡 — they are passed; injection (R-4) and the profile overwrite (R-6) are fixed in `b116a07`, but the comma-joined dialog can still shift fields (R-5) |
 | P1-4 | `index.xml` valid | ✅ format; stale at 1.0.1 (D-7) |
 | P1-5 | Unplayable notes skipped and reported | 🟡 — skipped and counted; not reported (T-3) |
 | P1-6 | Tablature rendering fixed | ✅ |
@@ -1513,8 +1584,9 @@ described this one.
    strings and a hand-span limit; techniques off by default. This is the product.
 2. **Fail loudly instead of succeeding empty** (M-1, M-2): verify Demucs outputs; make a
    zero-note run an error; per-run output directories.
-3. **REAPER: never block the main thread and never insert into the wrong project**
-   (R-1, R-2, R-3, R-8). These are the only findings that can damage a user's session.
+3. **REAPER: never block the main thread** (R-1) — the remaining session-damaging
+   finding. R-2, R-3, R-4, R-6 and R-7 were fixed in `b116a07`; R-1 (a blocking `read`
+   inside `reaper.defer`) and R-8 (no cancel/lock) remain.
 4. **Make the health signal honest** (M-3): request failures must not change readiness.
 5. **Make the build reproducible again** (D-1, D-4): fix `.dockerignore`, and teach the
    verifier to compare against the resolver. D-2 and D-3 are already fixed on main; the
@@ -1556,6 +1628,11 @@ into "guard" without an interval in which it protects nothing.
   After `git fetch --unshallow`, `6d1dbd9` is a normal child of `a4814b2` and
   `check_index.py` passes; any claim here that depended on history traversal was re-checked
   after the unshallow.
+* **Main moved twice while this was being written** (`6d1dbd9`, then `b116a07`). Both were
+  re-checked with the same harnesses; §0 and §0.1 record what changed. The probes in
+  `audit_poc/` were updated to the `b116a07` interfaces (glued-item selection, track table,
+  `[tab-agent-midi]` report lines), so re-running them against older commits will need the
+  old stubs.
 * **`6d1dbd9` was merged during the review.** All findings were re-run against the merged
   tree; §0 lists what changed. The test suite as a whole (287 passed / 6 xfailed per
   `docs/TRANSCRIPTION_TEST_AUDIT.md`) was not executed here — the real dependency set

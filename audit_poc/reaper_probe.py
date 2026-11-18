@@ -56,11 +56,17 @@ reaper.Undo_EndBlock = function(desc, flags) log("Undo_EndBlock") end
 reaper.GetSelectedMediaItem = function(_, idx) return 1 end
 reaper.GetActiveTake = function(item) return 1 end
 reaper.GetMediaItemTake_Source = function(take) return 1 end
-reaper.GetMediaSourceFileName = function(src, buf) return "", AUDIO_PATH end
-reaper.InsertMedia = function(path, mode) log("InsertMedia_into_" .. ACTIVE_PROJECT) end
-reaper.GetNumTracks = function() return 1 end
-reaper.GetTrack = function(_, idx) return 1 end
-reaper.GetSetMediaTrackInfo_String = function(track, name, value, setnew) end
+reaper.GetMediaSourceFileName = function(src, buf) return AUDIO_PATH, AUDIO_PATH end
+local tracks = { "existing-track" }
+reaper.InsertMedia = function(path, mode)
+  log("InsertMedia_into_" .. ACTIVE_PROJECT)
+  tracks[#tracks + 1] = "track-" .. (#tracks + 1)
+  return 1
+end
+reaper.GetNumTracks = function() return #tracks end
+reaper.GetTrack = function(_, idx) return tracks[idx + 1] end
+reaper.GetTrackGUID = function(track) return track end
+reaper.GetSetMediaTrackInfo_String = function(track, name, value, setnew) log("Rename:" .. tostring(value)) end
 reaper.EnumProjects = function(idx, projfn) return ACTIVE_PROJECT end
 reaper.defer = function(cb) PENDING[#PENDING+1] = cb end
 """
@@ -126,23 +132,33 @@ def factory(lines, delay=0.0):
     return _popen
 
 
-print("=== A. undo block spans idle cycles + project switch ===")
-lua = setup(
-    {"install_path": FAKE_INSTALL, "output_dir": OUTPUT_DIR},
-    factory(["l1\n", "l2\n"]),
-)
-print("script body          :", events(lua))
-lua.globals().ACTIVE_PROJECT = "PROJECT-B"  # user switches project tab while it runs
-tick = 0
-while True:
-    cb = take_callback(lua)
-    if cb is None:
-        break
-    tick += 1
-    cb()
-    print(f"defer tick {tick}          :", events(lua))
-print("=> one Undo_BeginBlock, Undo_EndBlock only after", tick, "defer ticks")
-print("=> MIDI imported into:", [e for e in events(lua) if e.startswith("InsertMedia")])
+def run_to_completion(switch_project: bool) -> tuple[list[str], list[str], int]:
+    lua = setup(
+        {"install_path": FAKE_INSTALL, "output_dir": OUTPUT_DIR},
+        factory(["[tab-agent-midi] lead_guitar", "[tab-agent-midi] bass", "done"]),
+    )
+    body_events = events(lua)
+    if switch_project:
+        lua.globals().ACTIVE_PROJECT = "PROJECT-B"  # user switches tabs mid-run
+    ticks = 0
+    while True:
+        cb = take_callback(lua)
+        if cb is None:
+            break
+        ticks += 1
+        cb()
+    return body_events, events(lua), ticks
+
+
+print("=== A1. same project: where do the undo block and the import happen? ===")
+body, final, ticks = run_to_completion(switch_project=False)
+print("script body :", body)
+print(f"after {ticks} defer tick(s):", final)
+
+print("\n=== A2. project switched mid-run ===")
+body, final, ticks = run_to_completion(switch_project=True)
+print("script body :", body)
+print(f"after {ticks} defer tick(s):", final)
 
 print("\n=== B. read('*l') blocks the deferred callback ===")
 lua = setup({"install_path": FAKE_INSTALL}, factory(["late\n"], delay=3.0))
