@@ -406,3 +406,30 @@ def test_same_second_sessions_get_distinct_directories() -> None:
         # Both directories must exist and be unique.
         assert Path(zip1).parent.is_dir() and Path(zip2).parent.is_dir()
         assert Path(zip1).parent.name != Path(zip2).parent.name
+
+
+def test_upload_route_enforces_the_file_size_cap(monkeypatch) -> None:
+    """
+    A direct POST to the upload endpoint must be capped.
+
+    The limit in _validate_audio() only sees a file that has already been
+    written to disk, and the upload endpoint never calls it, so the route itself
+    has to carry the limit (unset, Gradio's route limit is math.inf).
+    """
+    app = _import_app()
+    import gradio as gr
+
+    mounted: dict = {}
+    original = gr.mount_gradio_app
+
+    def spy(parent, blocks, path, **kwargs):
+        mounted["kwargs"] = kwargs
+        mounted["blocks"] = blocks
+        return original(parent, blocks, path, **kwargs)
+
+    monkeypatch.setattr(gr, "mount_gradio_app", spy)
+    app.create_app()
+
+    assert mounted["kwargs"].get("max_file_size") == app.MAX_UPLOAD_BYTES
+    assert mounted["blocks"].max_file_size == app.MAX_UPLOAD_BYTES
+    assert app.MAX_UPLOAD_BYTES == app.MAX_FILE_SIZE_MB * 1024 * 1024

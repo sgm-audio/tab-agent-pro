@@ -17,6 +17,9 @@ requirements.lock — and fails on any reported advisory unless it is listed in
 Usage:
     python tools/check_vulns.py                 # gate (exit 1 on unaccepted finding)
     python tools/check_vulns.py --list-accepted # show the accepted-risk table
+
+Exit status: 0 clean, 1 unaccepted or expired advisory, 2 the scan could not run
+(advisory service unreachable/rate-limited after retries — not a finding).
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ import datetime as dt
 import json
 import subprocess  # nosec B404
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -88,8 +92,15 @@ def describe(vuln: dict) -> str:
     return f"{ids[0]} (aliases: {', '.join(ids[1:])})"
 
 
-def audit() -> list[dict]:
-    """Run pip-audit against the installed environment and return its JSON."""
+ATTEMPTS = 3
+RETRY_DELAY_SEC = 5.0
+
+
+class ScanUnavailableError(RuntimeError):
+    """The advisory service could not be queried. Not a finding."""
+
+
+def _audit_once() -> list[dict]:
     result = subprocess.run(  # nosec B603, B607
         [sys.executable, "-m", "pip_audit", "--progress-spinner", "off", "--format", "json"],
         capture_output=True,
@@ -98,8 +109,36 @@ def audit() -> list[dict]:
     )
     if not result.stdout.strip():
         msg = f"pip-audit produced no output (exit {result.returncode}): {result.stderr[-500:]}"
-        raise RuntimeError(msg)
-    return json.loads(result.stdout).get("dependencies", [])
+        raise ScanUnavailableError(msg)
+    try:
+        return json.loads(result.stdout).get("dependencies", [])
+    except json.JSONDecodeError as e:
+        raise ScanUnavailableError(f"pip-audit produced unparseable JSON: {e}") from e
+
+
+def audit(attempts: int = ATTEMPTS, delay: float = RETRY_DELAY_SEC) -> list[dict]:
+    """
+    Run pip-audit against the installed environment and return its JSON.
+
+    A rate-limited or briefly unavailable advisory service used to fail the build
+    exactly like a real finding, with no retry: an OSV 429 at 02:04Z turned a PR
+    red on a tree whose dependency set had not changed. Transport failures are
+    retried, and the final failure is reported as "could not scan" rather than
+    as an unaccepted vulnerability.
+    """
+    last: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return _audit_once()
+        except (ScanUnavailableError, subprocess.SubprocessError) as e:
+            last = e
+            if attempt < attempts:
+                print(
+                    f"⚠️  advisory scan attempt {attempt}/{attempts} failed ({e}); retrying",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
+    raise ScanUnavailableError(str(last))
 
 
 def main(argv: list[str] | None = None, ignore_path: Path | None = None) -> int:
@@ -117,9 +156,14 @@ def main(argv: list[str] | None = None, ignore_path: Path | None = None) -> int:
 
     try:
         deps = audit()
-    except (RuntimeError, subprocess.SubprocessError) as e:
-        print(f"❌ vulnerability scan failed to run: {e}", file=sys.stderr)
-        return 1
+    except ScanUnavailableError as e:
+        # Distinct from a finding: exit 2 means "the question could not be
+        # asked", not "the answer is bad". An annotation gives it a name in the
+        # GitHub UI instead of looking like a vulnerability.
+        print("::error title=Vulnerability scan unavailable::" + str(e)[:200])
+        print(f"❌ could not scan dependencies — this is NOT a finding: {e}", file=sys.stderr)
+        print("   Re-run the job; if it persists, check the advisory service.", file=sys.stderr)
+        return 2
 
     today = dt.date.today()
     unaccepted: list[tuple[str, str, str]] = []
