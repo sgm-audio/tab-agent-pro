@@ -16,6 +16,7 @@ This script fails if either regresses.
 from __future__ import annotations
 
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -86,25 +87,30 @@ def check_app_binds_externally() -> None:
         )
 
 
-def _has_cpu_torch_install(text: str) -> bool:
-    """Require the torch install to use the CPU default, including ARG overrides."""
-    lines = [line.strip() for line in text.splitlines() if not line.lstrip().startswith("#")]
-    default_cpu = any(
-        re.fullmatch(r"ARG\s+TORCH_INDEX_URL=https://download\.pytorch\.org/whl/cpu", line)
-        for line in lines
-    )
-    for line in lines:
-        if not re.search(r"\bpip\s+install\b.*\btorch(?:[=<>\[]|\s)", line):
+def _has_cpu_torch_install(dockerfile: str) -> bool:
+    """Check the pip install's actual index argument, resolving our build arg default."""
+    cpu_index = "https://download.pytorch.org/whl/cpu"
+    index_default = ""
+    found = False
+    for line in dockerfile.replace("\\\n", " ").splitlines():
+        line = line.strip()
+        if line.startswith("ARG TORCH_INDEX_URL="):
+            index_default = line.split("=", 1)[1].strip("\"'")
+        if not line.startswith("RUN pip install "):
             continue
-        direct = re.search(
-            r"--index-url\s+[\"']?https://download\.pytorch\.org/whl/cpu(?:[\"']|\s|$)", line
-        )
-        variable = re.search(
-            r"""--index-url\s+["']?(?:\$TORCH_INDEX_URL|\$\{TORCH_INDEX_URL\})(?:["']|\s|$)""", line
-        )
-        if direct or (default_cpu and variable):
-            return True
-    return False
+        args = shlex.split(line, comments=True)
+        if not any(re.match(r"torch(?:$|[<>=])", token) for token in args):
+            continue
+        found = True
+        if "--index-url" not in args:
+            return False
+        position = args.index("--index-url") + 1
+        index = args[position] if position < len(args) else ""
+        if index in ("$TORCH_INDEX_URL", "${TORCH_INDEX_URL}"):
+            index = index_default
+        if index != cpu_index:
+            return False
+    return found
 
 
 def check_hardening() -> None:
@@ -128,10 +134,7 @@ def check_hardening() -> None:
         )
 
     if not _has_cpu_torch_install(text):
-        failures.append(
-            "torch must install from the CPU-only index by default; the PyPI wheel pulls "
-            "~2.5 GB of unusable NVIDIA CUDA packages"
-        )
+        failures.append("torch must install from the CPU-only index by default")
 
     # The build must (a) re-apply the lock so the installed set matches what was
     # tested, and (b) fail when the installed set and the lock disagree.
@@ -153,6 +156,7 @@ def check_hardening() -> None:
 
 
 def main() -> int:
+    failures.clear()
     check_dockerfile()
     check_requirements()
     check_app_binds_externally()

@@ -91,15 +91,13 @@ jobs:
         # Match the Dockerfile: basic-pitch is installed with --no-deps because
         # its Linux default dependency set pulls TensorFlow, which the ONNX
         # backend does not use. mir_eval/resampy are its real runtime imports.
-        pip install --no-deps "basic-pitch>=0.4.0,<0.5" "mir_eval>=0.6" "resampy>=0.2.2,<0.4.3"
+        pip install --no-deps -c requirements.lock "basic-pitch>=0.4.0,<0.5" "mir_eval>=0.6" "resampy>=0.2.2,<0.4.3"
         grep -v '^basic-pitch' requirements.txt > /tmp/req-nobp.txt
-        pip install -r /tmp/req-nobp.txt
+        pip install -c requirements.lock -r /tmp/req-nobp.txt
 
     - name: Enforce the locked versions
-      # requirements.txt is range-based, so installing it can silently drift
-      # from what was tested and what the image ships. Re-apply the lock with
-      # --no-deps (already-satisfied packages are skipped, nothing is
-      # re-resolved, and TensorFlow cannot sneak back in).
+      # Apply the exact pins to dependencies installed in the separate Torch
+      # step as well. --no-deps preserves the intentional ONNX-only install.
       run: pip install --no-deps -r requirements.lock
 
     - name: Install remaining dev dependencies
@@ -112,11 +110,8 @@ jobs:
       run: python tools/check_lockfile.py --interpreter
 
     - name: Verify lockfile matches the installed environment
-      # Tooling installed *after* this step (pytest, mypy, pip-audit, ruff...)
-      # is intentionally not shipped, so it is ignored explicitly (--extra).
-      # Both requirements.txt and pyproject.toml use ranges, so this compares
-      # the dependency *closure* of the declared set rather than raw equality:
-      # an exact-equality check can never pass against a range-based install.
+      # Check the exact pinned runtime closure, not all of the installed dev
+      # tools. Pytest and pytest-cov are named separately as extra tooling.
       run: |
         python tools/check_lockfile.py --verify --extra pytest --extra pytest-cov
 
@@ -140,6 +135,23 @@ jobs:
 
     - name: Failure-mode simulations
       run: python tools/simulate_failures.py
+
+    - name: Smoke test the wheel outside the checkout
+      run: |
+        wheel_dir=$(mktemp -d)
+        trap 'rm -rf "$wheel_dir"' EXIT
+        python -m pip wheel --no-deps . -w "$wheel_dir"
+        python -m pip install --no-deps --target "$wheel_dir/installed" "$wheel_dir"/tab_agent_pro-*.whl
+        cd "$wheel_dir"
+        PYTHONPATH="$wheel_dir/installed" python - <<'PY'
+        from pathlib import Path
+        import agents
+        import device
+        assert Path(agents.__file__).parent == Path('installed').resolve()
+        assert Path(device.__file__).parent == Path('installed').resolve()
+        assert agents.BASIC_PITCH_AVAILABLE, "Basic Pitch is not importable"
+        print("Installed wheel imports with the ONNX transcription backend")
+        PY
 
     - name: Run validation suite (quick)
       run: python validate.py --quick

@@ -23,7 +23,8 @@ output/
 user_memory/
 separated_stems/
 tests/
-tools/
+tools/*
+!tools/check_lockfile.py
 reaper/
 AUDIT.md
 CHANGELOG.md

@@ -221,17 +221,21 @@ class TestExportTabToTxtCoverage(unittest.TestCase):
         export_tab_to_txt(tab_data, self._path("adjacent.tab"), "Guitar", num_strings=6)
         content = self._read("adjacent.tab")
         assert "1215" not in content
-        assert "12 15" in content
+        low_e = [line for line in content.splitlines() if line.lstrip().startswith("E|")][-1]
+        assert low_e.split("|", 1)[1].split() == ["12", "15"]
 
-    def test_notes_on_same_string_in_one_group_are_all_kept(self) -> None:
-        """Previously the later note overwrote the earlier one in the output."""
+    def test_close_onsets_on_same_string_are_separate_columns(self) -> None:
+        """Close re-attacks must not look like two frets played at once."""
         tab_data = [
             {"string": 3, "fret": 15, "technique": "pick", "start_time": 0.65},
             {"string": 3, "fret": 8, "technique": "pull", "start_time": 0.66},
         ]
         export_tab_to_txt(tab_data, self._path("same.tab"), "Guitar", num_strings=6)
         content = self._read("same.tab")
-        assert "15/8p" in content
+        assert "t(s)|0.650 0.660" in content
+        assert "15/8p" not in content
+        g_string = next(line for line in content.splitlines() if line.lstrip().startswith("G|"))
+        assert g_string.split("|", 1)[1].split() == ["15", "8p"]
 
     def test_num_strings_written_to_json(self) -> None:
         export_tab_to_json(
@@ -271,7 +275,7 @@ class TestExportTabToTxtCoverage(unittest.TestCase):
         assert "5h" in content
         assert "7p" in content
 
-    def test_time_grouping_within_50ms(self) -> None:
+    def test_nearby_onsets_do_not_form_a_single_column(self) -> None:
         tab_data = [
             {"string": 5, "fret": 0, "start_time": 0.0},
             {"string": 4, "fret": 2, "start_time": 0.03},
@@ -279,7 +283,7 @@ class TestExportTabToTxtCoverage(unittest.TestCase):
         ]
         export_tab_to_txt(tab_data, self._path("time.tab"), "Guitar")
         content = self._read("time.tab")
-        assert "E|" in content
+        assert "t(s)|0.000 0.030 1.000" in content
 
 
 class TestExportTabToJsonCoverage(unittest.TestCase):

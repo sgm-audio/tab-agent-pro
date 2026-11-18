@@ -22,8 +22,8 @@ wheels; this was not a Docker/REAPER-host validation. The two bundled WAVs are e
   backtracking test checks keys/counts, not open-string pitch plus fret or minimum path
   cost. `test_chord_simultaneous_notes` in `tests/test_main_coverage.py` gives the renderer
   *already assigned* string/fret positions. `15/8p` preserves text but does not make a
-  simultaneous same-string chord playable. `TabAgent` still optimizes one note per layer,
-  not occupied strings across a chord or a sustain.
+  simultaneous same-string chord playable. The old `TabAgent` optimized sequential
+  transitions without tracking occupied strings across a chord or a sustain.
 - **Technique false positives.** Several legacy tests only assert inside `if len(tab) > 1`
   or accept any label, including `pick`. The negative cases primarily cover wide onset
   gaps and string changes, not a rest inside the onset window or a skipped intervening
@@ -50,30 +50,37 @@ wheels; this was not a Docker/REAPER-host validation. The two bundled WAVs are e
 
 ## Regression tests now in the tree
 
-After integrating the independent [PR #11 audit](TRANSCRIPTION_TEST_AUDIT.md), local
-verification on Linux/Python 3.11: **318 passed, 1 skipped, 5 strict xfailed**;
-**89.0% statements, 78.5% branches** on application code. The standalone REAPER guard
-passed 16 tests, the failure harness passed 17/17 checks, and `validate.py --quick`
-passed 102 checks with the Docker build intentionally skipped. The combined lock
-pins Gradio 6.32.0, Pillow 13.0.0 and Tornado 6.6.1. Both installed-lock verification
-and the dependency scan passed locally with the existing accepted risks and no new
-exceptions.
+After integrating the independent [PR #11 audit](TRANSCRIPTION_TEST_AUDIT.md),
+PR #12 recorded 318 passes, one skip and five strict expected failures on Linux/Python
+3.11. After merging those tests with the timed fingering solver and the export fixes
+from PR #14, the same local lane recorded **338 passed, 1 skipped, 1 strict xfailed**
+and **89.5% statement, 79.5% branch coverage** on application code. The three
+string-occupancy regressions (four cases) now pass. The cached Demucs lane was not
+run, and Suno octave cleanup still has an expected failure for a legitimate octave.
+
+The standalone Lua/CLI fixture passed 17 tests, the failure harness passed 17/17,
+and `validate.py --quick` passed 102 checks with Docker skipped. An installed wheel
+ran real CPU Basic Pitch and produced timed tab, JSON, and reported MIDI files with
+both Demucs routes intentionally unavailable. This does not validate separation.
+The 118-pin runtime closure and installed dependency scan passed locally; see
+[accepted risks](ACCEPTED_RISKS.md) for the resampy/setuptools compatibility pin.
+Native REAPER and the Python 3.12 CPU container were not tested in this run.
 
 In a disposable copy before integration, removing accumulated Viterbi cost, routing
 left rhythm to right audio, and letting REAPER import after a failed child each
 failed its corresponding new regression test.
 
-P0 is playability or project-state safety. The noted expected failures are open bugs,
-not coverage credit; a fix must remove the marker. The strict markers only accept the
-specific occupancy or upper-octave defects, not unrelated missing/wrong-note assertions.
+P0 is playability or project-state safety. The remaining strict expected failure
+records the Suno upper-octave defect, not coverage credit or acceptable output. A fix
+must remove that marker.
 
 | Priority / test | Must assert | Why the baseline missed it |
 |---|---|---|
-| P0 `test_viterbi_matches_exhaustive_global_cost` | Recover exact pitch and timing and equal a small exhaustive minimum. The fixture's greedy path is strictly worse. | Counting backtracked entries cannot catch greedy or misindexed backpointers. |
+| P0 `test_viterbi_matches_exhaustive_global_cost` and `test_small_polyphonic_search_matches_exhaustive_oracle` | On small monophonic and polyphonic fixtures, match exhaustive search under the respective assignment constraints. This does not prove global optimality for the bounded search on longer inputs. | Counting backtracked entries cannot catch greedy or misindexed backpointers. |
 | P0 `test_fret_boundaries_keep_playable_notes_after_a_rejected_event` | Classical 19-fret, Drop D, 4- and 5-string bass hit both inclusive boundaries, skip the pitches one semitone outside, reconstruct tuning exactly, and preserve chronology despite reversed input. | The existing range tests are mostly counts or distant invalid pitches on standard tuning. |
-| P0 `test_playable_chord_keeps_all_pitches_on_distinct_strings` **(strict xfail)** | Simultaneous E2/A2/D3 and A2/D3/G3 retain all pitches with three distinct strings and no legato annotations. | Renderer fixtures assign strings in advance; the real DP puts all three on low E. |
-| P0 `test_sustained_string_cannot_be_reused_during_a_later_note` **(strict xfail)** | A sustained A2 is on a different string to the later E2 that must use low E; unrelated voices are not annotated as a pull-off. | Start-time-only transition cost ignores still-ringing notes. |
-| P0 `test_impossible_same_string_dyad_reports_the_conflict` **(strict xfail)** | Simultaneous E2/F2 on standard tuning retain one and explicitly report the other as skipped. No invented alternative string or silent loss. | `last_skipped_notes` only reported individually out-of-range notes; both pitches are individually in range. |
+| P0 `test_playable_chord_keeps_all_pitches_on_distinct_strings` | Simultaneous E2/A2/D3 and A2/D3/G3 retain all pitches with three distinct strings and no legato annotations. | Renderer fixtures assigned strings in advance; the old DP put all three on low E. |
+| P0 `test_sustained_string_cannot_be_reused_during_a_later_note` | A sustained A2 is on a different string to the later E2 that must use low E; unrelated voices are not annotated as a pull-off. | Start-time-only transition cost ignored still-ringing notes. |
+| P0 `test_impossible_same_string_dyad_reports_the_conflict` | Simultaneous E2/F2 on standard tuning retain one and report the other as a `fingering_conflict`. No invented alternative string or silent loss. | `last_skipped_notes` only reported individually out-of-range notes; both pitches are individually in range. |
 | P0 `test_suno_cleanup_preserves_legitimate_octave_chord` **(strict xfail)** | A genuine E2/E3/B3 chord should keep all three pitches in the Suno path. | Existing octave-cleanup tests assume the upper note is always an artifact. |
 | P0 `test_reaper_settings_dialog_reaches_real_cli_and_controls_outputs` | Execute both scripts, resolve a real persisted Bass-4 profile, exercise explicit/blank thresholds, write only enabled formats under the same directory, and import only MIDI reported by that invocation. Pitch 23 must be filtered on the 4-string profile while open E (28) survives. | String searches did not prove persistence, precedence, range filtering, output routing, or import. |
 | P0 `test_reaper_never_imports_failed_or_stale_midi` / `test_reaper_no_project_mutation_on_selection_or_start_failure` | No insert, rename or undo changes for nonzero exit (including partial output), unreported old MIDI, changed project, missing selection/take/source file or failed launch. No misleading success. | The old stub never drove the deferred EOF or failure paths. |
@@ -89,12 +96,12 @@ specific occupancy or upper-octave defects, not unrelated missing/wrong-note ass
 
 ## Next gates, in priority order
 
-These are not yet implemented. Do not use the demo files or the current xfails to sign
-off on these behaviors.
+These extend the current regression tests. The synthetic checks and demo files do not
+substitute for a release validation on real recordings and a real REAPER host.
 
 | Priority / proposed test | What to assert | Existing blind spot |
 |---|---|---|
-| P0 `test_strummed_chord_and_fast_run_keep_distinct_playable_voices` | Once the solver tracks occupancy, synthesize a strum (e.g. 12 ms attack offsets, overlapping releases), a 40 ms alternating-picked run, and an over-wide all-fretted voicing. Each playable voice survives without string conflicts; errors explicitly identify omitted notes. Rendering must not collapse successive picks into a chord. Decide hand-span/open-string and performed arpeggio policies first. | A hard-coded 50 ms text-rendering window is not an assignment or hand-reach constraint. |
+| P0 `test_strummed_chord_and_fast_run_keep_distinct_playable_voices` | Combine a strum (e.g. 12 ms attack offsets and overlapping releases), a 40 ms alternating-picked run, and an over-wide all-fretted voicing through the real assignment and export path. Assert pitch reconstruction, string occupancy, distinct onset columns, and explicit omissions. | Current tests cover sustain, span and near-onset rendering separately; they do not validate hand reach or strum timing on recorded performances. |
 | P0 `test_reaper_native_import_and_abort_preserve_project` | With a disposable project and pre-existing sentinel tracks, test the published ReaPack pair on Linux/macOS and through native Windows `cmd.exe` (cross-drive path/spaces). Verify track names, insertion position, selection and undo, an actual failed child and no stale-file import. Verify a slow/no-output child does not freeze editing or, until reads are non-blocking, document that limitation. | Lupa stubs cannot prove OS shell, REAPER track placement/undo semantics, or UI responsiveness. `defer` schedules callbacks but `io.popen:read` can block. The current `index.xml` intentionally still pins the published revision; update it at release. |
 | P1 `test_picked_pairs_octaves_and_bends_do_not_become_legato_or_false_hits` | Use a licensed annotated direct recording of fast alternate picks, a real slide/hammer/pull, bends and deliberately played octave double-stops. Report technique precision/recall separately; require no chord tone removal on the clean path and flag octave loss on the Suno cleanup path. | The heuristic does not use acoustic attack/pitch-contour evidence; Suno cleanup can drop genuine octaves by design. |
 | P1 `test_invalid_decode_is_not_empty_success_and_retry_is_healthy` | Run corrupt/truncated input (including a valid container with truncated samples) and then a valid file through the real decoder/CLI or web handler. No success/export for invalid input, no model-install diagnosis for a bad clip, and readiness recovers/remains usable. | The old invalid-WAV test stopped at upload validation; runtime load failure and bad input can still affect shared health similarly. |

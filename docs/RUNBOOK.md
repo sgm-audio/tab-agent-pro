@@ -21,9 +21,9 @@ the service.
 ```bash
 # 1. Verify the tree is release-clean (same gates CI runs)
 ruff check . && black --check . && mypy .
-python -m pytest tests/ -q
+python -m pytest -q
 python tools/check_vulns.py
-python tools/check_lockfile.py
+python tools/check_lockfile.py --verify --extra pytest --extra pytest-cov
 
 # 2. Build and run the Docker image (CPU by default)
 docker build -t tab-agent .
@@ -68,9 +68,9 @@ curl -s https://<host>/health/metrics | jq .
   Readiness is gated on transcription only. **Demucs is deliberately not a
   readiness gate**: separation has a documented raw-audio passthrough, so an
   instance without Demucs weights still transcribes whole-mix audio (with the
-  quality loss reported in `degraded_components`). Gating on it made a perfectly
-  serving instance answer `503` — which would pull it out of rotation for no
-  reason. Watch `degraded_components` for quality, `/ready` for availability.
+  quality loss reported in `degraded_components` and flagged in tab/JSON exports).
+  Gating on it made a serving instance answer `503`, pulling it out of rotation.
+  Watch `degraded_components` for quality, `/ready` for availability.
 - `/health/metrics` — per-stage `count`, `total_s`, `avg_s`, `error_rate` plus a
   bounded window average.
 
@@ -98,8 +98,8 @@ curl -s https://<host>/health/metrics | jq .
 
 ## 3. Logs
 
-Single-line JSON on stdout — no external log service required, so they survive
-platform restarts and work on HF Spaces.
+Single-line JSON is written to stdout. Let your container runtime or host
+collect it if the logs must survive a restart.
 
 ```json
 {"ts":"2026-11-07T05:20:20.021Z","level":"METRIC","module":"metrics",
@@ -158,7 +158,7 @@ forward fix under pressure. The pipeline has no schema or persistent state, so a
 rollback is always safe and never needs a data repair.
 
 **Rollback rehearsal (do this quarterly, it takes two minutes):** deploy the
-current revision to a staging Space, re-deploy the previous revision, confirm
+current revision to a staging instance, re-deploy the previous revision, confirm
 `/ready` 200s and a single end-to-end transcribe. Recorded in the release
 checklist.
 
@@ -166,8 +166,8 @@ checklist.
 
 ## 5. Dependency refresh (forced every 12 months)
 
-`.pip-audit-ignore` entries expire **2027-01-31**; on that date `check_vulns.py`
-fails and no release can ship until each advisory is re-reviewed.
+`.pip-audit-ignore` entries expire **2027-01-31**. Re-review them before then;
+`check_vulns.py` fails when a reported advisory has an expired acceptance.
 
 ```bash
 # 1. What is failing and why
@@ -180,16 +180,17 @@ python -m pip_audit --format json > /tmp/audit.json
 
 # 3. Re-lock, re-test, re-measure
 python -m pytest tests/ -q
-python /home/user/tab-agent-pro/tools/simulate_failures.py
+python tools/simulate_failures.py
 ```
 
 Rules that are not negotiable:
 
-- **`setuptools<81` stays.** 81+ removed `pkg_resources`, which `pretty_midi`
-  imports (verified: `setuptools==84.1.0` → `ModuleNotFoundError` → no
-  transcription). Do not apply pip-audit's advertised fix.
-- **Never accept an advisory without a reason and a date** — the gate rejects
-  entries with a missing or past expiry.
+- **Retest the Basic Pitch import before upgrading setuptools.** The locked
+  `resampy` still imports `pkg_resources`, removed in setuptools 81. A clean
+  test with setuptools 84.2.1 failed to load Basic Pitch even with updated
+  pretty-midi. See [accepted risks](ACCEPTED_RISKS.md).
+- **Never accept an advisory without a reason and a date.** Keep the
+  reason specific to the installed version and actual call path.
 - **License check after every bump:** anything GPL/AGPL/SSPL is a release
   blocker (`THIRD_PARTY_NOTICES.md`).
 

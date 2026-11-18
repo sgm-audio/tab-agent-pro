@@ -9,7 +9,7 @@ import pytest
 def isolated_app_tempdir(tmp_path_factory):
     root = tmp_path_factory.mktemp("tab-agent-runtime")
     with pytest.MonkeyPatch.context() as patch:
-        # app caches its output root on import and removes it at process exit.
+        # app caches its output root on import; isolate test sessions and uploads.
         patch.setattr(tempfile, "tempdir", str(root))
         patch.setenv("GRADIO_TEMP_DIR", str(root / "gradio"))
         yield

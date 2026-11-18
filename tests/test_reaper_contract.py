@@ -42,7 +42,10 @@ reaper = {
   GetMediaItemTake_Source = function() return 1 end,
   -- REAPER Lua returns the filename as its only value (no success flag).
   GetMediaSourceFileName = function() return AUDIO end,
-  file_exists = function(path) return EXISTS[path] == true end,
+  file_exists = function(path)
+    assert(type(path) == "string", "file_exists expects a filename")
+    return EXISTS[path] == true
+  end,
   EnumProjects = function(index) assert(index == -1); return CURRENT_PROJECT, "" end,
   MB = function(message, title) add(EVENTS.dialogs, title .. ": " .. message) end,
   ShowConsoleMsg = function(message) add(EVENTS.console, message) end,
@@ -201,7 +204,9 @@ def test_reaper_settings_dialog_reaches_real_cli_and_controls_outputs(
         assert tab_pitches(data["tablature"], [28, 33, 38, 43], 24) == [28]
     else:
         tab = (out / f"{audio.stem}_bass.tab").read_text()
-        assert "=== 4-String Bass Tablature ===" in tab and "\nE|0 " in tab
+        assert "=== 4-String Bass Tablature ===" in tab
+        assert "t(s)|0.250" in tab
+        assert any(line.strip() == "E|0" for line in tab.splitlines())
 
     for path in out.iterdir():
         host.globals.EXISTS[str(path)] = path.is_file()
@@ -273,7 +278,9 @@ def test_reaper_windows_uses_drive_switch_and_rejects_expansion():
     assert any("Error" in dialog for dialog in rejected.events("dialogs"))
 
 
-@pytest.mark.parametrize("bad_input", ["no item", "no take", "no source file", "start failure"])
+@pytest.mark.parametrize(
+    "bad_input", ["no item", "no take", "no source file", "nil source filename", "start failure"]
+)
 def test_reaper_no_project_mutation_on_selection_or_start_failure(bad_input):
     host = ReaperHarness("/repo", "/audio/take.wav")
     if bad_input == "no item":
@@ -282,6 +289,8 @@ def test_reaper_no_project_mutation_on_selection_or_start_failure(bad_input):
         host.globals.HAS_TAKE = False
     elif bad_input == "no source file":
         host.globals.AUDIO = ""  # e.g. in-project MIDI
+    elif bad_input == "nil source filename":
+        host.globals.AUDIO = None
     else:
         host.globals.START_OK = False
     host.run()

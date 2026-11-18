@@ -58,6 +58,7 @@ _load_dotenv()
 # Import Tab Agent modules
 from agents import EarAgent, SplitterAgent, TabAgent  # noqa: E402
 from main import (  # noqa: E402
+    RAW_MIX_WARNING,
     export_tab_to_json,
     export_tab_to_txt,
     render_tab_text,
@@ -69,6 +70,7 @@ from suno_postprocessor import SunoNotePostprocessor, process_suno_audio  # noqa
 TEMP_DIR = tempfile.gettempdir()
 OUTPUT_DIR = Path(TEMP_DIR) / "tab_agent_outputs"
 OUTPUT_DIR.mkdir(exist_ok=True)
+_owned_sessions: set[Path] = set()
 
 # Default tunings
 GUITAR_TUNING = [40, 45, 50, 55, 59, 64]  # E2-A2-D3-G3-B3-E4
@@ -101,7 +103,7 @@ def process_audio(
     include_tab=True,
     include_json=True,
     progress=gr.Progress(),  # noqa: B008 - Gradio documented pattern
-):
+) -> tuple[str, str | None, str | None]:
     """
     Process audio file and generate tablature.
 
@@ -114,7 +116,7 @@ def process_audio(
         progress: Gradio progress callback
 
     Returns:
-        Tuple of (status_message, output_files_zip)
+        Tuple of (status_message, output_files_zip, inline_tab_html).
 
     """
     return _process_audio_impl(
@@ -258,6 +260,7 @@ def _process_audio_impl(
         # which also covers main's same-second retry loop (#8) more simply.
         cleanup_stale_uploads()
         session_dir = Path(tempfile.mkdtemp(prefix="session_", dir=str(OUTPUT_DIR)))
+        _owned_sessions.add(session_dir)
         (session_dir / "stems").mkdir(exist_ok=True)
 
         # Track processing time for ETA / README accuracy
@@ -316,6 +319,7 @@ def _process_audio_impl(
         # Stage 1-3: Stem separation and processing
         progress(0.2, desc="🎵 Separating audio stems (Demucs)...")
         stems = splitter.separate_stems(processed_audio)
+        separation_mode = splitter.separation_mode
 
         progress(0.3, desc="🎸 Processing guitar stems...")
         is_bass = instrument_type in BASS_TARGETS
@@ -335,7 +339,9 @@ def _process_audio_impl(
             if is_bass
             else user_config.get("guitar_tuning", GUITAR_TUNING)
         )
+        num_frets = int(user_config.get("num_frets", 24))
         min_pitch = min(tuning) if tuning else None
+        max_pitch = max(tuning) + num_frets if tuning else None
 
         # Stage 4: Transcription
         progress(0.5, desc="🎸 Transcribing to MIDI...")
@@ -354,8 +360,9 @@ def _process_audio_impl(
                 onset_threshold=onset_threshold,
                 frame_threshold=frame_threshold,
                 min_pitch=min_pitch,
+                max_pitch=max_pitch,
             )
-            notes_clean = ear.humanize_and_clean(notes_raw, is_bass=is_bass)
+            notes_clean = ear.humanize_and_clean(notes_raw, is_bass=is_bass, max_pitch=max_pitch)
             # Apply Suno post-processing if needed
             notes_clean = suno_postprocessor.process(notes_clean, is_suno, suno_metrics)
 
@@ -369,7 +376,6 @@ def _process_audio_impl(
         # Stage 5: Tablature generation
         progress(0.8, desc="📝 Generating tablature...")
 
-        num_frets = int(user_config.get("num_frets", 24))
         technique_sensitivity = float(user_config.get("technique_sensitivity", 0.7))
         prefer_low_strings = bool(user_config.get("prefer_low_strings", is_bass))
         tab_agent = TabAgent(
@@ -380,6 +386,8 @@ def _process_audio_impl(
 
         # Tracks that produced no usable tablature (e.g. all notes unplayable)
         skipped: list[str] = []
+        omitted: dict[str, int] = {}
+        lead_skips: list[dict] = []
         counted_files: set[Path] = set()
         written = 0
         lead_tab_data: list | None = None
@@ -390,8 +398,12 @@ def _process_audio_impl(
                 technique_sensitivity=technique_sensitivity,
             )
 
+            dropped = tab_agent.last_skipped_events
+            if len(dropped) and (include_tab or include_json):
+                omitted[stem_name] = len(dropped)
             if stem_name == "lead":
                 lead_tab_data = tab_data
+                lead_skips = dropped
 
             if notes and not tab_data:
                 skipped.append(stem_name)
@@ -403,8 +415,9 @@ def _process_audio_impl(
                     tab_data,
                     str(tab_path),
                     instrument=f"{instrument_type} - {stem_name}",
-                    num_strings=len(tuning),
                     tuning=tuning,
+                    skipped_notes=dropped,
+                    separation_mode=separation_mode,
                 )
                 counted_files.add(tab_path)
                 written += 1
@@ -415,7 +428,9 @@ def _process_audio_impl(
                     tab_data,
                     str(json_path),
                     instrument=f"{instrument_type} - {stem_name}",
-                    num_strings=len(tuning),
+                    tuning=tuning,
+                    skipped_notes=dropped,
+                    separation_mode=separation_mode,
                 )
                 counted_files.add(json_path)
                 written += 1
@@ -442,8 +457,9 @@ def _process_audio_impl(
             tab_text = render_tab_text(
                 lead_tab_data,
                 instrument=f"{instrument_type} - Lead",
-                num_strings=len(tuning),
                 tuning=tuning,
+                skipped_notes=lead_skips,
+                separation_mode=separation_mode,
             )
             if tab_text:
                 escaped = tab_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -458,7 +474,8 @@ def _process_audio_impl(
             return (
                 "⚠️ **No notes were transcribed.** The audio may be too quiet, "
                 "or a transcription backend may be missing "
-                "(check `/health` → `components`).",
+                "(check `/health` → `components`)."
+                + (f"\n\n⚠️ {RAW_MIX_WARNING}" if separation_mode == "raw_fallback" else ""),
                 str(zip_path),
                 inline_tab_html,
             )
@@ -483,11 +500,13 @@ def _process_audio_impl(
 - **Processing Time**: {elapsed:.1f}s
 - **Formats**: {", ".join(enabled_formats) or "none"}
 """
+        if separation_mode == "raw_fallback":
+            status_msg += f"\n⚠️ {RAW_MIX_WARNING}\n"
         if skipped:
-            status_msg += (
-                f"\n⚠️ No tablature for: {', '.join(skipped)} - notes fell outside the "
-                "instrument's range/tuning.\n"
-            )
+            status_msg += f"\n⚠️ No tablature for: {', '.join(skipped)}.\n"
+        if omitted:
+            counts = ", ".join(f"{name}: {count}" for name, count in omitted.items())
+            status_msg += f"\n⚠️ Detected notes omitted from the tab ({counts}).\n"
 
         status_msg += "\n📥 **Download the ZIP file below to get all outputs!**\n"
 
@@ -653,11 +672,11 @@ def create_ui():
 
         with gr.Accordion("How it works", open=False):
             gr.Markdown("""
-            1. **Stem separation** - Demucs isolates the guitar/bass/other stems from the mix
+            1. **Stem separation** - Demucs estimates a bass stem and a residual `other` stem; `other` can include instruments besides guitar
             2. **Spatial processing** - Mid-side technique splits lead from rhythm
             3. **AI transcription** - Basic Pitch converts audio → MIDI notes
             4. **Tablature generation** - Dynamic programming assigns notes to strings/frets
-            5. **Technique detection** - Slides, hammer-ons, pull-offs annotated
+            5. **Technique hints** - Slides and legato marks are guesses from timing and fret changes, not detected articulations
             6. **Export** - MIDI, ASCII tab, JSON in a single ZIP
             """)
 
@@ -756,9 +775,10 @@ def create_app() -> gr.Blocks:
 
 
 def cleanup_temp_dirs() -> None:
-    """Remove temporary output directories on shutdown."""
-    if OUTPUT_DIR.exists():
-        shutil.rmtree(OUTPUT_DIR, ignore_errors=True)
+    """Remove only this process's sessions; other workers share OUTPUT_DIR."""
+    for session_dir in _owned_sessions.copy():
+        shutil.rmtree(session_dir, ignore_errors=True)
+        _owned_sessions.discard(session_dir)
 
 
 def handle_signal(sig, frame) -> None:
@@ -777,12 +797,13 @@ def cleanup_stale_sessions(max_age_hours: float = 1) -> None:
     if not OUTPUT_DIR.exists():
         return
     now = datetime.now()
-    for d in OUTPUT_DIR.iterdir():
+    for d in OUTPUT_DIR.glob("session_*"):
         if d.is_dir():
             with contextlib.suppress(OSError):
                 age = now - datetime.fromtimestamp(d.stat().st_mtime)
                 if age.total_seconds() > max_age_hours * 3600:
                     shutil.rmtree(d, ignore_errors=True)
+                    _owned_sessions.discard(d)
 
 
 def _now_timestamp() -> float:

@@ -1,4 +1,4 @@
-"""Fretboard invariants and explicit open polyphony regressions."""
+"""Fretboard invariants for monophonic, simultaneous and sustained notes."""
 
 from itertools import product
 
@@ -72,7 +72,7 @@ def test_fret_boundaries_keep_playable_notes_after_a_rejected_event(tuning, fret
     "events",
     [
         [(41, 0, 0.10), (42, 0.19, 0.40)],  # a real rest, but inside onset window
-        [(41, 0, 0.40), (52, 0, 0.40)],  # simultaneity on distinct strings, not a slide
+        [(41, 0, 0.40), (45, 0, 0.40)],  # playable dyad, not a slide
         [(41, 0, 0.15), (39, 0.1, 0.30), (42, 0.16, 0.40)],  # rejected intermediary
         [(41, 0, 0.07), (41, 0.08, 0.40)],  # same pitch reattack
         [(40, 0, 0.05), (42, 0.12, 0.22)],  # 70 ms rest after an open-string attack
@@ -86,30 +86,21 @@ def test_no_legato_annotation_without_a_plausible_transition(events):
     assert [p["technique"] for p in tab] == ["pick", "pick"]
 
 
-class StringOccupancyError(AssertionError):
-    """Expected only for a known string-occupancy defect, not missing or wrong notes."""
-
-
 @pytest.mark.parametrize("pitches", [[40, 45, 50], [45, 50, 55]], ids=["E-A-D", "A-D-G"])
 def test_playable_chord_keeps_all_pitches_on_distinct_strings(pitches):
     # The pitches can be played simultaneously on three open strings.
     tab = TabAgent(STANDARD).generate_tab([make_note(p, 0, 0.5) for p in pitches])
     assert sorted(tab_pitches(tab, STANDARD, 24)) == pitches
     assert all(p["technique"] == "pick" for p in tab)
-    if len({p["string"] for p in tab}) != len(pitches):
-        raise StringOccupancyError(tab)
+    assert len({p["string"] for p in tab}) == len(pitches)
 
 
-@pytest.mark.xfail(
-    strict=True, raises=StringOccupancyError, reason="sequential DP ignores active sustains"
-)
 def test_sustained_string_cannot_be_reused_during_a_later_note():
     # A2 can be played open, freeing the only string that can play E2 later.
     notes = [make_note(45, 0, 0.7), make_note(40, 0.18, 0.5)]
     tab = TabAgent(STANDARD).generate_tab(notes)
     assert tab_pitches(tab, STANDARD, 24) == [45, 40]
-    if tab[0]["string"] == tab[1]["string"]:
-        raise StringOccupancyError(tab)
+    assert tab[0]["string"] != tab[1]["string"]
     assert tab[1]["technique"] == "pick"
 
 
@@ -119,5 +110,6 @@ def test_impossible_same_string_dyad_reports_the_conflict():
     tab = agent.generate_tab([make_note(p, 0, 0.5) for p in (40, 41)])
     assigned = tab_pitches(tab, STANDARD, 24)
     assert sorted(assigned + agent.last_skipped_notes) == [40, 41]
-    if len(assigned) != 1:
-        raise StringOccupancyError(tab)
+    assert len(assigned) == 1
+    assert tab[0]["technique"] == "pick"
+    assert agent.last_skipped_events[0]["reason"] == "fingering_conflict"

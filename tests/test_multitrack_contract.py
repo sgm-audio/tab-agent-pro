@@ -22,6 +22,8 @@ def test_all_instruments_export_correct_track_notes_and_tunings(tmp_path, monkey
     seen = []
 
     class FakeSplitter:
+        separation_mode = "demucs"
+
         def __init__(self, **kwargs):
             pass
 

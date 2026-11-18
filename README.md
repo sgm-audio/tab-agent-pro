@@ -6,47 +6,35 @@
 
 **Upload guitar or bass audio. Get tablature, MIDI, and JSON back.**
 
-Tab Agent transcribes guitar and bass recordings into playable tablature using
-a multi-engine AI pipeline. It is tuned for clean guitar/bass audio — a solo
-DI, a rhythm track, or a lead. For a full mix, Demucs separates the stems and
-the guitar/bass stems are transcribed; note that the residual `other` stem is
-transcribed as guitar, so non-guitar content in that stem is labelled as
-guitar (see `docs/ACCEPTED_RISKS.md`).
+Tab Agent runs local audio-to-MIDI transcription and suggests guitar or bass
+fingerings. Treat the exports as drafts to check against the recording. Dense
+chords, overlapping instruments, and articulations can be transcribed incorrectly.
+See the [baseline evidence audit](docs/SUBSTANTIATION_LOG.md).
 
 ---
 
 ## Quick Start
 
-### Web UI (recommended)
+### Web UI (Linux CPU, Python 3.11+)
 
 ```bash
-pip install -r requirements.txt
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+python -m pip install --no-deps -r requirements.lock
+python tools/check_lockfile.py
 python app.py
 # Open http://localhost:7860
 ```
 
-> **Linux note (which is most installs, and the image):** Basic Pitch's default
-> Linux dependency set pulls TensorFlow `<2.15.1`, which has no Python 3.12+
-> wheels and is unused by the ONNX backend. Install Basic Pitch without
-> dependencies, then the rest. This is what `Dockerfile` and CI do, and it is
-> the supported path — **Python 3.11+ is required**, and the image runs 3.12:
-> ```bash
-> pip install --no-deps "basic-pitch>=0.4.0,<0.5"
-> grep -v '^basic-pitch' requirements.txt > /tmp/req-nobp.txt && pip install -r /tmp/req-nobp.txt
-> pip install --no-deps -r requirements.lock   # exact, tested versions
-> ```
-
-**Reproducible install:** `requirements.lock` pins the 117 distributions that
-actually ship — the runtime closure of the declared dependencies, including
-transitive ones, and excluding the TensorFlow tree and NVIDIA CUDA wheels that
-this project never installs. CI and the Docker build install from it and then
-fail if the environment drifts from it:
-
-```bash
-pip install -r requirements.txt
-python tools/check_lockfile.py          # verify
-python tools/check_lockfile.py --write  # regenerate after a dependency change
-```
+Install FFmpeg and libsndfile from your system package manager for broader
+format support. Use a separate environment for dev tools; run
+`python tools/check_lockfile.py --verify` there instead of the exact check.
+The lock pins the runtime set, including transitive dependencies. Use it rather
+than a plain `pip install -r requirements.txt` on Linux: the latter asks Basic
+Pitch to install TensorFlow even though Tab Agent uses ONNX. The Docker image
+uses Python 3.12.
 
 The server binds to `HOST` (default `0.0.0.0` so Docker containers can reach
 it) and listens on `PORT` (default `7860`). Both are read from the environment
@@ -88,16 +76,16 @@ the stem-separation stack.
 ### Validation
 
 ```bash
-python -m pytest                    # app branch coverage + real Basic Pitch CPU inference
-python validate.py --quick          # configuration and component checklist
+python -m pytest                                            # app branch coverage + real Basic Pitch CPU inference
+python validate.py --quick                                  # configuration and component checklist
 
-python tools/check_index.py           # ReaPack index format
-python tools/check_env_example.py     # every documented env var is read
-python tools/check_docker_install.py  # basic-pitch pin + required deps
-python tools/check_reaper_settings.py # execute both Lua scripts, CLI wiring and MIDI import checks
-python tools/check_lockfile.py        # installed env == requirements.lock
-python tools/check_vulns.py           # advisories: none unaccepted/expired
-python tools/simulate_failures.py     # failure modes still behave (15 checks)
+python tools/check_index.py                                 # ReaPack index format
+python tools/check_env_example.py                           # every documented env var is read
+python tools/check_docker_install.py                        # Basic Pitch and CPU-index checks
+python tools/check_reaper_settings.py                       # run both Lua scripts in the CLI/MIDI import fixture
+python tools/check_lockfile.py --verify --extra pytest --extra pytest-cov
+python tools/check_vulns.py                                 # advisories: none unaccepted/expired
+python tools/simulate_failures.py                            # failure-mode checks
 ```
 
 Install `pytest`, `pytest-cov` and `lupa` for the test suite. The default run
@@ -126,8 +114,8 @@ graph LR
 | **Stem Separation** | Demucs (htdemucs) | Splits the mix into vocals / drums / bass / other; `bass` is transcribed as bass and `other` as guitar |
 | **Spatial Processing** | Mid-Side | Splits lead (centre) from rhythm (sides) by subtraction |
 | **Transcription** | Basic Pitch | Converts audio → MIDI notes |
-| **Tablature** | DP Viterbi | Assigns notes to strings/frets optimally; unplayable notes are skipped |
-| **Technique Detection** | Heuristic | Slides, hammer-ons, pull-offs |
+| **Tablature** | Time-aware search | Assigns notes to free strings within a conservative fret span; omitted notes are reported |
+| **Technique hints** | Timing and fret geometry | Suggests slides and legato marks; does not recognize how a note was played |
 | **Export** | — | MIDI, ASCII tab, JSON |
 
 ---
@@ -136,12 +124,12 @@ graph LR
 
 - **Basic Pitch transcription** — Spotify's lightweight ONNX model, no GPU required
 - **Full-mix processing** — Demucs separates the mix; the residual `other` stem (guitars and other instruments) is transcribed as guitar
-- **Multi-track output** — Lead guitar, rhythm L/R, bass in separate files
-- **Column-aligned tablature** — Chords grouped vertically; a single unplayable note no longer discards the whole track
+- **Multi-track output** — Lead, rhythm L/R and bass estimates in separate files; raw-audio fallback is flagged in the UI/CLI and tab/JSON
+- **Timed tablature** — Identical onsets share a column; held notes reserve their strings until release
 - **AI audio support** — Automatic detection and cleanup for Suno/Udio AI-generated audio
-- **Technique detection** — Slides (`s`), hammer-ons (`h`), pull-offs (`p`) annotated in output
+- **Technique hints** — Slides (`s`), hammer-ons (`h`) and pull-offs (`p`) mark plausible transitions, not verified articulations
 - **Plug-and-play presets** — 8 profiles (standard, drop D, classical, 4/5-string bass, Suno cleanup, live band) applied with `--profile`
-- **REAPER integration** — Run transcription from the DAW via ReaPack, with the settings-script values passed through as CLI flags
+- **REAPER actions** — The Settings script passes its values through to the CLI; see manual loading below
 - **CPU by default, GPU optional** — the transcription stack runs on CPU out of
   the box. GPU acceleration is available on the end user's local hardware via
   the `DEVICE` environment variable: `cuda` (NVIDIA CUDA), `rocm` (AMD ROCm),
@@ -150,9 +138,9 @@ graph LR
   The default Docker image installs CPU-only torch; build a GPU image with
   `docker build --build-arg TORCH_INDEX_URL=...` (see the `Dockerfile`).
 
-- **Local compute only** — there is no cloud inference and no model-hub
-  dependency. Basic Pitch and Demucs weights come from their upstream projects
-  at install / first use.
+- **Local inference** — Basic Pitch weights ship in its wheel. Demucs may need
+  network access to acquire upstream weights on first run. If separation fails,
+  the pipeline warns and transcribes unseparated audio.
 
 > **Basic Pitch status:** `agents.py` loads Spotify's Basic Pitch (ONNX) as the
 > transcription backend. The Docker image ships Basic Pitch only.
@@ -189,46 +177,54 @@ Threshold precedence: explicit CLI flag → active profile → built-in default.
 
 | Format | Content | Use case |
 |--------|---------|----------|
-| **MIDI** (`.mid`) | Standard MIDI file with note events | Import into any DAW |
-| **ASCII Tab** (`.tab`) | Human-readable fretboard notation | Printing, sharing |
-| **JSON** (`.json`) | Structured note/fret data | Custom applications |
+| **MIDI** (`.mid`) | Transcribed note events before string assignment | Import into a DAW |
+| **ASCII Tab** (`.tab`) | Fretboard notation with onset times in seconds | Read and check against the recording |
+| **JSON** (`.json`) | Tuning in low-to-high MIDI pitches, string/fret assignments with onset and release times, and omitted-note records | Custom applications |
 
 ### Example tablature output
 
-Produced by `python main.py examples/guitar_solo.wav` (verbatim, three of the
-nine generated files omitted):
+Synthetic six-note E-major voicing, illustrating the format (not an audio
+transcription benchmark):
 
+```text
+=== Guitar Tablature ===
+Tuning (low to high): E2 A2 D3 G3 B3 E4
+
+t(s)|0.000
+   E|0
+   B|0
+   G|1
+   D|2
+   A|2
+   E|0
+
+Technique hints (heuristic only): s=slide, h=hammer-on, p=pull-off
 ```
-=== Lead Guitar Tablature ===
 
-E|-  -  14 17 19 -  -  22 -
-B|-  -  15 -  -  -  20 -  -
-G|-  -  -  -  16 19 -  -  -
-D|-  -  -  -  -  17 21 -  -
-A|-  -  14 17 19 -  -  -  19
-E|12 15 -  -  -  -  -  -  -
-
-Legend: s=slide, h=hammer-on, p=pull-off
-```
-
-Each column is one onset group (notes within 50 ms); a note is never merged
-into its neighbour, and a string that is unused in a column shows `-`.
+A column represents one onset; `-` means no new note on that string at that
+onset. JSON includes durations and `skipped_notes`, with a pitch, start time,
+end time and reason for each input event the fingering search could not place.
+MIDI retains those events. A CLI run that transcribes no notes exits with code 2
+instead of reporting success. The search enforces string occupancy and a
+four-fret span for held, fretted notes, not every constraint of human fingering.
 
 ---
 
 ## REAPER Integration
 
-1. Extensions → ReaPack → Import repositories
-2. Add: `https://raw.githubusercontent.com/sgm-audio/tab-agent-pro/main/index.xml`
-3. Install **Tab Agent** and **Tab Agent Settings**
-4. Glue the item you want analysed, select it, then run **Tab Agent**
+1. Install the Python dependencies and confirm the CLI runs outside REAPER.
+2. In **Actions → Show action list**, use **ReaScript: Load** to load
+   `reaper/Settings.lua` and `reaper/TabAgent.lua` from this checkout.
+3. Run the Settings action and point it at the checkout containing `main.py`.
+4. Glue and select the audio item you want analysed, then run the Tab Agent action.
 
 `Tab Agent Settings` stores the install path, profile, instrument, onset/frame
-thresholds, output directory and export toggles in REAPER's ExtState.
-`Tab Agent` passes those values to `main.py` as CLI flags, so what you configure
-is what runs. Use matching versions of the Lua scripts and Python checkout;
-newer scripts expect the CLI to report which MIDI files it wrote during the
-current run. The REAPER host tests use a stub and do not replace a DAW smoke test.
+thresholds, output directory and export toggles in REAPER's ExtState. The action
+uses `python3` (`python` on Windows) from REAPER's PATH. Use matching versions
+of the Lua scripts and Python checkout: the action imports only MIDI reported
+by the CLI from the current run. Pipe reads can still block while Python is
+quiet. The Lua API fixture does not replace a native REAPER smoke test, and the
+separately indexed ReaPack release has not been re-verified.
 
 ---
 
@@ -249,7 +245,7 @@ current run. The REAPER host tests use a stub and do not replace a DAW smoke tes
 ├── docs/RUNBOOK.md        # Deploy / monitor / rollback / dependency refresh
 ├── docs/ACCEPTED_RISKS.md # Every known risk, with exposure and expiry
 ├── SECURITY.md            # Threat model + disclosure process
-├── requirements.lock      # Exact pins (runtime closure, CPU-only)
+├── requirements.lock      # Exact runtime pins (CPU-only by default)
 ├── .pip-audit-ignore      # Accepted advisories; CI fails when one expires
 ├── pyproject.toml         # Project config
 ├── Dockerfile             # Local / GPU container build (non-root, read-only code)
@@ -263,11 +259,13 @@ current run. The REAPER host tests use a stub and do not replace a DAW smoke tes
 - **Reporting:** see [`SECURITY.md`](SECURITY.md) — private advisories, not public issues.
 - **Threat model:** single-tenant, unauthenticated by design; the hosting platform is the trust boundary.
 - **Known risks:** [`docs/ACCEPTED_RISKS.md`](docs/ACCEPTED_RISKS.md) lists every accepted
-  advisory with exposure analysis and an expiry date that turns CI red.
+  exception with exposure analysis and expiry; reported advisories must have an
+  active exception to pass the scan.
 - **Gates:** `bandit` (SAST), `gitleaks` (secrets), `pip-audit` against the installed
   set (`tools/check_vulns.py`), and a lockfile check — all blocking in CI.
-- **Dependencies:** `setuptools<81` is pinned deliberately (81+ removes
-  `pkg_resources`, which `pretty_midi` needs) — do not "fix" it.
+- **Dependencies:** `setuptools==80.10.2` is locked because Basic Pitch 0.4.0's
+  resampy dependency still imports `pkg_resources`. See the accepted-risk note
+  before upgrading it.
 - **Model provenance:** Basic Pitch and Demucs weights come from their upstream
   project repositories; pin dependency versions via `requirements.lock` for
   reproducible builds.
