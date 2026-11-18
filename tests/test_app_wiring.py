@@ -195,6 +195,7 @@ def test_no_notes_produces_warning_not_success() -> None:
         patch("app.export_tab_to_txt"),
         patch("app.export_tab_to_json"),
     ):
+        splitter_cls.return_value.separation_mode = "demucs"
         splitter_cls.return_value.separate_stems.return_value = {"guitar": "g", "bass": "b"}
         splitter_cls.return_value.process_guitars.return_value = {
             "lead": "l",
@@ -227,6 +228,7 @@ def test_files_generated_not_double_counted_and_formats_clean() -> None:
         patch("app.EarAgent") as ear_cls,
         patch("app.SunoNotePostprocessor") as suno_cls,
     ):
+        splitter_cls.return_value.separation_mode = "demucs"
         splitter_cls.return_value.separate_stems.return_value = {"guitar": "g", "bass": "b"}
         splitter_cls.return_value.process_bass.return_value = "b"
         ear_cls.return_value.transcribe_stem.return_value = [fake_note]
@@ -247,6 +249,57 @@ def test_files_generated_not_double_counted_and_formats_clean() -> None:
         assert f"**Files Generated**: {num_entries}" in msg
         assert "**Formats**: MIDI, JSON" in msg
         assert ", ," not in msg
+
+
+def test_web_exports_report_raw_fallback_and_note_omissions(tmp_path, monkeypatch) -> None:
+    import json
+    import zipfile
+
+    from note_seq import NoteSequence
+
+    app = _import_app()
+    tuning = [38, 45, 50, 55, 59, 64]
+    monkeypatch.setattr(app, "OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr(app, "_load_saved_config", lambda: {"guitar_tuning": tuning})
+    # Both detected notes require the low D string and overlap.
+    notes = [NoteSequence.Note(pitch=p, start_time=0, end_time=0.5, velocity=80) for p in (38, 39)]
+    with (
+        patch("app._validate_audio", return_value=None),
+        patch("app.process_suno_audio", return_value=("song.wav", False, {})),
+        patch("app.SplitterAgent") as splitter_cls,
+        patch("app.EarAgent") as ear_cls,
+    ):
+        splitter = splitter_cls.return_value
+        splitter.separation_mode = "raw_fallback"
+        splitter.separate_stems.return_value = {"guitar": "song.wav"}
+        splitter.process_guitars.return_value = {"lead": "l", "left": "ll", "right": "r"}
+        ear_cls.return_value.transcribe_stem.return_value = notes
+        ear_cls.return_value.humanize_and_clean.return_value = notes
+        msg, zip_path, preview = app._process_audio_impl("song.wav", "Guitar", False, True, True)
+
+    assert "unseparated audio" in msg and "lead: 1" in msg
+    assert preview is not None and "1 detected note(s) omitted" in preview
+    assert zip_path is not None
+    with zipfile.ZipFile(zip_path) as archive:
+        data = json.loads(archive.read("song_lead.json"))
+    assert data["tuning"] == tuning and data["separation_mode"] == "raw_fallback"
+    assert len(data["tablature"]) == 1 and len(data["skipped_notes"]) == 1
+    assert data["skipped_notes"][0]["reason"] == "fingering_conflict"
+
+
+def test_shutdown_leaves_other_workers_sessions_alone(tmp_path, monkeypatch) -> None:
+    app = _import_app()
+    this_worker = tmp_path / "session_owned"
+    other_worker = tmp_path / "session_other"
+    this_worker.mkdir()
+    other_worker.mkdir()
+    monkeypatch.setattr(app, "OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr(app, "_owned_sessions", {this_worker})
+
+    app.cleanup_temp_dirs()
+
+    assert not this_worker.exists()
+    assert other_worker.is_dir()
 
 
 def test_import_does_not_hijack_sigint() -> None:
@@ -292,6 +345,7 @@ def test_app_honors_saved_user_preferences(tmp_path, monkeypatch) -> None:
         patch("app.TabAgent") as tab_cls,
         patch("app.SunoNotePostprocessor") as suno_cls,
     ):
+        splitter_cls.return_value.separation_mode = "demucs"
         splitter_cls.return_value.separate_stems.return_value = {"guitar": "g", "bass": "b"}
         splitter_cls.return_value.process_guitars.return_value = {
             "lead": "l",
@@ -334,6 +388,7 @@ def test_same_second_sessions_get_distinct_directories() -> None:
         patch("app.EarAgent") as ear_cls,
         patch("app.SunoNotePostprocessor") as suno_cls,
     ):
+        splitter_cls.return_value.separation_mode = "demucs"
         splitter_cls.return_value.separate_stems.return_value = {"guitar": "g", "bass": "b"}
         splitter_cls.return_value.process_bass.return_value = "b"
         ear_cls.return_value.transcribe_stem.return_value = []

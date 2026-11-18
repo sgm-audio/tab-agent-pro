@@ -15,8 +15,15 @@ The transcription stack runs on CPU out of the box. GPU acceleration is
 available through :mod:`device` (CUDA, ROCm, Vulkan, MPS, DirectML).
 """
 
+from __future__ import annotations
+
+import math
 import os
+import shutil
 import subprocess  # nosec B404 — fixed command list, shell=False, used by Demucs CLI fallback
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
 
 import librosa
 import numpy as np
@@ -26,15 +33,17 @@ from scipy.signal import butter, filtfilt
 from device import DeviceConfig, install_onnx_provider_override, resolve_device
 from monitoring import default_metrics as metrics
 from monitoring import get_logger, health
-from tab_validation import TabValidationReport, validate_tab
 
 # Basic Pitch imports (proven and reliable transcription backend)
 basic_pitch_predict = None
+BASIC_PITCH_MODEL: Path | None = None
 try:
+    from basic_pitch import ONNX_PRESENT, FilenameSuffix, build_icassp_2022_model_path
     from basic_pitch.inference import predict as _bp_predict
 
     basic_pitch_predict = _bp_predict
-    BASIC_PITCH_AVAILABLE = True
+    BASIC_PITCH_MODEL = build_icassp_2022_model_path(FilenameSuffix.onnx)
+    BASIC_PITCH_AVAILABLE = ONNX_PRESENT
 except ImportError:
     BASIC_PITCH_AVAILABLE = False
 
@@ -51,6 +60,28 @@ except ImportError:
 health.set_component("basic_pitch", "available" if BASIC_PITCH_AVAILABLE else "unavailable")
 health.set_component("demucs", "available" if DEMUCS_API_AVAILABLE else "unavailable")
 health.set_status("up")
+
+
+def _apply_cache_dir() -> str | None:
+    """Honour the documented CACHE_DIR env var for model/weight caches.
+
+    Demucs and Basic Pitch download model weights on first use; both consult
+    environment variables for their cache location. When ``CACHE_DIR`` is set
+    (via .env or the real environment) we point those caches at it so the
+    documented variable actually controls where weights are stored. Returns the
+    resolved cache directory, or ``None`` when unset.
+    """
+    cache_dir = os.environ.get("CACHE_DIR")
+    if not cache_dir:
+        return None
+    cache_dir = os.path.expanduser(cache_dir)
+    os.makedirs(cache_dir, exist_ok=True)
+    # HuggingFace hub (Basic Pitch ONNX model) and XDG-aware tools.
+    os.environ.setdefault("HF_HOME", cache_dir)
+    os.environ.setdefault("XDG_CACHE_HOME", cache_dir)
+    # Demucs stores downloaded checkpoints under a per-user dir.
+    os.environ.setdefault("DEMUCS_DIR", cache_dir)
+    return cache_dir
 
 
 # ============================================================================
@@ -77,7 +108,9 @@ class SplitterAgent:
         self.backend: str = config.backend
         self.label: str = config.label
         self.log = get_logger("splitter")
+        self.separation_mode: str | None = None
         os.makedirs(output_dir, exist_ok=True)
+        _apply_cache_dir()
         self.log.info(
             "splitter_init",
             device=self.device,
@@ -87,6 +120,7 @@ class SplitterAgent:
     def separate_stems(self, audio_path):
         """Separate audio into guitar and bass stems with graceful fallback."""
         file = os.path.basename(audio_path)
+        self.separation_mode = None
         self.log.info("demucs_start", file=file, device=self.device)
 
         if DEMUCS_API_AVAILABLE:
@@ -94,6 +128,7 @@ class SplitterAgent:
                 with metrics.track_stage("demucs_separation"):
                     result = self._separate_with_api(audio_path, file)
                     health.set_component("demucs", "loaded")
+                    self.separation_mode = "demucs"
                     return result
             except Exception as e:
                 self.log.warning("demucs_api_failed", file=file, error=str(e))
@@ -104,6 +139,7 @@ class SplitterAgent:
             with metrics.track_stage("demucs_cli"):
                 result = self._separate_with_subprocess(audio_path, file)
                 health.set_component("demucs", "loaded (CLI)")
+                self.separation_mode = "demucs"
                 return result
         except Exception as e:
             self.log.warning("demucs_all_failed", file=file, error=str(e))
@@ -115,12 +151,11 @@ class SplitterAgent:
         self.log.info("demucs_raw_fallback", file=song_name)
         base_path = os.path.join(self.output_dir, "htdemucs", song_name)
         os.makedirs(base_path, exist_ok=True)
-        import shutil
-
         other_path = os.path.join(base_path, "other.wav")
         bass_path = os.path.join(base_path, "bass.wav")
         shutil.copy2(audio_path, other_path)
         shutil.copy2(audio_path, bass_path)
+        self.separation_mode = "raw_fallback"
         return {"guitar": other_path, "bass": bass_path}
 
     def _separate_with_api(self, audio_path, song_name):
@@ -131,7 +166,7 @@ class SplitterAgent:
             shifts=1,
             overlap=0.25,
             split=True,
-            segment=10,
+            # Use the model's trained segment length (HTDemucs caps it below 10 s).
             progress=True,
         )
 
@@ -141,44 +176,42 @@ class SplitterAgent:
         base_path = os.path.join(self.output_dir, "htdemucs", song_name)
         os.makedirs(base_path, exist_ok=True)
 
-        stem_map = {"other": "other", "bass": "bass"}
+        missing = {"other", "bass"} - separated.keys()
+        if missing:
+            raise ValueError(f"Demucs API did not return required stems: {sorted(missing)}")
+        for stem_key in ("other", "bass"):
+            tensor = separated[stem_key]
+            if tensor.ndim == 1:
+                tensor = tensor.unsqueeze(0)
+            stem_path = os.path.join(base_path, f"{stem_key}.wav")
+            sf.write(stem_path, tensor.cpu().numpy().T, separator.samplerate)
 
-        for stem_key, file_key in stem_map.items():
-            if stem_key in separated:
-                tensor = separated[stem_key]
-                if tensor.ndim == 1:
-                    tensor = tensor.unsqueeze(0)
-                stem_path = os.path.join(base_path, f"{file_key}.wav")
-                sf.write(stem_path, tensor.cpu().numpy().T, separator.samplerate)
-
-        return {
-            "guitar": os.path.join(base_path, "other.wav"),
-            "bass": os.path.join(base_path, "bass.wav"),
-        }
+        return self._checked_stems(base_path)
 
     def _separate_with_subprocess(self, audio_path, song_name):
         """Fallback: Demucs via CLI subprocess."""
-        cmd = ["demucs", "-n", "htdemucs", "-o", self.output_dir, audio_path]
-
+        # An exit code alone does not prove stems exist. Read only files
+        # created in this attempt; a previous run may have the same basename.
+        cli_dir = tempfile.mkdtemp(prefix="demucs-cli-", dir=self.output_dir)
+        cmd = ["demucs", "-n", "htdemucs", "-d", self.device, "-o", cli_dir, audio_path]
         try:
-            subprocess.run(
-                cmd,
-                check=True,
-                capture_output=True,
-                text=True,
-            )  # nosec B603
-        except subprocess.CalledProcessError:
+            subprocess.run(cmd, check=True, capture_output=True, text=True)  # nosec B603
+            stem_dir = os.path.splitext(song_name)[0]
+            return self._checked_stems(os.path.join(cli_dir, "htdemucs", stem_dir))
+        except Exception:
+            shutil.rmtree(cli_dir, ignore_errors=True)
             raise
 
-        base_path = os.path.join(self.output_dir, "htdemucs", song_name)
-        stem_dir = os.path.splitext(song_name)[0]
-        alt_base = os.path.join(self.output_dir, "htdemucs", stem_dir)
-        if not os.path.exists(base_path) and os.path.exists(alt_base):
-            base_path = alt_base
-        return {
+    @staticmethod
+    def _checked_stems(base_path: str) -> dict[str, str]:
+        stems = {
             "guitar": os.path.join(base_path, "other.wav"),
             "bass": os.path.join(base_path, "bass.wav"),
         }
+        for path in stems.values():
+            if sf.info(path).frames <= 0:
+                raise ValueError(f"Demucs produced an empty stem: {path}")
+        return stems
 
     def process_guitars(self, guitar_stem_path):
         """
@@ -279,6 +312,7 @@ class EarAgent:
         self.label: str = config.label
         self.sample_rate = 16000
         self.log = get_logger("ear_agent")
+        _apply_cache_dir()
 
         health.set_component(
             "basic_pitch",
@@ -303,6 +337,7 @@ class EarAgent:
         frame_threshold: float = 0.3,
         min_note_duration: float = 0.05,
         min_pitch: int | None = None,
+        max_pitch: int | None = None,
     ) -> list:
         """
         Transcribe audio to MIDI notes.
@@ -316,6 +351,7 @@ class EarAgent:
         log.info("transcribe_start", file=file, target=target, device=self.device)
 
         # ── Try Basic Pitch ───────────────────────────────────────────
+        failure: Exception | None = None
         if BASIC_PITCH_AVAILABLE:
             try:
                 with metrics.track_stage("basic_pitch_transcription"):
@@ -326,6 +362,7 @@ class EarAgent:
                         frame_threshold,
                         min_note_duration,
                         min_pitch=min_pitch,
+                        max_pitch=max_pitch,
                     )
                 log.info(
                     "transcribe_done",
@@ -336,17 +373,23 @@ class EarAgent:
                 )
                 return result
             except Exception as e:
+                failure = e
                 log.warning("basic_pitch_failed", file=file, error=str(e))
 
-        # ── Nothing worked: raise error ──────────────────────────────
         log.error("transcribe_all_failed", file=file, target=target)
         health.record_request(success=False, details=f"transcribe: {file}")
-        msg = (
-            f"No transcription models available for {file}. "
-            "Install Basic Pitch (pip install basic-pitch) with its runtime "
-            "dependencies (mir_eval, resampy)."
-        )
-        raise RuntimeError(msg)
+        if isinstance(failure, ModuleNotFoundError):
+            msg = f"Basic Pitch dependency missing: {failure.name}. Check the runtime installation."
+        elif failure is not None:
+            msg = (
+                f"Basic Pitch could not transcribe {file}. Check the audio, ONNX model and runtime."
+            )
+        else:
+            msg = (
+                f"No transcription models available for {file}. "
+                "Install Basic Pitch with ONNX Runtime and its dependencies (mir_eval, resampy)."
+            )
+        raise RuntimeError(msg) from failure
 
     def _transcribe_with_basic_pitch(
         self,
@@ -356,6 +399,7 @@ class EarAgent:
         frame_threshold: float,
         min_note_duration: float,
         min_pitch: int | None = None,
+        max_pitch: int | None = None,
     ) -> list:
         """
         Transcribe using Basic Pitch (Spotify's proven ONNX model).
@@ -368,6 +412,7 @@ class EarAgent:
         try:
             _model_output, midi_data, _note_events = basic_pitch_predict(
                 audio_path,
+                model_or_model_path=BASIC_PITCH_MODEL,
                 onset_threshold=onset_threshold,
                 frame_threshold=frame_threshold,
                 minimum_note_length=int(min_note_duration * 1000),
@@ -379,7 +424,9 @@ class EarAgent:
             )
 
             notes = self._convert_prettymidi_to_noteseq(midi_data)
-            notes = self._filter_by_instrument_range(notes, target, min_pitch=min_pitch)
+            notes = self._filter_by_instrument_range(
+                notes, target, min_pitch=min_pitch, max_pitch=max_pitch
+            )
 
             health.set_component("basic_pitch", "loaded")
             log.info("basic_pitch_done", note_count=len(notes), target=target)
@@ -425,24 +472,27 @@ class EarAgent:
         notes: list,
         target: str,
         min_pitch: int | None = None,
+        max_pitch: int | None = None,
     ) -> list:
         """
         Filter notes by valid instrument range.
 
         Standard ranges:
         - Bass (5-string): B0 (23) to G4 (67)
-        - Guitar (6-string): E2 (40) to E6 (88), or lower when drop-tuned
-          (e.g. Drop D passes min_pitch=38)
+        - Guitar (6-string): E2 (40) to E6 (88)
+
+        Callers can supply both bounds from the actual tuning and fret count.
         """
         target_lower = target.lower()
 
         if "bass" in target_lower:
-            default_min, max_pitch = 23, 67  # 5-string bass range
+            default_min, default_max = 23, 67  # 5-string bass range
         else:  # Guitar
-            default_min, max_pitch = 40, 88  # Standard guitar range
+            default_min, default_max = 40, 88  # Standard guitar range
 
         low_bound = default_min if min_pitch is None else min_pitch
-        filtered = [note for note in notes if low_bound <= note.pitch <= max_pitch]
+        high_bound = default_max if max_pitch is None else max_pitch
+        filtered = [note for note in notes if low_bound <= note.pitch <= high_bound]
 
         removed_count = len(notes) - len(filtered)
         if removed_count > 0:
@@ -459,16 +509,18 @@ class EarAgent:
         self,
         raw_notes: list,
         is_bass: bool = False,
+        max_pitch: int | None = None,
     ) -> list:
         """
         Clean transcription artifacts.
 
         Removes:
         - Ultra-short notes (<0.05s) - likely transcription errors
-        - Notes outside instrument range (bass > G4)
+        - Notes above the requested range (default for bass: above G4)
         - Duplicate notes at the same timestamp
         """
         cleaned = []
+        upper_bound = max_pitch if max_pitch is not None else (67 if is_bass else None)
         seen_pitches: dict = {}  # Track pitches by start time
 
         for note in raw_notes:
@@ -477,8 +529,7 @@ class EarAgent:
             if duration < 0.05:
                 continue
 
-            # Bass-specific: enforce upper limit
-            if is_bass and note.pitch > 67:
+            if upper_bound is not None and note.pitch > upper_bound:
                 continue
 
             # Remove duplicate notes at same time
@@ -516,51 +567,53 @@ class EarAgent:
 # STAGE 5: THE LUTHIER (Tablature generation)
 # ============================================================================
 
+# A chord is a group of notes whose onsets fall within this tolerance (it
+# matches the 50 ms grouping used when rendering columns). Two notes that land
+# in the same chord cannot share a string: one string produces one pitch at a
+# time, so a "chord" with two frets on the same string is physically impossible
+# to finger. This is enforced as a large transition penalty so the Viterbi DP
+# re-voices such collisions onto another string instead of emitting them.
+CHORD_TOLERANCE = 0.05
+SAME_STRING_CHORD_PENALTY = 1000.0
+
+
+@dataclass(frozen=True, order=True, slots=True)
+class _TabNote:
+    start: float
+    pitch: int
+    end: float
+
+
+@dataclass(slots=True)
+class _PlacedNote:
+    index: int
+    position: dict[str, int]
+    previous: _PlacedNote | None
+
+
+@dataclass(slots=True)
+class _TabPath:
+    occupied: tuple[int, ...]  # active note index per string; -1 means free
+    tail: _PlacedNote | None
+    omitted: int = 0
+    cost: float = 0.0
+
+    def rank(self) -> tuple[int, float]:
+        return self.omitted, self.cost
+
 
 class TabAgent:
-    """
-    MIDI-to-tablature conversion, fingered one *column* at a time.
+    """Time-aware fingering search with hard string and fret-span constraints.
 
-    A column is every note that starts within ``GROUP_TOLERANCE_S`` of the
-    column's first note. Fingering a column means choosing exactly one
-    string/fret position per pitch, with a hard constraint that no two notes in
-    the column share a string — so a chord is fingered as a chord, not as an
-    arpeggio.
-
-    Features:
-    - Viterbi DP over columns (one transition per column, not per note)
-    - Physical constraints: one note per string, bounded hand span
-    - Instrument-aware cost heuristics (open strings, low frets, position shifts)
-    - Technique detection (slides, hammer-ons, pull-offs) between columns
-    - Configurable tuning support
-
-    Notes that cannot be fingered are skipped and reported in
-    ``last_skipped_notes`` (pitches) and ``last_skipped_columns`` (per-column
-    detail), instead of discarding the whole track.
+    A string can carry one note at a time. Overlapping fretted notes must fit
+    within a conservative hand span (open strings don't occupy a finger). The
+    search prioritizes keeping notes over minimizing movement and bounds its
+    polyphonic frontier; it does not promise an optimal fingering or model
+    every physical constraint. Omitted notes are reported to callers.
     """
 
-    # Notes starting within this window may belong to the same column (chord).
-    # Basic Pitch's analysis hop is 256 samples / 22050 Hz ~= 11.6 ms, so notes
-    # struck together share an onset frame while two onsets one frame apart are
-    # two events. A cluster is only kept together if it can actually be fingered
-    # as one (see _split_unfingerable), so this can never merge a played run.
-    GROUP_TOLERANCE_S = 0.012
-    # Widest gap, in frets, between fretted notes of one column. Anything wider
-    # is not reachable and the offending notes are dropped, not printed.
-    MAX_HAND_SPAN = 5
-    # Columns further apart than this are not transitions: the hand moves
-    # during the gap, so shift/legato costs must not apply.
-    MAX_TRANSITION_S = 1.5
-    # Cap on candidate fingerings per column, to keep wide chords tractable.
-    MAX_CANDIDATES_PER_COLUMN = 24
-    # Cost of moving the hand one fret between consecutive columns.
-    POSITION_SHIFT_COST = 0.75
-    # Extra cost per fret beyond a comfortable stretch.
-    HAND_SPAN_COST = 4.0
-    # A same-string fret change of at least this many frets is called a slide.
-    # Below it, hammer-on/pull-off is the far more likely reading: a 1-2 fret
-    # "slide" is indistinguishable from (and much rarer than) legato.
-    SLIDE_MIN_FRETS = 3
+    MAX_FRET_SPAN = 4
+    SEARCH_WIDTH = 128
 
     def __init__(
         self,
@@ -572,24 +625,17 @@ class TabAgent:
         Initialize tablature generator.
 
         Args:
-            tuning: List of MIDI note numbers for open strings, lowest first
+            tuning: List of MIDI note numbers for open strings
                 Example: [23, 28, 33, 38, 43] for 5-string bass (B-E-A-D-G)
             num_frets: Maximum fret number on instrument
-            prefer_low_strings: Prefer low-position fingerings instead of
-                reaching far up the neck
+            prefer_low_strings: Penalize high-fret positions on upper strings
         """
-        self.tuning = list(tuning)
+        self.tuning = tuning
         self.num_frets = num_frets
         self.num_strings = len(tuning)
         self.prefer_low_strings = prefer_low_strings
         self.last_skipped_notes: list[int] = []
-        # Per-column detail for callers that report what was dropped:
-        # [{"time": float, "dropped": [pitch, ...], "reason": str}, ...]
-        self.last_skipped_columns: list[dict] = []
-        # Populated by generate_tab(); see tab_validation.TabValidationReport.
-        self.last_validation: TabValidationReport | None = None
-
-    # ── positions and costs ──────────────────────────────────────────────
+        self.last_skipped_events: list[dict] = []
 
     def get_valid_positions(self, midi_note: int) -> list[dict]:
         """
@@ -597,6 +643,7 @@ class TabAgent:
 
         Returns:
             List of dicts with 'string' and 'fret' keys
+
         """
         positions = []
         for string_idx, open_note in enumerate(self.tuning):
@@ -604,50 +651,6 @@ class TabAgent:
             if 0 <= fret <= self.num_frets:
                 positions.append({"string": string_idx, "fret": fret})
         return positions
-
-    def playability_reason(self, midi_note: int) -> str:
-        """Explain why a pitch has no position on this instrument."""
-        if self.num_strings and midi_note < self.tuning[0]:
-            return f"pitch {midi_note} is below the lowest open string ({self.tuning[0]})"
-        if self.num_strings and midi_note > self.tuning[-1] + self.num_frets:
-            return (
-                f"pitch {midi_note} is above the highest fret of the highest "
-                f"string ({self.tuning[-1] + self.num_frets})"
-            )
-        return f"pitch {midi_note} has no string/fret position"
-
-    def _low_string_penalty(self, position: dict) -> float:
-        """
-        Instrument-specific penalties for a single position.
-
-        Shared by :meth:`_position_cost` (absolute cost) and
-        :meth:`calculate_cost` (transition cost) so the rules live in one place.
-        Each caller applies it exactly once, so no path double-counts it.
-        """
-        penalty = 0.0
-        # The 1-4 fret stretch low on a 5-string bass is awkward.
-        if self.num_strings == 5 and position["string"] < 2 and 0 < position["fret"] < 5:
-            penalty += 1.0
-        if self.prefer_low_strings and position["string"] >= 2 and position["fret"] >= 10:
-            penalty += 1.0
-        return penalty
-
-    def _position_cost(self, position: dict) -> float:
-        """
-        Cost of *being* at a position, independent of what came before.
-
-        Absolute fret matters: the 24th fret of the low string is technically
-        reachable, but nobody plays there when the same note is available open
-        on a higher string. Open strings and low frets are cheap.
-        """
-        fret = position["fret"]
-        cost = self._low_string_penalty(position)
-        if fret == 0:
-            return cost
-        cost += fret * 0.35
-        if fret > 12:
-            cost += (fret - 12) * 1.2
-        return cost
 
     def calculate_cost(self, prev: dict | None, curr: dict, time_delta: float = 1.0) -> float:
         """
@@ -659,14 +662,6 @@ class TabAgent:
         - Time delta (legato vs. separate notes)
         - Instrument-specific preferences
 
-        This is the cost of playing ``curr`` *after* ``prev``. It deliberately
-        excludes any absolute-position cost (that lives in
-        :meth:`_position_cost`), so the same position has zero transition cost.
-
-        A non-positive ``time_delta`` means the two positions are simultaneous
-        (a fingering change inside one column), not a musical transition, so it
-        gets neither the legato discount nor the string-skip penalty.
-
         Args:
             prev: Previous position dict
             curr: Current position dict
@@ -674,518 +669,199 @@ class TabAgent:
 
         Returns:
             Cost value (lower is better)
+
         """
-        cost = self._low_string_penalty(curr)
         if prev is None:
-            return cost
+            return 0.0
 
         fret_distance = abs(curr["fret"] - prev["fret"])
         string_distance = abs(curr["string"] - prev["string"])
 
         # Base costs (tunable weights)
-        cost += (fret_distance * 1.5) + (string_distance * 2.0)
+        cost = (fret_distance * 1.5) + (string_distance * 2.0)
 
-        if 0 < time_delta < 0.2:  # Fast transition, actually sequential
+        # Prefer economical moves in fast monophonic passages.
+        if 0 <= time_delta < 0.2:  # Fast transition
             if string_distance == 0:
-                # Same string = likely slide/hammer/pull
-                cost -= 5.0  # Encourage this path
+                cost -= 5.0
             else:
                 # String skip on fast run = awkward
                 cost += 5.0  # Penalize
 
+        # Chord feasibility: notes that are truly simultaneous (a chord, within
+        # the render grouping tolerance) must not collide on one string. The
+        # legato bonus above applies to short *sequential* transitions
+        # (slides/hammer-ons); a chord note on an already-sounding string is
+        # physically impossible, so penalise it heavily. The penalty dominates
+        # the legato bonus, steering the DP to re-voice the note elsewhere.
+        if 0 <= time_delta < CHORD_TOLERANCE and prev["string"] == curr["string"]:
+            cost += SAME_STRING_CHORD_PENALTY
+
+        # 5-string bass heuristic: slight penalty for low fretted notes (1-4)
+        # on the lowest strings (B0/E1, indices 0-1)
+        if self.num_strings == 5 and curr["string"] < 2 and 0 < curr["fret"] < 5:
+            # Low B and E strings (indices 0-1)
+            cost += 1.0  # Slight penalty for low frets on low strings
+
+        # When prefer_low_strings is enabled, discourage high frets on upper strings
+        if self.prefer_low_strings and curr["string"] >= 2 and curr["fret"] >= 10:
+            cost += 1.0
+
         return cost
 
     @staticmethod
-    def _barre_of(fingering: list[dict]) -> int:
-        """Hand centre of a fingering: the middle of its fretted notes."""
-        fretted = [p["fret"] for p in fingering if p["fret"] > 0]
-        if not fretted:
-            return 0
-        return (min(fretted) + max(fretted)) // 2
-
-    def _hand_span(self, fingering: list[dict]) -> int:
-        """Gap between the lowest and highest fretted note (open strings exempt)."""
-        fretted = [p["fret"] for p in fingering if p["fret"] > 0]
-        if len(fretted) < 2:
-            return 0
-        return max(fretted) - min(fretted)
-
-    def _fingering_cost(self, fingering: list[dict]) -> float:
-        """Cost of a complete column fingering, including its hand span."""
-        barre = self._barre_of(fingering)
-        cost = 0.0
-        for position in fingering:
-            # Reaching away from the hand centre is uncomfortable.
-            cost += self._position_cost(position) + abs(position["fret"] - barre) * 0.25
-        over = max(0, self._hand_span(fingering) - self.MAX_HAND_SPAN)
-        cost += over * self.HAND_SPAN_COST
-        return cost
-
-    def _column_cost(self, prev: dict | None, fingering: list[dict], time_delta: float) -> float:
-        """
-        Cost of moving from the previous column's fingering to this one.
-
-        Single-note columns use the pairwise :meth:`calculate_cost`, which is
-        what melodies are made of. Wider columns are costed by hand shift,
-        because note-to-note distances are not meaningful when the notes are
-        struck together.
-        """
-        if prev is None:
-            return 0.0
-        barre = self._barre_of(fingering)
-        if len(prev) == 1 and len(fingering) == 1:
-            # A melody is note-to-note. calculate_cost owns the low-string
-            # penalty here, so strip it and let _fingering_cost apply it once.
-            return self.calculate_cost(
-                prev[0], fingering[0], time_delta
-            ) - self._low_string_penalty(fingering[0])
-        cost = 0.0
-        if time_delta <= self.MAX_TRANSITION_S:
-            cost += abs(barre - self._barre_of([prev[0]])) * self.POSITION_SHIFT_COST
-        return cost
-
-    # ── grouping ─────────────────────────────────────────────────────────
-
-    def group_notes(self, midi_notes: list) -> list[dict]:
-        """
-        Group notes into columns of simultaneous onsets.
-
-        A note joins the open column when it starts within
-        ``GROUP_TOLERANCE_S`` of the column's *first* note. The comparison is
-        always against the column start, never against the previous note, so a
-        run of fast sequential notes cannot chain itself into one column.
-
-        A cluster is only kept as one column if it is actually fingered as one:
-        notes that would need the same string are split into their own columns
-        in pitch order. Without this, a fast line played on one string would be
-        reported as a chord (or silently lose notes) instead of as a run — the
-        onset detector cannot tell "two notes at once" from "two notes 15 ms
-        apart", but the instrument can.
-
-        Returns:
-            List of {"time": float, "notes": [...]} sorted by time.
-        """
-        columns: list[dict] = []
-        for note in sorted(midi_notes, key=lambda n: float(n.start_time)):
-            start = float(note.start_time)
-            if columns and start - columns[-1]["time"] < self.GROUP_TOLERANCE_S:
-                columns[-1]["notes"].append(note)
-            else:
-                columns.append({"time": start, "notes": [note]})
-
-        sequential: list[dict] = []
-        for column in columns:
-            sequential.extend(self._split_unfingerable(column))
-        return sequential
-
-    def _split_unfingerable(self, column: dict) -> list[dict]:
-        """
-        Turn a cluster into columns that can each be fingered.
-
-        Keeps the widest subset of the cluster that has a string-disjoint
-        fingering and emits the rest as later columns, preserving pitch order.
-        """
-        # A pitch struck twice in one column is one note: a string cannot sound
-        # it twice, and Basic Pitch/note_seq both emit duplicates for a doubled
-        # take. Collapse them before deciding whether this is a chord.
-        notes: list = []
-        seen_pitches: set[int] = set()
-        for note in sorted(column["notes"], key=lambda n: (int(n.pitch), float(n.start_time))):
-            pitch = int(note.pitch)
-            if pitch in seen_pitches:
-                continue
-            seen_pitches.add(pitch)
-            notes.append(note)
-        if len(notes) < 2:
-            return [{"time": column["time"], "notes": notes}]
-        if self._greedy_feasible([int(n.pitch) for n in notes]):
-            return [{"time": column["time"], "notes": notes}]
-
-        # Not fingerable as a chord: tile the cluster into the widest playable
-        # subsets, consuming notes in *time* order. Time order matters: a fast
-        # chromatic run carries its short notes only through their own columns.
-        ordered = sorted(column["notes"], key=lambda n: (float(n.start_time), int(n.pitch)))
-        groups: list[list] = []
-        remaining = list(ordered)
-        while remaining:
-            subset: list = []
-            used: set[int] = set()
-            rest: list = []
-            for note in remaining:
-                pitch = int(note.pitch)
-                free = [p for p in self.get_valid_positions(pitch) if p["string"] not in used]
-                if free and self._greedy_feasible([int(n.pitch) for n in subset] + [pitch]):
-                    used.add(min(free, key=lambda p: (p["fret"], p["string"]))["string"])
-                    subset.append(note)
-                else:
-                    rest.append(note)
-            if not subset:  # pragma: no cover - every pitch resolves to a string
-                subset, rest = [remaining[0]], remaining[1:]
-            groups.append(subset)
-            remaining = rest
-        return [{"time": column["time"], "notes": g} for g in groups if g]
-
-    # ── column fingering ─────────────────────────────────────────────────
-
-    def _greedy_feasible(self, pitches: list[int]) -> bool:
-        """
-        Cheap test: can these pitches take distinct strings?
-
-        Used to decide whether an onset cluster really is one chord before it is
-        kept as one column. Pitches most constrained first, which is the usual
-        scheduling heuristic; an exact search is only needed at fingering time.
-        Pitches with no position at all are ignored here because
-        :meth:`finger_column` reports them as dropped.
-        """
-        options = []
-        for pitch in pitches:
-            positions = self.get_valid_positions(int(pitch))
-            if positions:
-                options.append(sorted(positions, key=lambda p: (p["fret"], p["string"])))
-        options.sort(key=len)
-        used: set[int] = set()
-        for candidate_positions in options:
-            free = [p for p in candidate_positions if p["string"] not in used]
-            if not free:
-                return False
-            used.add(min(free, key=lambda p: (p["fret"], p["string"]))["string"])
-        return True
-
-    def _assignments(self, options_by_pitch: list[list[dict]]) -> list[list[dict]]:
-        """
-        All string-disjoint assignments of one position per pitch.
-
-        Never returns two notes on the same string: a string can only sound one
-        note at a time, so any such assignment would be unplayable.
-        """
-        results: list[list[dict]] = []
-
-        def walk(idx: int, used: set[int], current: list[dict]) -> None:
-            if len(results) >= self.MAX_CANDIDATES_PER_COLUMN:
-                return
-            if idx == len(options_by_pitch):
-                results.append(sorted(current, key=lambda p: p["string"]))
-                return
-            for position in options_by_pitch[idx]:
-                if position["string"] in used:
-                    continue
-                used.add(position["string"])
-                current.append(position)
-                walk(idx + 1, used, current)
-                current.pop()
-                used.discard(position["string"])
-
-        walk(0, set(), [])
-        return results
-
-    def finger_column(self, pitches: list[int]) -> tuple[list[list[dict]], list[int], str]:
-        """
-        Choose string/fret positions for one column, ranked best-first.
-
-        Returns:
-            (candidates, dropped_pitches, reason). Candidates are fingerings
-            ordered by comfort. When the column cannot be fingered at all,
-            ``candidates`` is empty and every pitch is reported as dropped.
-        """
-        # One string cannot sound the same pitch twice in one column. A pitch
-        # that appears twice on the same onset is one note — Basic Pitch and
-        # note_seq both emit that for a doubled take — so collapse it.
-        unique: list[int] = []
-        for pitch in pitches:
-            if pitch not in unique:
-                unique.append(pitch)
-
-        options_by_pitch: list[list[dict]] = []
-        dropped: list[int] = []
-        reasons: list[str] = []
-        for pitch in unique:
-            options = self.get_valid_positions(pitch)
-            if not options:
-                dropped.append(pitch)
-                reasons.append(self.playability_reason(pitch))
-            else:
-                # ``pitch`` rides along so the validator can re-derive
-                # tuning[string] + fret == pitch for every row.
-                options_by_pitch.append(
-                    [dict(p, pitch=pitch) for p in sorted(options, key=lambda p: p["fret"])]
-                )
-
-        if not options_by_pitch:
-            return [], dropped, "; ".join(reasons)
-
-        candidates = self._assignments(options_by_pitch)
-        if not candidates:
-            # Every string is contested: drop the most constrained pitches and
-            # keep whatever still fits, rather than losing the whole column.
-            kept_options = list(options_by_pitch)
-            while kept_options and not candidates:
-                victim = min(range(len(kept_options)), key=lambda i: len(kept_options[i]))
-                dropped.append(kept_options[victim][0]["pitch"])
-                reasons.append("chord needs more strings than the instrument has")
-                kept_options.pop(victim)
-                candidates = self._assignments(kept_options)
-
-        if not candidates:
-            return [], dropped, "; ".join(reasons)
-
-        # A column may be assignable yet still need a stretch no hand can make:
-        # keep only the narrowest fingerings, and if even those are too wide drop
-        # the notes that cannot be reached, keeping the rest of the chord.
-        candidates = self._min_span_fingerings(candidates)
-        playable = [c for c in candidates if self._hand_span(c) <= self.MAX_HAND_SPAN]
-        if not playable:
-            best, span_dropped = self._fit_hand_span(candidates[0])
-            if span_dropped:
-                dropped.extend(span_dropped)
-                reasons.append(
-                    f"dropped {len(span_dropped)} note(s) beyond a "
-                    f"{self.MAX_HAND_SPAN}-fret hand span"
-                )
-            playable = [best]
-
-        playable.sort(key=self._fingering_cost)
-        return playable, dropped, "; ".join(reasons)
-
-    def _min_span_fingerings(self, candidates: list[list[dict]]) -> list[list[dict]]:
-        """
-        The narrowest fingerings of a column.
-
-        Some pitches sit on only one string, so a chord can be *assignable*
-        (one note per string) yet still unplayable: pitch 76 on a 24-fret
-        guitar only exists at fret 12 on the high E, so a voicing that also
-        needs fret 4 must put fret 12 in the same column. Filtering by span
-        here is what stops that from becoming an unplayable tab.
-        """
-        if not candidates:
-            return []
-        spans = [self._hand_span(c) for c in candidates]
-        narrowest = min(spans)
-        return [c for c, span in zip(candidates, spans, strict=True) if span == narrowest]
-
-    def _fit_hand_span(self, fingering: list[dict]) -> tuple[list[dict], list[int]]:
-        """
-        Keep as many notes as fit the hand, drop the ones that cannot be reached.
-
-        Every fretted note is tried as the anchor (the fret the hand sits at)
-        and the anchor that keeps the most notes wins, lowest fret on a tie.
-        Guitarists anchor on a specific fret rather than always on the lowest,
-        so anchoring on the lowest note alone would drop playable voicings.
-        """
-        fretted = sorted((p for p in fingering if p["fret"] > 0), key=lambda p: p["fret"])
-        opens = [p for p in fingering if p["fret"] == 0]
-        if len(fretted) < 2:
-            return sorted(opens + fretted, key=lambda p: p["string"]), []
-
-        # Slide a window exactly MAX_HAND_SPAN frets wide over the fretted notes
-        # and keep the window covering the most of them. Measuring distance from
-        # an anchor instead would happily keep a 12-fret spread (each end within
-        # 5 of the middle), which is the bug this replaces.
-        best_kept: list[dict] = []
-        for anchor_note in fretted:
-            low = anchor_note["fret"]
-            high = low + self.MAX_HAND_SPAN
-            kept = [p for p in fretted if low <= p["fret"] <= high]
-            if len(kept) > len(best_kept):
-                best_kept = kept
-
-        dropped = [p["pitch"] for p in fretted if p not in best_kept]
-        return sorted(opens + best_kept, key=lambda p: p["string"]), dropped
-
-    # ── technique detection ──────────────────────────────────────────────
-
-    def _technique_window(self, technique_sensitivity: float) -> float:
-        """Time window inside which a same-string move may be legato."""
-        return 0.05 + technique_sensitivity * 0.25  # 0.5 -> 0.175 s, 0.9 -> 0.275 s
-
-    def _detect_techniques(
-        self,
-        prev_column: dict,
-        column: dict,
-        prev_fingering: list[dict],
-        fingering: list[dict],
-        technique_sensitivity: float,
-    ) -> dict[int, str]:
-        """
-        Label each note of ``column`` as pick / slide / hammer / pull.
-
-        A technique requires all of:
-
-        - the note has its own onset, strictly after the previous column
-          (a chord is a single attack, so simultaneous notes are never legato);
-        - it is on the same string as a note of the previous column;
-        - the fret changed;
-        - the previous note is still ringing when this one starts, so it can
-          supply the energy. That is what makes a hammer-on a hammer-on, and it
-          rules out two separately picked notes on one string.
-        - slide: 3+ frets (a 1-2 fret move is far more likely a hammer/pull);
-          otherwise ascending -> hammer, descending -> pull.
-        """
-        techniques: dict[int, str] = {}
-        time_delta = column["time"] - prev_column["time"]
-        if time_delta <= 0 or time_delta >= self._technique_window(technique_sensitivity):
-            return techniques
-
-        prev_by_string = {p["string"]: p for p in prev_fingering}
-        prev_end_by_pitch: dict[int, float] = {}
-        for note in prev_column["notes"]:
-            pitch = int(note.pitch)
-            prev_end_by_pitch[pitch] = max(
-                prev_end_by_pitch.get(pitch, float("-inf")), float(note.end_time)
+    def _polyphonic_notes(notes: list[_TabNote]) -> list[bool]:
+        """Whether each event overlaps any other event (even one later omitted)."""
+        latest_end = -math.inf
+        flags = []
+        for i, note in enumerate(notes):
+            before = note.start < latest_end or (i > 0 and note.start == notes[i - 1].start)
+            after = i + 1 < len(notes) and (
+                notes[i + 1].start < note.end or notes[i + 1].start == note.start
             )
+            flags.append(before or after)
+            latest_end = max(latest_end, note.end)
+        return flags
 
-        for position in fingering:
-            source = prev_by_string.get(position["string"])
-            if source is None:
-                continue
-            fret_diff = position["fret"] - source["fret"]
-            if fret_diff == 0:
-                continue
-            still_ringing = prev_end_by_pitch.get(source["pitch"], float("-inf")) > column["time"]
-            if not still_ringing:
-                continue
-            if abs(fret_diff) >= self.SLIDE_MIN_FRETS:
-                techniques[position["pitch"]] = "slide"
-            elif fret_diff > 0:
-                techniques[position["pitch"]] = "hammer"
-            else:
-                techniques[position["pitch"]] = "pull"
-        return techniques
+    @staticmethod
+    def _keep_path(paths: dict[tuple, _TabPath], candidate: _TabPath) -> None:
+        """Merge paths with the same held strings and last note/position."""
+        tail = candidate.tail
+        key = (
+            (candidate.occupied, tail.index, tail.position["string"])
+            if tail
+            else (candidate.occupied, -1, -1)
+        )
+        current = paths.get(key)
+        if current is None or candidate.rank() < current.rank():
+            paths[key] = candidate
 
-    # ── public entry point ───────────────────────────────────────────────
+    def _assign_positions(
+        self, notes: list[_TabNote], positions: list[list[dict]], polyphonic: list[bool]
+    ) -> dict[int, dict[str, int]]:
+        paths = [_TabPath((-1,) * self.num_strings, None)]
+        for i, (note, choices) in enumerate(zip(notes, positions, strict=True)):
+            next_paths: dict[tuple, _TabPath] = {}
+            for path in paths:
+                occupied = tuple(
+                    (
+                        k
+                        if k >= 0 and (notes[k].end > note.start or notes[k].start == note.start)
+                        else -1
+                    )
+                    for k in path.occupied
+                )
+                # A skip is useful when retaining a note can block another one.
+                # Disjoint notes collapse to the original per-position DP.
+                if polyphonic[i] or not choices:
+                    self._keep_path(
+                        next_paths, _TabPath(occupied, path.tail, path.omitted + 1, path.cost)
+                    )
+                frets = [
+                    notes[k].pitch - self.tuning[string]
+                    for string, k in enumerate(occupied)
+                    if k >= 0 and notes[k].pitch > self.tuning[string]
+                ]
+                low, high = (
+                    (max(frets) - self.MAX_FRET_SPAN, min(frets) + self.MAX_FRET_SPAN)
+                    if frets
+                    else (0, self.num_frets)
+                )
+                prev = path.tail
+                for position in choices:
+                    string, fret = position["string"], position["fret"]
+                    if occupied[string] >= 0 or (fret and not low <= fret <= high):
+                        continue
+                    cost = self.calculate_cost(
+                        prev.position if prev else None,
+                        position,
+                        note.start - notes[prev.index].start if prev else 0.0,
+                    )
+                    self._keep_path(
+                        next_paths,
+                        _TabPath(
+                            occupied[:string] + (i,) + occupied[string + 1 :],
+                            _PlacedNote(i, position, prev),
+                            path.omitted,
+                            path.cost + cost,
+                        ),
+                    )
+            paths = sorted(next_paths.values(), key=_TabPath.rank)[: self.SEARCH_WIDTH]
 
-    def generate_tab(
-        self,
-        midi_notes: list,
-        technique_sensitivity: float = 0.7,
-    ) -> list[dict]:
-        """
-        Generate tablature, fingering one onset column at a time.
+        placed = {}
+        node = min(paths, key=_TabPath.rank).tail
+        while node is not None:
+            placed[node.index] = node.position
+            node = node.previous
+        return placed
 
-        Algorithm: Viterbi over columns.
-        1. Group notes into columns of simultaneous onsets.
-        2. For each column, choose one string/fret per note (no shared strings,
-           bounded hand span).
-        3. Keep the cheapest path of fingerings across columns.
-        4. Annotate techniques (slides, hammer-ons, pull-offs) between columns.
+    @staticmethod
+    def _technique_hint(prev: dict, curr: dict, window: float) -> str:
+        """Geometry-only suggestion, never evidence of how a note was played."""
+        onset_delta = curr["start_time"] - prev["start_time"]
+        gap = curr["start_time"] - prev["end_time"]
+        if curr["string"] != prev["string"] or not (0 < onset_delta < window and 0 <= gap <= 0.03):
+            return "pick"  # unmarked, not a detected pick attack
+        delta = curr["fret"] - prev["fret"]
+        if 1 <= abs(delta) <= 2:
+            return "slide"
+        if delta > 0:
+            return "hammer"
+        return "pull" if delta < 0 else "pick"
 
-        Notes that cannot be fingered are skipped, recorded in
-        ``last_skipped_notes`` / ``last_skipped_columns``, and the remaining
-        notes still produce tablature. Returns an empty list only when nothing
-        is playable.
+    def generate_tab(self, midi_notes: list, technique_sensitivity: float = 0.7) -> list[dict]:
+        """Generate string/fret entries with timings; report unmatched input events.
 
-        Args:
-            midi_notes: List of note_seq.NoteSequence.Note objects
-            technique_sensitivity: 0-1 threshold for technique detection
-                (higher = more aggressive detection, wider time windows)
-
-        Returns:
-            List of tab positions, ordered by column then string. Each entry has
-            ``string``, ``fret``, ``pitch``, ``technique``, ``start_time`` and
-            ``column``.
+        A zero-duration event occupies a string at its onset. Otherwise notes
+        use half-open intervals, so a new note can begin exactly at release.
+        Technique hints are limited to adjacent, near-contiguous solo notes;
+        the labels are not inferred from audio articulation.
         """
         self.last_skipped_notes = []
-        self.last_skipped_columns = []
+        self.last_skipped_events = []
+        notes = []
+        for note in midi_notes:
+            start = note.start_time
+            end = getattr(note, "end_time", start)
+            if not (math.isfinite(start) and math.isfinite(end)):
+                raise ValueError("Note start and end times must be finite")
+            notes.append(_TabNote(start, note.pitch, max(start, end)))
+        notes.sort()
 
-        if not midi_notes:
-            return []
+        positions = [self.get_valid_positions(n.pitch) for n in notes]
+        polyphonic = self._polyphonic_notes(notes)
+        assigned = self._assign_positions(notes, positions, polyphonic)
+        window = 0.05 + technique_sensitivity * 0.25
+        tab: list[dict] = []
+        prev_index = -2
+        for i, note in enumerate(notes):
+            if i not in assigned:
+                self.last_skipped_notes.append(note.pitch)
+                self.last_skipped_events.append(
+                    {
+                        "pitch": note.pitch,
+                        "start_time": note.start,
+                        "end_time": note.end,
+                        "reason": "fingering_conflict" if positions[i] else "out_of_range",
+                    }
+                )
+                continue
+            entry = {
+                **assigned[i],
+                "start_time": note.start,
+                "end_time": note.end,
+                "technique": "pick",
+            }
+            if prev_index == i - 1 and not (polyphonic[i] or polyphonic[prev_index]):
+                entry["technique"] = self._technique_hint(tab[-1], entry, window)
+            tab.append(entry)
+            prev_index = i
 
-        # 1-2. Group into columns and finger each one independently, so an
-        # unplayable chord can never destroy the rest of the track.
-        columns = self.group_notes(midi_notes)
-        fingered: list[dict] = []
-        for column in columns:
-            candidates, dropped, reason = self.finger_column(
-                [int(note.pitch) for note in column["notes"]]
+        if self.last_skipped_notes:
+            get_logger("tab_agent").warning(
+                "unplayable_notes_skipped",
+                pitches=sorted(set(self.last_skipped_notes)),
+                skipped=len(self.last_skipped_notes),
+                kept=len(tab),
             )
-            if dropped:
-                self.last_skipped_notes.extend(dropped)
-                self.last_skipped_columns.append(
-                    {"time": column["time"], "dropped": sorted(dropped), "reason": reason}
-                )
-                get_logger("tab_agent").info(
-                    "column_partially_skipped",
-                    time=round(column["time"], 3),
-                    dropped=sorted(dropped),
-                    kept=len(candidates[0]) if candidates else 0,
-                    reason=reason,
-                )
-            if candidates:
-                fingered.append({"column": column, "candidates": candidates})
-
-        if not fingered:
-            if self.last_skipped_notes:
-                get_logger("tab_agent").warning(
-                    "unplayable_notes_skipped",
-                    pitches=sorted(set(self.last_skipped_notes)),
-                    skipped=len(self.last_skipped_notes),
-                )
-            return []
-
-        # 3. Viterbi: state = (column index, candidate fingering index).
-        costs: list[list[float]] = []
-        back: list[list[int]] = []
-        for idx, entry in enumerate(fingered):
-            prev_entry = fingered[idx - 1] if idx > 0 else None
-            time_delta = (
-                entry["column"]["time"] - prev_entry["column"]["time"] if prev_entry else 0.0
-            )
-            column_costs: list[float] = []
-            column_back: list[int] = []
-            for candidate in entry["candidates"]:
-                base = self._fingering_cost(candidate)
-                if prev_entry is None:
-                    column_costs.append(base)
-                    column_back.append(-1)
-                    continue
-                best_cost, best_prev = float("inf"), 0
-                for prev_idx, prev_candidate in enumerate(prev_entry["candidates"]):
-                    candidate_cost = (
-                        costs[-1][prev_idx]
-                        + base
-                        + self._column_cost(prev_candidate, candidate, time_delta)
-                    )
-                    if candidate_cost < best_cost:
-                        best_cost, best_prev = candidate_cost, prev_idx
-                column_costs.append(best_cost)
-                column_back.append(best_prev)
-            costs.append(column_costs)
-            back.append(column_back)
-
-        # Backtrack.
-        best = costs[-1].index(min(costs[-1]))
-        path: list[list[dict]] = []
-        for idx in range(len(fingered) - 1, -1, -1):
-            path.append(fingered[idx]["candidates"][best])
-            best = back[idx][best] if back[idx][best] >= 0 else 0
-        path.reverse()
-
-        # 4. Annotate techniques, then flatten.
-        final_tab: list[dict] = []
-        for idx, fingering in enumerate(path):
-            techniques: dict[int, str] = {}
-            if idx > 0:
-                techniques = self._detect_techniques(
-                    fingered[idx - 1]["column"],
-                    fingered[idx]["column"],
-                    path[idx - 1],
-                    fingering,
-                    technique_sensitivity,
-                )
-            for position in fingering:
-                row = dict(position)
-                row["technique"] = techniques.get(position["pitch"], "pick")
-                row["start_time"] = fingered[idx]["column"]["time"]
-                row["column"] = idx
-                final_tab.append(row)
-
-        # Enforce the invariants this fingering model depends on instead of
-        # trusting them: one note per string per column, every string/fret
-        # matching its pitch, bounded hand span. A violation is a bug here, not
-        # a bad input, so it raises rather than printing an unplayable tab.
-        self.last_validation = validate_tab(
-            final_tab,
-            self.tuning,
-            self.num_frets,
-            max_hand_span=self.MAX_HAND_SPAN,
-        )
-        return final_tab
+        return tab

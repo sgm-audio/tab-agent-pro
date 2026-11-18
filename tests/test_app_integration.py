@@ -154,6 +154,7 @@ def _run_mocked_pipeline(app, instrument, stems_fn, is_suno=False):
         patch("app.TabAgent") as tab_cls,
     ):
         splitter_inst = splitter_cls.return_value
+        splitter_inst.separation_mode = "demucs"
         splitter_inst.separate_stems.return_value = {
             "guitar": "/tmp/g.wav",
             "bass": "/tmp/b.wav",
@@ -226,6 +227,7 @@ def test_process_audio_impl_zip_with_files() -> None:
         patch("app.export_tab_to_txt"),
         patch("app.export_tab_to_json"),
     ):
+        sc.return_value.separation_mode = "demucs"
         sc.return_value.separate_stems.return_value = {"guitar": "/tmp/g.wav"}
         sc.return_value.process_guitars.return_value = _make_mock_stems()
         ec.return_value.transcribe_stem.return_value = _mock_notes()

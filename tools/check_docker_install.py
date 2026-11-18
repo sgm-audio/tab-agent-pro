@@ -16,6 +16,7 @@ This script fails if either regresses.
 from __future__ import annotations
 
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -86,6 +87,32 @@ def check_app_binds_externally() -> None:
         )
 
 
+def _has_cpu_torch_install(dockerfile: str) -> bool:
+    """Check the pip install's actual index argument, resolving our build arg default."""
+    cpu_index = "https://download.pytorch.org/whl/cpu"
+    index_default = ""
+    found = False
+    for line in dockerfile.replace("\\\n", " ").splitlines():
+        line = line.strip()
+        if line.startswith("ARG TORCH_INDEX_URL="):
+            index_default = line.split("=", 1)[1].strip("\"'")
+        if not line.startswith("RUN pip install "):
+            continue
+        args = shlex.split(line, comments=True)
+        if not any(re.match(r"torch(?:$|[<>=])", token) for token in args):
+            continue
+        found = True
+        if "--index-url" not in args:
+            return False
+        position = args.index("--index-url") + 1
+        index = args[position] if position < len(args) else ""
+        if index in ("$TORCH_INDEX_URL", "${TORCH_INDEX_URL}"):
+            index = index_default
+        if index != cpu_index:
+            return False
+    return found
+
+
 def check_hardening() -> None:
     """Production-hardening invariants added by the phase-5 pass."""
     text = (ROOT / "Dockerfile").read_text()
@@ -106,11 +133,8 @@ def check_hardening() -> None:
             "Dockerfile CMD must use exec form so SIGTERM reaches the server " "(graceful shutdown)"
         )
 
-    if "--index-url https://download.pytorch.org/whl/cpu" not in text:
-        failures.append(
-            "torch must install from the CPU-only index; the PyPI wheel pulls "
-            "~2.5 GB of unusable NVIDIA CUDA packages"
-        )
+    if not _has_cpu_torch_install(text):
+        failures.append("torch must install from the CPU-only index by default")
 
     # The build must (a) re-apply the lock so the installed set matches what was
     # tested, and (b) fail when the installed set and the lock disagree.
@@ -132,6 +156,7 @@ def check_hardening() -> None:
 
 
 def main() -> int:
+    failures.clear()
     check_dockerfile()
     check_requirements()
     check_app_binds_externally()

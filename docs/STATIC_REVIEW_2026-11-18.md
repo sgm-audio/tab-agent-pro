@@ -7,6 +7,25 @@
 
 ---
 
+## Status of this review (updated 2026-11-18, after `main` moved)
+
+This document describes `a4814b2`. `main` has since been remediated by a larger, independent pass, and most of the P0 tablature and REAPER findings here are **fixed there** — by different code, with its own tests (`tests/test_tab_playability.py`, `tests/test_reaper_contract.py`, `audit_poc/`). The solver rewrite in this review's "suggested order of work" should **not** be applied on top of it.
+
+Fixed on `main` (verified against `1bdd494`):
+P0-1/P0-2/P0-3/P0-4/P0-5 (fingering, grouping, techniques), P0-7 (tuning labels), **P0-8** (`InsertMedia(path, 1)`), **P0-9** (undo block opened and closed around the import, with a project-changed guard), P1-1, and the `os.execute` → `io.popen` gate in `validate.py`.
+
+Still present on `main`, fixed in the same change that added this note:
+**P1-10** (40 Hz high-pass) and **P1-11** (`istft` without `length=`) in `suno_postprocessor.py`, with regression tests in `tests/test_suno.py`.
+
+Still present and **not** fixed: **P0-6** (mid/side emits three stems from one signal; see the corrected text), and the P2 gate items.
+
+Corrections to earlier drafts of this document, kept so the record is honest:
+- **P0-6 was overstated.** `rhythm_l` and `rhythm_r` are identical only for mono input. For genuine stereo they differ (`max|Δ| = 0.32`, `corr = −0.58`); what is actually wrong is that neither is a *side* signal. Rewritten below.
+- **P1-10's attenuation figures were wrong in the conservative direction.** Measured values for the 4th-order Butterworth at 40 Hz are B0 −9.5 dB, C1 −7.8 dB, E1 −2.5 dB (the draft said −10.5/−5.1); the conclusion and the fix are unchanged, and the cutoff is now 23 Hz, measured at B0 −0.9 dB / E1 −0.1 dB with 20 Hz rumble still down 12.2 dB.
+- **`Undo_EndBlock` flags.** An intermediate draft of the fix asserted that `-1` is the value that suppresses an undo point. That is backwards: `-1` means "everything changed" and is what the REAPER docs recommend for scripts that modify project state directly; flags *other than* `-1` are what risk creating no undo point. `main`'s `-1` is correct.
+
+---
+
 ## Summary
 
 The pipeline's *plumbing* is in better shape than its *musical model*. Health, metrics, atomic writes, bounded queues and error references are genuinely good. But the thing the project exists to produce — a playable tab — is built on three assumptions that are false:
@@ -98,7 +117,7 @@ A tab whose very first note is "24th fret on the low E" when the open high E was
 
 **Fix:** require `time_delta > 0`; require the source note's `end_time >= destination.start_time` (ringing); require the destination to be an onset (Basic Pitch gives you onset events — `_note_events` is currently discarded at `agents.py:374`); classify slide only for `fret_diff >= 2` with monotone directional motion across ≥ 2 consecutive notes; and annotate as a pair (`5h7`), not a suffix.
 
-## P0-6 `process_guitars` mid/side "separation" produces three copies of one signal
+## P0-6 `process_guitars` mid/side "separation" emits three files from one signal
 
 **Where:** `agents.py:196-220`.
 ```python
@@ -106,12 +125,16 @@ mid = (left + right) / 2
 rhythm_l = left  - mid * 0.8
 rhythm_r = right - mid * 0.8
 ```
-**Why it is bad:** for mono input (which `process_guitars` itself creates at line 199-201 by duplicating the channel) and for any centre-panned guitar, `left == right`, so:
+**Why it is bad:** the two cases behave differently and only one of them is a duplicate.
+
+*Mono input* (which `process_guitars` itself creates at lines 199-201 by duplicating the channel, and which is what the shipped `examples/*.wav` are). Here `left == right`, so:
 - `rhythm_l == rhythm_r` exactly (verified: `np.allclose(...) == True`, correlation `1.0`);
 - `rhythm_l == 0.2 * left` exactly (verified), i.e. the "rhythm" stem is the **lead at −14 dB**.
 
-The pipeline then transcribes the same signal three times, writes `_lead_guitar.mid`, `_rhythm_L.mid`, `_rhythm_R.mid`, and the UI/README advertise "Multi-track output — Lead guitar, rhythm L/R" as if three parts were found. On the shipped mono examples this is verified arithmetic, not a corner case. For genuine stereo, centre content leaks into both rhythm stems at −14 dB **with inverted polarity**, which is a worst case for an onset detector.
-**Fix:** compute a side/mid energy ratio first; if it is below a threshold (or input is mono), return only the lead stem and log `mid_side_skipped: no stereo information`. Never emit three files from one signal — that is what makes a reviewer distrust every other number in the report.
+*Genuine stereo.* These are **not** duplicates — an earlier draft of this review said they were and that was wrong. Verified on a stereo mix (centred lead + left-panned part): `max|rhythm_l − rhythm_r| = 0.32`, `corr = −0.58`. What is true is that neither is a *side* signal: the code uses `mid` subtraction, not `(L−R)/2`, so `corr(rhythm_l, true_side) = 0.92`, and centre content survives in both at −4.4 dB with inverted polarity on one side — a worst case for an onset detector.
+
+The pipeline then transcribes the guitar stem three times, writes `_lead_guitar.mid`, `_rhythm_L.mid`, `_rhythm_R.mid`, and the UI/README advertise "Multi-track output — Lead guitar, rhythm L/R" as if three parts were found. On the shipped mono examples that is verified arithmetic, not a corner case.
+**Fix:** compute a side/mid energy ratio first; if it is below a threshold (or input is mono), return only the lead stem and log `mid_side_skipped: no stereo information`. For genuine stereo, use `side = (left − right) / 2` rather than mid subtraction with a 0.8 kill factor. Never emit three files from one signal.
 
 ## P0-7 String labels ignore the tuning; Drop-D tabs say "E"
 

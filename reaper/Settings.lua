@@ -121,7 +121,7 @@ local function show_gui()
   end
 
   local prof_idx = tonumber(parts[1])
-  if prof_idx and prof_idx >= 1 and prof_idx <= #PROFILE_KEYS then
+  if prof_idx and prof_idx % 1 == 0 and prof_idx >= 1 and prof_idx <= #PROFILE_KEYS then
     s.profile = PROFILE_KEYS[prof_idx]
   elseif parts[1] ~= "" and profile_defaults(parts[1]) then
     s.profile = parts[1]
@@ -136,8 +136,15 @@ local function show_gui()
   s.install_path = parts[2] or ""
   if parts[3] ~= "" then s.instrument = parts[3] end
 
-  -- Blank threshold fields mean "use the selected profile's values"; main.py
-  -- resolves CLI flag > profile > built-in default.
+  -- Blank threshold fields mean "use the selected profile's values".
+  for _, index in ipairs({4, 5}) do
+    local value = parts[index]
+    local threshold = tonumber(value)
+    if value ~= "" and (not threshold or not (threshold >= 0 and threshold <= 1)) then
+      reaper.MB("Use numbers from 0 to 1 or leave thresholds blank. Settings not saved.", "Tab Agent — Settings", 0)
+      return
+    end
+  end
   s.onset = parts[4]
   s.frame = parts[5]
 

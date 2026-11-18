@@ -90,12 +90,6 @@ def load_user_memory():
 # (without it, frets 12 and 15 in neighbouring columns render as "1215").
 COLUMN_SEPARATOR = " "
 
-# Two tab positions are in the same column (chord) when their onsets are within
-# this many seconds. One Basic Pitch frame hop (256 samples at 22050 Hz is
-# ~11.6 ms), so genuinely simultaneous notes stay together and two events a
-# frame apart do not. Must match TabAgent.GROUP_TOLERANCE_S; a test asserts it.
-TAB_COLUMN_TOLERANCE_S = 0.012
-
 
 def _format_position(pos) -> str:
     """Format a single tab position (fret + optional technique suffix)."""
@@ -110,37 +104,21 @@ def _format_position(pos) -> str:
     return str(f)
 
 
-def _string_labels(num_strings: int) -> list[str]:
-    """
-    Fallback string names when no tuning is supplied, ordered high→low.
+_PITCH_CLASSES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+RAW_MIX_WARNING = "Stem separation failed; these results come from unseparated audio."
 
-    ``string index 0`` is the lowest string, so the returned list is reversed
-    relative to the tab grid. These names are only a guess (they assume
-    standard EADGBE / BEADG); pass ``tuning`` to :func:`render_tab_text` when
-    you know it, which is the only way to label Drop D or any other tuning
-    correctly.
-    """
+
+def _string_labels(num_strings: int, tuning: list[int] | None = None) -> list[str]:
+    """String labels ordered high to low; tuning is ordered low to high."""
+    if tuning is not None:
+        return [_PITCH_CLASSES[pitch % 12] for pitch in reversed(tuning)]
     if num_strings == 6:
-        return ["E", "B", "G", "D", "A", "E"]  # high E, B, G, D, A, low E
+        return ["E", "B", "G", "D", "A", "E"]
     if num_strings == 5:
-        return ["G", "D", "A", "E", "B"]  # high G, D, A, E, low B
+        return ["G", "D", "A", "E", "B"]
     if num_strings == 4:
         return ["G", "D", "A", "E"]
     return [chr(65 + i) for i in range(num_strings - 1, -1, -1)]
-
-
-_PITCH_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-
-
-def tuning_string_labels(tuning: list[int]) -> list[str]:
-    """
-    String names derived from the actual tuning, ordered high→low.
-
-    ``tuning[0]`` is the lowest string (low E for a guitar, low B for a
-    5-string bass), so a Drop-D guitar tunes to D2-A2-D3-G3-B3-E4 and renders
-    ``D`` on the bottom line rather than ``E``.
-    """
-    return [_PITCH_NAMES[int(open_note) % 12] for open_note in reversed(tuning)]
 
 
 def render_tab_text(
@@ -148,99 +126,64 @@ def render_tab_text(
     instrument="Guitar",
     num_strings: int | None = None,
     tuning: list[int] | None = None,
+    *,
+    skipped_notes: list[dict] | None = None,
+    separation_mode: str | None = None,
 ) -> str | None:
-    """Render tablature to a human-readable text string.
-
-    Positions are grouped into columns of simultaneous notes and aligned so a
-    chord reads vertically across the strings.
-
-    Returns ``None`` when there is nothing to render.
-
-    Args:
-        tab_data: positions from ``TabAgent.generate_tab``
-        instrument: label written in the file header
-        num_strings: instrument string count; keeps the displayed grid the same
-            size as the instrument even when the highest strings are unused
-        tuning: open-string MIDI notes, lowest first. When given, it sets the
-            grid width *and* the string names, so Drop D renders ``D`` not
-            ``E``. Prefer this over ``num_strings``.
-    """
+    """Render aligned fret and onset columns; exact durations are in JSON/MIDI."""
     if not tab_data or not isinstance(tab_data, list):
         return None
 
-    if tuning:
-        num_strings = len(tuning)
-    max_used = max(int(pos["string"]) for pos in tab_data) + 1
-    num_strings = max(max_used, num_strings or 0)
+    max_used = max(pos["string"] for pos in tab_data) + 1
+    num_strings = max(max_used, num_strings or 0, len(tuning) if tuning is not None else 0)
+    if tuning is not None and len(tuning) != num_strings:
+        tuning = None
+    labels = _string_labels(num_strings, tuning)
+    show_time = any("start_time" in pos for pos in tab_data)
 
-    groups = _group_tab_columns(tab_data)
+    # Group identical onsets only. Near-simultaneous notes (e.g. arpeggios)
+    # need separate columns, even if they are less than 50 ms apart.
+    groups: dict[float, list] = {}
+    for pos in tab_data:
+        groups.setdefault(pos.get("start_time", 0.0), []).append(pos)
 
-    # Build column grid: one column per time group
-    cols: list[list[str]] = []
-    for _grp_time, grp_positions in groups:
-        cells: list[list[str]] = [[] for _ in range(num_strings)]  # one slot per string
-        for pos in grp_positions:
-            cells[int(pos["string"])].append(_format_position(pos))
-        # Fill untouched strings with "-". A string carries at most one note per
-        # column: anything else is a fingering error, so say so in the output
-        # instead of quietly inventing an unplayable "/" chord.
-        cols.append([cell[0] if len(cell) == 1 else ("+".join(cell) or "-") for cell in cells])
+    rows: list[list[str]] = [[] for _ in labels]
+    times: list[str] = []
+    for onset, positions in sorted(groups.items()):
+        cells: list[list[str]] = [[] for _ in labels]
+        for pos in positions:
+            cells[num_strings - 1 - pos["string"]].append(_format_position(pos))
+        # Keep the renderer compatible with old tab data passed directly to it.
+        # Newly generated tabs cannot have two notes on one string at an onset.
+        column = ["/".join(cell) or "-" for cell in cells]
+        stamp = f"{onset:.3f}" if show_time else ""
+        width = max(len(stamp), *(len(cell) for cell in column))
+        times.append(stamp.ljust(width))
+        for row, cell in zip(rows, column, strict=True):
+            row.append(cell.ljust(width))
 
-    # Determine column widths (widest entry in each column)
-    col_widths = [max(len(col[s]) for s in range(num_strings)) for col in cols]
-    separator = COLUMN_SEPARATOR
-
-    # Build each string's line from the columns (left-aligned so every column
-    # occupies the same [entry][padding][separator] shape and note positions
-    # are predictable when read by eye or by a script).
-    lines = [""] * num_strings
-    for col_idx, col in enumerate(cols):
-        w = col_widths[col_idx]
-        for s in range(num_strings):
-            lines[s] += col[s].ljust(w) + separator
-
-    labels = tuning_string_labels(tuning) if tuning else _string_labels(num_strings)
-
-    out = [f"=== {instrument} Tablature ===", ""]
-    # Display high strings first (reverse order)
-    for i in range(num_strings - 1, -1, -1):
-        out.append(f"{labels[num_strings - 1 - i]}|{lines[i]}")
+    out = [f"=== {instrument} Tablature ==="]
+    if tuning is not None:
+        names = (f"{_PITCH_CLASSES[p % 12]}{p // 12 - 1}" for p in tuning)
+        out.append(f"Tuning (low to high): {' '.join(names)}")
+    if separation_mode == "raw_fallback":
+        out.append(f"Warning: {RAW_MIX_WARNING}")
+    if skipped_notes:
+        out.append(f"Warning: {len(skipped_notes)} detected note(s) omitted from the tab.")
     out.append("")
-    out.append("Legend: s=slide, h=hammer-on, p=pull-off")
-    out.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    return "\n".join(out) + "\n"
-
-
-def _group_tab_columns(tab_data) -> list[tuple[float, list]]:
-    """
-    Group tab positions into columns of simultaneous notes.
-
-    A position joins the open column when it starts within
-    ``TAB_COLUMN_TOLERANCE_S`` of the column's *start* (never of the previous
-    position) and its string is still free. Comparing against the column start
-    is what stops a fast run from chaining itself into one chord, and the
-    free-string test keeps two sequential notes on one string in separate
-    columns even when they were quantised to the same instant.
-
-    Positions that carry no ``start_time`` are grouped by their own onset in
-    list order, which is what the JSON export and the tests use.
-    """
-    ordered = sorted(
-        enumerate(tab_data), key=lambda item: (item[1].get("start_time", 0.0), item[0])
+    label_width = max(4 if show_time else 0, *(len(label) for label in labels))
+    if show_time:
+        out.append("t(s)|" + COLUMN_SEPARATOR.join(times).rstrip())
+    for label, row in zip(labels, rows, strict=True):
+        out.append(f"{label:>{label_width}}|{COLUMN_SEPARATOR.join(row).rstrip()}")
+    out.extend(
+        (
+            "",
+            "Technique hints (heuristic only): s=slide, h=hammer-on, p=pull-off",
+            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        )
     )
-
-    groups: list[tuple[float, list]] = []
-    for _idx, pos in ordered:
-        t = float(pos.get("start_time", 0.0))
-        string = int(pos["string"])
-        if groups:
-            start, members = groups[-1]
-            occupied = {int(m["string"]) for m in members}
-            if t - start < TAB_COLUMN_TOLERANCE_S and string not in occupied:
-                members.append(pos)
-                continue
-        groups.append((t, [pos]))
-    return groups
+    return "\n".join(out) + "\n"
 
 
 def export_tab_to_txt(
@@ -249,17 +192,22 @@ def export_tab_to_txt(
     instrument="Guitar",
     num_strings: int | None = None,
     tuning: list[int] | None = None,
+    *,
+    skipped_notes: list[dict] | None = None,
+    separation_mode: str | None = None,
 ) -> None:
-    """Export tablature to human-readable text format.
-
-    ``tuning`` (open strings, lowest first) drives both the grid width and the
-    string names; ``num_strings`` is kept for callers that only know the count.
-    """
-    text = render_tab_text(tab_data, instrument, num_strings, tuning)
-    if text is None:
-        return
-    with open(output_path, "w") as f:
-        f.write(text)
+    """Export tablature to human-readable text format."""
+    text = render_tab_text(
+        tab_data,
+        instrument,
+        num_strings,
+        tuning=tuning,
+        skipped_notes=skipped_notes,
+        separation_mode=separation_mode,
+    )
+    if text is not None:
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(text)
 
 
 def export_tab_to_json(
@@ -267,20 +215,24 @@ def export_tab_to_json(
     output_path,
     instrument="Guitar",
     num_strings: int | None = None,
+    *,
     tuning: list[int] | None = None,
+    skipped_notes: list[dict] | None = None,
+    separation_mode: str | None = None,
 ) -> None:
-    """Export tablature to JSON format for programmatic use."""
-    if tuning:
-        num_strings = len(tuning)
+    """Export timed fretboard data and its provenance for programmatic use."""
     data = {
         "instrument": instrument,
         "timestamp": datetime.now().isoformat(),
-        "num_strings": num_strings,
+        "num_strings": len(tuning) if tuning is not None else num_strings,
         "tuning": tuning,
+        "technique_basis": "heuristic",
+        "separation_mode": separation_mode,
+        "skipped_notes": skipped_notes or [],
         "tablature": tab_data,
     }
 
-    with open(output_path, "w") as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
 
@@ -414,6 +366,8 @@ Examples:
     parser.add_argument("--no-midi", action="store_true", help="Skip MIDI export")
     parser.add_argument("--no-tab", action="store_true", help="Skip ASCII tab export")
     parser.add_argument("--no-json", action="store_true", help="Skip JSON export")
+    # Internal protocol: REAPER imports only MIDI written by this invocation.
+    parser.add_argument("--reaper-report-midi", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--device",
         choices=["auto", "cpu", "cuda", "rocm", "vulkan", "mps", "directml"],
@@ -444,7 +398,46 @@ def _progress(msg: str) -> None:
     print(f"[tab-agent] {msg}", flush=True)
 
 
-def main(argv: list[str] | None = None) -> None:
+def _export_cli_tab(
+    agent: TabAgent,
+    notes: list,
+    stem: str,
+    label: str,
+    args,
+    separation_mode: str | None,
+    technique_sensitivity: float,
+) -> None:
+    if args.no_tab and args.no_json:
+        return
+    tab = agent.generate_tab(notes, technique_sensitivity=technique_sensitivity)
+    skipped = agent.last_skipped_events
+    if skipped:
+        print(
+            f"⚠️  {label}: {len(skipped)} detected note(s) omitted from the tab.", file=sys.stderr
+        )
+    if not tab:
+        return
+    if not args.no_tab:
+        export_tab_to_txt(
+            tab,
+            f"{stem}.tab",
+            label,
+            tuning=agent.tuning,
+            skipped_notes=skipped,
+            separation_mode=separation_mode,
+        )
+    if not args.no_json:
+        export_tab_to_json(
+            tab,
+            f"{stem}.json",
+            label,
+            tuning=agent.tuning,
+            skipped_notes=skipped,
+            separation_mode=separation_mode,
+        )
+
+
+def main(argv: list[str] | None = None) -> int:
     _load_dotenv()
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -521,10 +514,22 @@ def main(argv: list[str] | None = None) -> None:
     # Separate stems (use processed audio if Suno)
     _progress("Separating audio stems (Demucs)...")
     stems = splitter.separate_stems(processed_audio)
+    separation_mode = splitter.separation_mode
+    if separation_mode == "raw_fallback":
+        print(f"⚠️  {RAW_MIX_WARNING}", file=sys.stderr)
+    note_count = 0
 
     # Initialize transcription agent
     ear = EarAgent(device=args.device)
     suno_postprocessor = SunoNotePostprocessor()
+
+    def write_midi(notes: list, suffix: str) -> None:
+        if args.no_midi or not notes:
+            return
+        path = os.path.join(output_dir, f"{song_name}_{suffix}.mid")
+        ear.export_midi(notes, path)
+        if args.reaper_report_midi:
+            print(f"[tab-agent-midi] {suffix}", flush=True)
 
     guitar_tuning = config.get("guitar_tuning", [40, 45, 50, 55, 59, 64])
     bass_tuning = config.get("bass_tuning", [23, 28, 33, 38, 43])
@@ -539,7 +544,8 @@ def main(argv: list[str] | None = None) -> None:
         _progress("Transcribing guitar stems to MIDI (Basic Pitch)...")
         # Process guitar stems
         guitar_stems = splitter.process_guitars(stems["guitar"])
-        guitar_min_pitch = min(guitar_tuning) if guitar_tuning else 40
+        guitar_min_pitch = min(guitar_tuning, default=40)
+        guitar_max_pitch = max(guitar_tuning, default=64) + num_frets
 
         # Transcribe lead guitar
         lead_notes_raw = ear.transcribe_stem(
@@ -548,12 +554,11 @@ def main(argv: list[str] | None = None) -> None:
             onset_threshold=onset_threshold,
             frame_threshold=frame_threshold,
             min_pitch=guitar_min_pitch,
+            max_pitch=guitar_max_pitch,
         )
         lead_notes = ear.humanize_and_clean(lead_notes_raw, is_bass=False)
         lead_notes = suno_postprocessor.process(lead_notes, is_suno, suno_metrics)
-        if not args.no_midi:
-            lead_midi_path = os.path.join(output_dir, f"{song_name}_lead_guitar.mid")
-            ear.export_midi(lead_notes, lead_midi_path)
+        write_midi(lead_notes, "lead_guitar")
 
         # Transcribe rhythm guitar (left channel)
         rhythm_l_notes_raw = ear.transcribe_stem(
@@ -562,12 +567,11 @@ def main(argv: list[str] | None = None) -> None:
             onset_threshold=onset_threshold,
             frame_threshold=frame_threshold,
             min_pitch=guitar_min_pitch,
+            max_pitch=guitar_max_pitch,
         )
         rhythm_l_notes = ear.humanize_and_clean(rhythm_l_notes_raw, is_bass=False)
         rhythm_l_notes = suno_postprocessor.process(rhythm_l_notes, is_suno, suno_metrics)
-        if not args.no_midi:
-            rhythm_l_midi_path = os.path.join(output_dir, f"{song_name}_rhythm_L.mid")
-            ear.export_midi(rhythm_l_notes, rhythm_l_midi_path)
+        write_midi(rhythm_l_notes, "rhythm_L")
 
         # Transcribe rhythm guitar (right channel)
         rhythm_r_notes_raw = ear.transcribe_stem(
@@ -576,12 +580,11 @@ def main(argv: list[str] | None = None) -> None:
             onset_threshold=onset_threshold,
             frame_threshold=frame_threshold,
             min_pitch=guitar_min_pitch,
+            max_pitch=guitar_max_pitch,
         )
         rhythm_r_notes = ear.humanize_and_clean(rhythm_r_notes_raw, is_bass=False)
         rhythm_r_notes = suno_postprocessor.process(rhythm_r_notes, is_suno, suno_metrics)
-        if not args.no_midi:
-            rhythm_r_midi_path = os.path.join(output_dir, f"{song_name}_rhythm_R.mid")
-            ear.export_midi(rhythm_r_notes, rhythm_r_midi_path)
+        write_midi(rhythm_r_notes, "rhythm_R")
 
         # Guitar tablature
         guitar_agent = TabAgent(
@@ -596,29 +599,23 @@ def main(argv: list[str] | None = None) -> None:
             "rhythm_R": ("Rhythm Guitar R", rhythm_r_notes),
         }
         for suffix, (label, notes) in guitar_tracks.items():
-            tab = guitar_agent.generate_tab(notes, technique_sensitivity=technique_sensitivity)
-            if not args.no_tab and tab:
-                export_tab_to_txt(
-                    tab,
-                    os.path.join(output_dir, f"{song_name}_{suffix}.tab"),
-                    label,
-                    tuning=guitar_tuning,
-                )
-            if not args.no_json and tab:
-                export_tab_to_json(
-                    tab,
-                    os.path.join(output_dir, f"{song_name}_{suffix}.json"),
-                    label,
-                    tuning=guitar_tuning,
-                )
-            if notes and not tab:
-                print(f"⚠️  No playable positions for {label} — skipping its tablature.")
+            note_count += len(notes)
+            _export_cli_tab(
+                guitar_agent,
+                notes,
+                os.path.join(output_dir, f"{song_name}_{suffix}"),
+                label,
+                args,
+                separation_mode,
+                technique_sensitivity,
+            )
 
     if run_bass:
         _progress("Transcribing bass stem to MIDI (Basic Pitch)...")
         # Process bass stem
         bass_clean = splitter.process_bass(stems["bass"])
-        bass_min_pitch = min(bass_tuning) if bass_tuning else 23
+        bass_min_pitch = min(bass_tuning, default=23)
+        bass_max_pitch = max(bass_tuning, default=43) + num_frets
 
         # Transcribe bass
         bass_notes_raw = ear.transcribe_stem(
@@ -627,12 +624,11 @@ def main(argv: list[str] | None = None) -> None:
             onset_threshold=onset_threshold,
             frame_threshold=frame_threshold,
             min_pitch=bass_min_pitch,
+            max_pitch=bass_max_pitch,
         )
-        bass_notes = ear.humanize_and_clean(bass_notes_raw, is_bass=True)
+        bass_notes = ear.humanize_and_clean(bass_notes_raw, is_bass=True, max_pitch=bass_max_pitch)
         bass_notes = suno_postprocessor.process(bass_notes, is_suno, suno_metrics)
-        if not args.no_midi:
-            bass_midi_path = os.path.join(output_dir, f"{song_name}_bass.mid")
-            ear.export_midi(bass_notes, bass_midi_path)
+        write_midi(bass_notes, "bass")
 
         # Bass tablature
         bass_agent = TabAgent(
@@ -641,23 +637,16 @@ def main(argv: list[str] | None = None) -> None:
             prefer_low_strings=bass_prefer_low,
         )
 
-        bass_tab = bass_agent.generate_tab(bass_notes, technique_sensitivity=technique_sensitivity)
-        if not args.no_tab and bass_tab:
-            export_tab_to_txt(
-                bass_tab,
-                os.path.join(output_dir, f"{song_name}_bass.tab"),
-                f"{len(bass_tuning)}-String Bass",
-                tuning=bass_tuning,
-            )
-        if not args.no_json and bass_tab:
-            export_tab_to_json(
-                bass_tab,
-                os.path.join(output_dir, f"{song_name}_bass.json"),
-                f"{len(bass_tuning)}-String Bass",
-                tuning=bass_tuning,
-            )
-        if bass_notes and not bass_tab:
-            print("⚠️  No playable positions for Bass — skipping its tablature.")
+        note_count += len(bass_notes)
+        _export_cli_tab(
+            bass_agent,
+            bass_notes,
+            os.path.join(output_dir, f"{song_name}_bass"),
+            f"{len(bass_tuning)}-String Bass",
+            args,
+            separation_mode,
+            technique_sensitivity,
+        )
 
     # Log session to memory
     if os.path.exists(memory_file):
@@ -668,7 +657,8 @@ def main(argv: list[str] | None = None) -> None:
             session_log = {
                 "timestamp": datetime.now().isoformat(),
                 "song": os.path.basename(audio_path),
-                "status": "completed",
+                "status": "completed" if note_count else "no_notes",
+                "separation_mode": separation_mode,
                 "onset_threshold": onset_threshold,
                 "frame_threshold": frame_threshold,
                 "is_suno": bool(is_suno),
@@ -687,6 +677,10 @@ def main(argv: list[str] | None = None) -> None:
             # Session logging is best-effort; don't fail the run
             print(f"⚠️  Could not update user memory: {e}")
 
+    if not note_count:
+        print(f"⚠️  No notes were transcribed for {song_name}.", file=sys.stderr)
+        return 2
+
     # Summary
     print(f"\n✅ Done: {song_name}")
     print(f"   Instrument : {args.instrument}")
@@ -695,6 +689,8 @@ def main(argv: list[str] | None = None) -> None:
     print(f"   Thresholds : onset={onset_threshold}, frame={frame_threshold}")
     if config.get("active_profile"):
         print(f"   Profile    : {config['active_profile']}")
+
+    return 0
 
 
 def _enabled_formats(args) -> list[str]:
@@ -711,4 +707,4 @@ def _enabled_formats(args) -> list[str]:
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

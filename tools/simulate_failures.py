@@ -131,10 +131,8 @@ def simulate_transcription_backend_down() -> None:
     """transcribe_stem must raise (escalate) when no model is available."""
     import agents
 
-    ear = agents.EarAgent.__new__(agents.EarAgent)
-    ear.model = None
-    ear.processor = None
     with patch.object(agents, "BASIC_PITCH_AVAILABLE", False), patch.object(agents, "health"):
+        ear = agents.EarAgent(device="cpu")
         try:
             ear.transcribe_stem(str(ROOT / "examples" / "guitar_solo.wav"))
         except RuntimeError as e:
@@ -147,10 +145,7 @@ def simulate_demucs_offline() -> None:
     """Demucs failing must degrade to raw audio, not crash the pipeline."""
     import agents
 
-    splitter = agents.SplitterAgent.__new__(agents.SplitterAgent)
-    tmp = _fresh_cwd()
-    splitter.output_dir = tmp
-    splitter.log = agents.get_logger("splitter")
+    splitter = agents.SplitterAgent(output_dir=_fresh_cwd(), device="cpu")
     audio = ROOT / "examples" / "guitar_solo.wav"
     with (
         patch.object(agents, "DEMUCS_API_AVAILABLE", False),
@@ -160,7 +155,8 @@ def simulate_demucs_offline() -> None:
     ):
         stems = splitter.separate_stems(str(audio))
     check(
-        set(stems) == {"guitar", "bass"} and all(Path(p).exists() for p in stems.values()),
+        set(stems) == {"guitar", "bass"}
+        and all(Path(p).read_bytes() == audio.read_bytes() for p in stems.values()),
         "demucs unavailable -> raw-audio passthrough",
         str(list(stems)),
     )
@@ -184,23 +180,102 @@ def simulate_unwritable_output() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 5. Malformed model output
+# 5. Basic Pitch failures despite a successful import
 # ---------------------------------------------------------------------------
 
 
-def simulate_malformed_mt3_tokens(capsys) -> None:
+def simulate_malformed_basic_pitch_output() -> None:
+    """Invalid model output must fail rather than masquerade as an empty transcription."""
     import agents
 
-    ear = agents.EarAgent.__new__(agents.EarAgent)
-    notes = ear._parse_mt3_tokens(
-        ["NOTE_ON", "sixty", "TIME_SHIFT", "0.5", "NOTE_OFF", "60"], min_duration=0.05
+    with (
+        patch.object(agents, "BASIC_PITCH_AVAILABLE", True),
+        patch.object(agents, "basic_pitch_predict", return_value=(None, None, None)),
+        patch.object(agents, "health") as health,
+    ):
+        ear = agents.EarAgent(device="cpu")
+        try:
+            ear.transcribe_stem(str(ROOT / "examples" / "guitar_solo.wav"))
+        except RuntimeError as e:
+            check(
+                isinstance(e.__cause__, AttributeError),
+                "malformed Basic Pitch output raises with original cause",
+            )
+        else:
+            check(False, "malformed Basic Pitch output raises", "no exception raised")
+        check(
+            health.set_component.call_args.args == ("basic_pitch", "error: AttributeError"),
+            "malformed Basic Pitch output marks backend error",
+        )
+
+
+def simulate_basic_pitch_runtime_dependency_missing() -> None:
+    import agents
+
+    missing = ModuleNotFoundError("missing resampy", name="resampy")
+    with (
+        patch.object(agents, "BASIC_PITCH_AVAILABLE", True),
+        patch.object(agents, "basic_pitch_predict", side_effect=missing),
+        patch.object(agents, "health") as health,
+    ):
+        ear = agents.EarAgent(device="cpu")
+        try:
+            ear.transcribe_stem("song.wav")
+        except RuntimeError as e:
+            check(
+                e.__cause__ is missing and "resampy" in str(e),
+                "Basic Pitch identifies the missing runtime dependency",
+            )
+        else:
+            check(False, "Basic Pitch identifies the missing runtime dependency", "no error")
+        check(
+            health.set_component.call_args.args == ("basic_pitch", "error: missing resampy"),
+            "Basic Pitch publishes degraded component state",
+        )
+
+
+def simulate_unplayable_model_notes() -> None:
+    """A transcription backend emitting notes outside the instrument's range.
+
+    Basic Pitch can return pitches that have no valid string/fret position on
+    the configured instrument (e.g. below the lowest open string). The
+    TabAgent must skip such notes and log them — never crash or silently drop
+    the whole track.
+    """
+    import note_seq
+
+    import agents
+
+    agent = agents.TabAgent(
+        tuning=[40, 45, 50, 55, 59, 64], num_frets=24
     )
-    out = capsys.readouterr().out
-    check(notes == [], "malformed MT3 tokens yield no notes")
-    check("mt3_token_skipped" in out, "malformed MT3 tokens are logged", out.strip()[:120])
+    bad = note_seq.NoteSequence.Note(
+        pitch=39,  # below the lowest open string (E2=40) -> no valid position
+        start_time=0.0,
+        end_time=0.5,
+        velocity=80,
+    )
+    good = note_seq.NoteSequence.Note(
+        pitch=64,  # E4, playable on the high-E string
+        start_time=0.5,
+        end_time=1.0,
+        velocity=80,
+    )
+    tab = agent.generate_tab([bad, good])
+    check(
+        len(tab) == 1,
+        "unplayable model note is skipped, playable note survives",
+        f"tab={tab}",
+    )
+    check(
+        39 in agent.last_skipped_notes,
+        "unplayable model note is reported in last_skipped_notes",
+        str(agent.last_skipped_notes),
+    )
 
 
 def main() -> int:
+    RESULTS.clear()
     simulations = [
         simulate_corrupt_user_memory,
         simulate_invalid_thresholds,
@@ -211,23 +286,21 @@ def main() -> int:
         simulate_transcription_backend_down,
         simulate_demucs_offline,
         simulate_unwritable_output,
+        simulate_malformed_basic_pitch_output,
+        simulate_basic_pitch_runtime_dependency_missing,
+        simulate_unplayable_model_notes,
     ]
-    for sim in simulations:
-        try:
-            sim()
-        except Exception as e:
-            check(False, sim.__name__, f"simulation raised {type(e).__name__}: {e}")
-
-    # Needs capsys; run separately through pytest-compatible capture.
-    import contextlib
-    import io
-
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        try:
-            simulate_malformed_mt3_tokens(type("C", (), {"readouterr": lambda self: type("R", (), {"out": buf.getvalue()})()})())  # type: ignore[arg-type]
-        except Exception as e:
-            check(False, "simulate_malformed_mt3_tokens", str(e))
+    # Importing app registers a shutdown cleanup. Ensure that the simulations
+    # neither use nor remove a running server's temp/output directories.
+    with (
+        tempfile.TemporaryDirectory(prefix="tab-failure-simulations-") as scratch,
+        patch.object(tempfile, "tempdir", scratch),
+    ):
+        for sim in simulations:
+            try:
+                sim()
+            except Exception as e:
+                check(False, sim.__name__, f"simulation raised {type(e).__name__}: {e}")
 
     failures = [r for r in RESULTS if not r[0]]
     for ok, name, detail in RESULTS:
