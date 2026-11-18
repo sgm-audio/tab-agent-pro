@@ -15,17 +15,19 @@ The transcription stack runs on CPU out of the box. GPU acceleration is
 available through :mod:`device` (CUDA, ROCm, Vulkan, MPS, DirectML).
 """
 
-import itertools
+from __future__ import annotations
+
 import math
 import os
 import shutil
 import subprocess  # nosec B404 — fixed command list, shell=False, used by Demucs CLI fallback
 import tempfile
+from dataclasses import dataclass
+from pathlib import Path
 
 import librosa
 import numpy as np
 import soundfile as sf
-import torch  # noqa: F401 — retained for callers that patch agents.torch
 from scipy.signal import butter, filtfilt
 
 from device import DeviceConfig, install_onnx_provider_override, resolve_device
@@ -34,11 +36,14 @@ from monitoring import get_logger, health
 
 # Basic Pitch imports (proven and reliable transcription backend)
 basic_pitch_predict = None
+BASIC_PITCH_MODEL: Path | None = None
 try:
+    from basic_pitch import ONNX_PRESENT, FilenameSuffix, build_icassp_2022_model_path
     from basic_pitch.inference import predict as _bp_predict
 
     basic_pitch_predict = _bp_predict
-    BASIC_PITCH_AVAILABLE = True
+    BASIC_PITCH_MODEL = build_icassp_2022_model_path(FilenameSuffix.onnx)
+    BASIC_PITCH_AVAILABLE = ONNX_PRESENT
 except ImportError:
     BASIC_PITCH_AVAILABLE = False
 
@@ -55,6 +60,28 @@ except ImportError:
 health.set_component("basic_pitch", "available" if BASIC_PITCH_AVAILABLE else "unavailable")
 health.set_component("demucs", "available" if DEMUCS_API_AVAILABLE else "unavailable")
 health.set_status("up")
+
+
+def _apply_cache_dir() -> str | None:
+    """Honour the documented CACHE_DIR env var for model/weight caches.
+
+    Demucs and Basic Pitch download model weights on first use; both consult
+    environment variables for their cache location. When ``CACHE_DIR`` is set
+    (via .env or the real environment) we point those caches at it so the
+    documented variable actually controls where weights are stored. Returns the
+    resolved cache directory, or ``None`` when unset.
+    """
+    cache_dir = os.environ.get("CACHE_DIR")
+    if not cache_dir:
+        return None
+    cache_dir = os.path.expanduser(cache_dir)
+    os.makedirs(cache_dir, exist_ok=True)
+    # HuggingFace hub (Basic Pitch ONNX model) and XDG-aware tools.
+    os.environ.setdefault("HF_HOME", cache_dir)
+    os.environ.setdefault("XDG_CACHE_HOME", cache_dir)
+    # Demucs stores downloaded checkpoints under a per-user dir.
+    os.environ.setdefault("DEMUCS_DIR", cache_dir)
+    return cache_dir
 
 
 # ============================================================================
@@ -81,8 +108,9 @@ class SplitterAgent:
         self.backend: str = config.backend
         self.label: str = config.label
         self.log = get_logger("splitter")
-        self.separation_mode = "unknown"
+        self.separation_mode: str | None = None
         os.makedirs(output_dir, exist_ok=True)
+        _apply_cache_dir()
         self.log.info(
             "splitter_init",
             device=self.device,
@@ -92,15 +120,15 @@ class SplitterAgent:
     def separate_stems(self, audio_path):
         """Separate audio into guitar and bass stems with graceful fallback."""
         file = os.path.basename(audio_path)
-        self.separation_mode = "unknown"
+        self.separation_mode = None
         self.log.info("demucs_start", file=file, device=self.device)
 
         if DEMUCS_API_AVAILABLE:
             try:
                 with metrics.track_stage("demucs_separation"):
                     result = self._separate_with_api(audio_path, file)
-                    self.separation_mode = "api"
                     health.set_component("demucs", "loaded")
+                    self.separation_mode = "demucs"
                     return result
             except Exception as e:
                 self.log.warning("demucs_api_failed", file=file, error=str(e))
@@ -110,26 +138,24 @@ class SplitterAgent:
         try:
             with metrics.track_stage("demucs_cli"):
                 result = self._separate_with_subprocess(audio_path, file)
-                self.separation_mode = "cli"
                 health.set_component("demucs", "loaded (CLI)")
+                self.separation_mode = "demucs"
                 return result
         except Exception as e:
             self.log.warning("demucs_all_failed", file=file, error=str(e))
             health.set_component("demucs", "unavailable")
-            result = self._raw_audio_fallback(audio_path, file)
-            self.separation_mode = "passthrough"
-            return result
+            return self._raw_audio_fallback(audio_path, file)
 
     def _raw_audio_fallback(self, audio_path, song_name):
         """Return raw audio as both guitar and bass stems (graceful degradation)."""
         self.log.info("demucs_raw_fallback", file=song_name)
         base_path = os.path.join(self.output_dir, "htdemucs", song_name)
         os.makedirs(base_path, exist_ok=True)
-
         other_path = os.path.join(base_path, "other.wav")
         bass_path = os.path.join(base_path, "bass.wav")
         shutil.copy2(audio_path, other_path)
         shutil.copy2(audio_path, bass_path)
+        self.separation_mode = "raw_fallback"
         return {"guitar": other_path, "bass": bass_path}
 
     @staticmethod
@@ -159,7 +185,7 @@ class SplitterAgent:
             shifts=1,
             overlap=0.25,
             split=True,
-            segment=10,
+            # Use the model's trained segment length.
             progress=True,
         )
 
@@ -167,7 +193,7 @@ class SplitterAgent:
 
         missing = {"other", "bass"} - set(separated)
         if missing:
-            raise ValueError(f"Demucs API missing required stems: {sorted(missing)}")
+            raise ValueError(f"Demucs API did not return required stems: {sorted(missing)}")
 
         # Use a fresh staging directory so older files cannot fill missing stems.
         base_path = tempfile.mkdtemp(prefix="demucs-api-", dir=self.output_dir)
@@ -197,27 +223,25 @@ class SplitterAgent:
 
     def _separate_with_subprocess(self, audio_path, song_name):
         """Fallback: Demucs via CLI subprocess."""
-        staging = tempfile.mkdtemp(prefix="demucs-cli-", dir=self.output_dir)
-        cmd = ["demucs", "-n", "htdemucs", "-o", staging, audio_path]
+        # An exit code alone does not prove stems exist. Read only files
+        # created in this attempt; a previous run may have the same basename.
+        cli_dir = tempfile.mkdtemp(prefix="demucs-cli-", dir=self.output_dir)
+        cmd = ["demucs", "-n", "htdemucs", "-d", self.device, "-o", cli_dir, audio_path]
         try:
-            subprocess.run(
-                cmd,
-                check=True,
-                capture_output=True,
-                text=True,
-            )  # nosec B603
-
-            # Demucs strips the source extension when naming its output folder.
-            base_path = os.path.join(staging, "htdemucs", os.path.splitext(song_name)[0])
-            paths = {
-                "guitar": os.path.join(base_path, "other.wav"),
-                "bass": os.path.join(base_path, "bass.wav"),
-            }
-            self._validate_stems(paths)
-            return paths
+            subprocess.run(cmd, check=True, capture_output=True, text=True)  # nosec B603
+            stem_dir = os.path.splitext(song_name)[0]
+            return self._checked_stems(os.path.join(cli_dir, "htdemucs", stem_dir))
         except Exception:
-            shutil.rmtree(staging, ignore_errors=True)
+            shutil.rmtree(cli_dir, ignore_errors=True)
             raise
+
+    def _checked_stems(self, base_path: str) -> dict[str, str]:
+        stems = {
+            "guitar": os.path.join(base_path, "other.wav"),
+            "bass": os.path.join(base_path, "bass.wav"),
+        }
+        self._validate_stems(stems)
+        return stems
 
     def process_guitars(self, guitar_stem_path):
         """
@@ -318,6 +342,7 @@ class EarAgent:
         self.label: str = config.label
         self.sample_rate = 16000
         self.log = get_logger("ear_agent")
+        _apply_cache_dir()
 
         health.set_component(
             "basic_pitch",
@@ -342,6 +367,7 @@ class EarAgent:
         frame_threshold: float = 0.3,
         min_note_duration: float = 0.05,
         min_pitch: int | None = None,
+        max_pitch: int | None = None,
     ) -> list:
         """
         Transcribe audio to MIDI notes.
@@ -355,6 +381,7 @@ class EarAgent:
         log.info("transcribe_start", file=file, target=target, device=self.device)
 
         # ── Try Basic Pitch ───────────────────────────────────────────
+        failure: Exception | None = None
         if BASIC_PITCH_AVAILABLE:
             try:
                 with metrics.track_stage("basic_pitch_transcription"):
@@ -365,6 +392,7 @@ class EarAgent:
                         frame_threshold,
                         min_note_duration,
                         min_pitch=min_pitch,
+                        max_pitch=max_pitch,
                     )
                 log.info(
                     "transcribe_done",
@@ -375,17 +403,23 @@ class EarAgent:
                 )
                 return result
             except Exception as e:
+                failure = e
                 log.warning("basic_pitch_failed", file=file, error=str(e))
 
-        # ── Nothing worked: raise error ──────────────────────────────
         log.error("transcribe_all_failed", file=file, target=target)
         health.record_request(success=False, details=f"transcribe: {file}")
-        msg = (
-            f"No transcription models available for {file}. "
-            "Install Basic Pitch (pip install basic-pitch) with its runtime "
-            "dependencies (mir_eval, resampy)."
-        )
-        raise RuntimeError(msg)
+        if isinstance(failure, ModuleNotFoundError):
+            msg = f"Basic Pitch dependency missing: {failure.name}. Check the runtime installation."
+        elif failure is not None:
+            msg = (
+                f"Basic Pitch could not transcribe {file}. Check the audio, ONNX model and runtime."
+            )
+        else:
+            msg = (
+                f"No transcription models available for {file}. "
+                "Install Basic Pitch with ONNX Runtime and its dependencies (mir_eval, resampy)."
+            )
+        raise RuntimeError(msg) from failure
 
     def _transcribe_with_basic_pitch(
         self,
@@ -395,6 +429,7 @@ class EarAgent:
         frame_threshold: float,
         min_note_duration: float,
         min_pitch: int | None = None,
+        max_pitch: int | None = None,
     ) -> list:
         """
         Transcribe using Basic Pitch (Spotify's proven ONNX model).
@@ -407,6 +442,7 @@ class EarAgent:
         try:
             _model_output, midi_data, _note_events = basic_pitch_predict(
                 audio_path,
+                model_or_model_path=BASIC_PITCH_MODEL,
                 onset_threshold=onset_threshold,
                 frame_threshold=frame_threshold,
                 minimum_note_length=int(min_note_duration * 1000),
@@ -418,7 +454,9 @@ class EarAgent:
             )
 
             notes = self._convert_prettymidi_to_noteseq(midi_data)
-            notes = self._filter_by_instrument_range(notes, target, min_pitch=min_pitch)
+            notes = self._filter_by_instrument_range(
+                notes, target, min_pitch=min_pitch, max_pitch=max_pitch
+            )
 
             health.set_component("basic_pitch", "loaded")
             log.info("basic_pitch_done", note_count=len(notes), target=target)
@@ -464,25 +502,27 @@ class EarAgent:
         notes: list,
         target: str,
         min_pitch: int | None = None,
+        max_pitch: int | None = None,
     ) -> list:
         """
         Filter notes by valid instrument range.
 
         Standard ranges:
         - Bass (5-string): B0 (23) to G4 (67)
-        - Guitar (6-string): E2 (40) to E6 (88), or lower when drop-tuned
-          (e.g. Drop D passes min_pitch=38)
-        """
+        - Guitar (6-string): E2 (40) to E6 (88)
 
+        Callers can supply both bounds from the actual tuning and fret count.
+        """
         target_lower = target.lower()
 
         if "bass" in target_lower:
-            default_min, max_pitch = 23, 67  # 5-string bass range
+            default_min, default_max = 23, 67  # 5-string bass range
         else:  # Guitar
-            default_min, max_pitch = 40, 88  # Standard guitar range
+            default_min, default_max = 40, 88  # Standard guitar range
 
         low_bound = default_min if min_pitch is None else min_pitch
-        filtered = [note for note in notes if low_bound <= note.pitch <= max_pitch]
+        high_bound = default_max if max_pitch is None else max_pitch
+        filtered = [note for note in notes if low_bound <= note.pitch <= high_bound]
 
         removed_count = len(notes) - len(filtered)
         if removed_count > 0:
@@ -499,16 +539,18 @@ class EarAgent:
         self,
         raw_notes: list,
         is_bass: bool = False,
+        max_pitch: int | None = None,
     ) -> list:
         """
         Clean transcription artifacts.
 
         Removes:
         - Ultra-short notes (<0.05s) - likely transcription errors
-        - Notes outside instrument range (bass > G4)
+        - Notes above the requested range (default for bass: above G4)
         - Duplicate notes at the same timestamp
         """
         cleaned = []
+        upper_bound = max_pitch if max_pitch is not None else (67 if is_bass else None)
         seen_pitches: dict = {}  # Track pitches by start time
 
         for note in raw_notes:
@@ -517,8 +559,7 @@ class EarAgent:
             if duration < 0.05:
                 continue
 
-            # Bass-specific: enforce upper limit
-            if is_bass and note.pitch > 67:
+            if upper_bound is not None and note.pitch > upper_bound:
                 continue
 
             # Remove duplicate notes at same time
@@ -556,24 +597,53 @@ class EarAgent:
 # STAGE 5: THE LUTHIER (Tablature generation)
 # ============================================================================
 
+# A chord is a group of notes whose onsets fall within this tolerance (it
+# matches the 50 ms grouping used when rendering columns). Two notes that land
+# in the same chord cannot share a string: one string produces one pitch at a
+# time, so a "chord" with two frets on the same string is physically impossible
+# to finger. This is enforced as a large transition penalty so the Viterbi DP
+# re-voices such collisions onto another string instead of emitting them.
+CHORD_TOLERANCE = 0.05
+SAME_STRING_CHORD_PENALTY = 1000.0
 
-TabState = tuple[tuple[int, int] | None, tuple[tuple[int, int, int], ...]]
+
+@dataclass(frozen=True, order=True, slots=True)
+class _TabNote:
+    start: float
+    pitch: int
+    end: float
+
+
+@dataclass(slots=True)
+class _PlacedNote:
+    index: int
+    position: dict[str, int]
+    previous: _PlacedNote | None
+
+
+@dataclass(slots=True)
+class _TabPath:
+    occupied: tuple[int, ...]  # active note index per string; -1 means free
+    tail: _PlacedNote | None
+    omitted: int = 0
+    cost: float = 0.0
+
+    def rank(self) -> tuple[int, float]:
+        return self.omitted, self.cost
 
 
 class TabAgent:
-    """
-    MIDI-to-tablature conversion using dynamic programming.
+    """Time-aware fingering search with hard string and fret-span constraints.
 
-    Features:
-    - Viterbi-style DP for optimal fingering paths
-    - Instrument-aware cost heuristics
-    - Technique detection (slides, hammer-ons, pull-offs)
-    - 5-string bass optimization (low-string preference)
-    - Configurable tuning support
-
-    Notes outside the instrument's range are skipped (and reported in
-    ``last_skipped_notes``) instead of discarding the whole track.
+    A string can carry one note at a time. Overlapping fretted notes must fit
+    within a conservative hand span (open strings don't occupy a finger). The
+    search prioritizes keeping notes over minimizing movement and bounds its
+    polyphonic frontier; it does not promise an optimal fingering or model
+    every physical constraint. Omitted notes are reported to callers.
     """
+
+    MAX_FRET_SPAN = 4
+    SEARCH_WIDTH = 128
 
     def __init__(
         self,
@@ -595,7 +665,7 @@ class TabAgent:
         self.num_strings = len(tuning)
         self.prefer_low_strings = prefer_low_strings
         self.last_skipped_notes: list[int] = []
-        self.last_unplayable_chords: list[dict] = []
+        self.last_skipped_events: list[dict] = []
 
     def get_valid_positions(self, midi_note: int) -> list[dict]:
         """
@@ -640,14 +710,22 @@ class TabAgent:
         # Base costs (tunable weights)
         cost = (fret_distance * 1.5) + (string_distance * 2.0)
 
-        # Legato/slide detection
+        # Prefer economical moves in fast monophonic passages.
         if 0 <= time_delta < 0.2:  # Fast transition
             if string_distance == 0:
-                # Same string = likely slide/hammer/pull
-                cost -= 5.0  # Encourage this path
+                cost -= 5.0
             else:
                 # String skip on fast run = awkward
                 cost += 5.0  # Penalize
+
+        # Chord feasibility: notes that are truly simultaneous (a chord, within
+        # the render grouping tolerance) must not collide on one string. The
+        # legato bonus above applies to short *sequential* transitions
+        # (slides/hammer-ons); a chord note on an already-sounding string is
+        # physically impossible, so penalise it heavily. The penalty dominates
+        # the legato bonus, steering the DP to re-voice the note elsewhere.
+        if 0 <= time_delta < CHORD_TOLERANCE and prev["string"] == curr["string"]:
+            cost += SAME_STRING_CHORD_PENALTY
 
         # 5-string bass heuristic: slight penalty for low fretted notes (1-4)
         # on the lowest strings (B0/E1, indices 0-1)
@@ -661,182 +739,141 @@ class TabAgent:
 
         return cost
 
-    def _record_tab_conflict(self, notes: list[dict], group: list[int], reason: str) -> list[dict]:
-        """Record a conflict and refuse to emit an incomplete or unplayable tab."""
-        start = notes[group[0]]["start"]
-        overlapping = [n["pitch"] for n in notes[: group[0]] if n["end"] > start]
-        conflict = {
-            "start_time": start,
-            "pitches": overlapping + [notes[i]["pitch"] for i in group],
-            "reason": reason,
-        }
-        self.last_unplayable_chords.append(conflict)
-        get_logger("tab_agent").warning("unplayable_tab", **conflict)
-        return []
+    @staticmethod
+    def _polyphonic_notes(notes: list[_TabNote]) -> list[bool]:
+        """Whether each event overlaps any other event (even one later omitted)."""
+        latest_end = -math.inf
+        flags = []
+        for i, note in enumerate(notes):
+            before = note.start < latest_end or (i > 0 and note.start == notes[i - 1].start)
+            after = i + 1 < len(notes) and (
+                notes[i + 1].start < note.end or notes[i + 1].start == note.start
+            )
+            flags.append(before or after)
+            latest_end = max(latest_end, note.end)
+        return flags
 
-    def generate_tab(
-        self,
-        midi_notes: list,
-        technique_sensitivity: float = 0.7,
-    ) -> list[dict]:
-        """Assign notes while retaining string occupancy for their full duration.
+    @staticmethod
+    def _keep_path(paths: dict[tuple, _TabPath], candidate: _TabPath) -> None:
+        """Merge paths with the same held strings and last note/position."""
+        tail = candidate.tail
+        key = (
+            (candidate.occupied, tail.index, tail.position["string"])
+            if tail
+            else (candidate.occupied, -1, -1)
+        )
+        current = paths.get(key)
+        if current is None or candidate.rank() < current.rank():
+            paths[key] = candidate
 
-        Simultaneous or near-simultaneous onsets (less than 50 ms apart) use
-        distinct strings and are rendered in one chord column. Active fretted
-        notes must fit within a conservative four-fret span; open strings do
-        not count toward that span. Impossible conflicts return no tab and are
-        recorded in ``last_unplayable_chords``. Search limits also fail closed.
+    def _assign_positions(
+        self, notes: list[_TabNote], positions: list[list[dict]], polyphonic: list[bool]
+    ) -> dict[int, dict[str, int]]:
+        paths = [_TabPath((-1,) * self.num_strings, None)]
+        for i, (note, choices) in enumerate(zip(notes, positions, strict=True)):
+            next_paths: dict[tuple, _TabPath] = {}
+            for path in paths:
+                occupied = tuple(
+                    (
+                        k
+                        if k >= 0 and (notes[k].end > note.start or notes[k].start == note.start)
+                        else -1
+                    )
+                    for k in path.occupied
+                )
+                # A skip is useful when retaining a note can block another one.
+                # Disjoint notes collapse to the original per-position DP.
+                if polyphonic[i] or not choices:
+                    self._keep_path(
+                        next_paths, _TabPath(occupied, path.tail, path.omitted + 1, path.cost)
+                    )
+                frets = [
+                    notes[k].pitch - self.tuning[string]
+                    for string, k in enumerate(occupied)
+                    if k >= 0 and notes[k].pitch > self.tuning[string]
+                ]
+                low, high = (
+                    (max(frets) - self.MAX_FRET_SPAN, min(frets) + self.MAX_FRET_SPAN)
+                    if frets
+                    else (0, self.num_frets)
+                )
+                prev = path.tail
+                for position in choices:
+                    string, fret = position["string"], position["fret"]
+                    if occupied[string] >= 0 or (fret and not low <= fret <= high):
+                        continue
+                    cost = self.calculate_cost(
+                        prev.position if prev else None,
+                        position,
+                        note.start - notes[prev.index].start if prev else 0.0,
+                    )
+                    self._keep_path(
+                        next_paths,
+                        _TabPath(
+                            occupied[:string] + (i,) + occupied[string + 1 :],
+                            _PlacedNote(i, position, prev),
+                            path.omitted,
+                            path.cost + cost,
+                        ),
+                    )
+            paths = sorted(next_paths.values(), key=_TabPath.rank)[: self.SEARCH_WIDTH]
 
-        ``technique_sensitivity`` remains accepted for API compatibility, but
-        note events alone cannot establish slide/hammer/pull technique. The
-        default ``pick`` value therefore means no technique evidence, not a
-        confirmed picked attack. Individually out-of-range notes retain the
-        legacy skip-and-report behavior in ``last_skipped_notes``.
+        placed = {}
+        node = min(paths, key=_TabPath.rank).tail
+        while node is not None:
+            placed[node.index] = node.position
+            node = node.previous
+        return placed
+
+    def generate_tab(self, midi_notes: list, technique_sensitivity: float = 0.7) -> list[dict]:
+        """Generate string/fret entries with timings; report unmatched input events.
+
+        A zero-duration event occupies a string at its onset. Otherwise notes
+        use half-open intervals, so a new note can begin exactly at release.
+        Note timing alone cannot identify technique. ``pick`` means unmarked,
+        not a confirmed picked attack; technique_sensitivity is retained for
+        API compatibility but does not alter annotations.
         """
         self.last_skipped_notes = []
-        self.last_unplayable_chords = []
-        if not midi_notes:
-            return []
+        self.last_skipped_events = []
+        notes = []
+        for note in midi_notes:
+            start = note.start_time
+            end = getattr(note, "end_time", start)
+            if not (math.isfinite(start) and math.isfinite(end)):
+                raise ValueError("Note start and end times must be finite")
+            notes.append(_TabNote(start, note.pitch, max(start, end)))
+        notes.sort()
 
-        notes: list[dict] = [
-            {"pitch": int(n.pitch), "start": float(n.start_time), "end": float(n.end_time)}
-            for n in midi_notes
-        ]
-        for note in notes:
-            if (
-                not math.isfinite(note["start"])
-                or not math.isfinite(note["end"])
-                or note["start"] < 0
-                or note["end"] <= note["start"]
-            ):
-                self.last_unplayable_chords.append(
+        positions = [self.get_valid_positions(n.pitch) for n in notes]
+        polyphonic = self._polyphonic_notes(notes)
+        assigned = self._assign_positions(notes, positions, polyphonic)
+        tab: list[dict] = []
+        for i, note in enumerate(notes):
+            if i not in assigned:
+                self.last_skipped_notes.append(note.pitch)
+                self.last_skipped_events.append(
                     {
-                        "start_time": note["start"],
-                        "pitches": [note["pitch"]],
-                        "reason": "invalid note timing",
+                        "pitch": note.pitch,
+                        "start_time": note.start,
+                        "end_time": note.end,
+                        "reason": "fingering_conflict" if positions[i] else "out_of_range",
                     }
                 )
-                get_logger("tab_agent").warning(
-                    "invalid_note_timing", **self.last_unplayable_chords[-1]
-                )
-                return []
+                continue
+            entry = {
+                **assigned[i],
+                "start_time": note.start,
+                "end_time": note.end,
+                "technique": "pick",
+            }
+            tab.append(entry)
 
-        positions_by_note = [(note, self.get_valid_positions(note["pitch"])) for note in notes]
-        self.last_skipped_notes = [
-            note["pitch"] for note, positions in positions_by_note if not positions
-        ]
-        playable = [(note, positions) for note, positions in positions_by_note if positions]
         if self.last_skipped_notes:
             get_logger("tab_agent").warning(
                 "unplayable_notes_skipped",
                 pitches=sorted(set(self.last_skipped_notes)),
                 skipped=len(self.last_skipped_notes),
-                kept=len(playable),
+                kept=len(tab),
             )
-        if not playable:
-            return []
-
-        playable.sort(key=lambda item: item[0]["start"])
-        notes = [note for note, _ in playable]
-        layers = [positions for _, positions in playable]
-        groups: list[list[int]] = []
-        for i, note in enumerate(notes):
-            if groups and note["start"] - notes[groups[-1][0]]["start"] < 0.05:
-                groups[-1].append(i)
-            else:
-                groups.append([i])
-
-        # A state keeps all still-sounding (note index, string, fret) assignments
-        # and the last position, which is needed by the transition cost. States
-        # with identical future-relevant data can be safely merged.
-        states: dict[TabState, tuple[float, int]] = {(None, ()): (0.0, 0)}
-        nodes: list[tuple[int, tuple[tuple[int, int, int], ...]]] = [(-1, ())]
-        max_states, max_transitions = 10000, 250000
-        for group in groups:
-            if len(group) > self.num_strings:
-                return self._record_tab_conflict(notes, group, "too many simultaneous notes")
-            options = []
-            for positions in itertools.product(*(layers[i] for i in group)):
-                if len({p["string"] for p in positions}) != len(positions):
-                    continue
-                frets = [p["fret"] for p in positions if p["fret"] > 0]
-                if frets and max(frets) - min(frets) > 4:
-                    continue
-                options.append(positions)
-            if not options:
-                return self._record_tab_conflict(notes, group, "no playable chord assignment")
-
-            next_states: dict[TabState, tuple[float, int]] = {}
-            transitions = 0
-            start = notes[group[0]]["start"]
-            end_of_group = notes[group[-1]]["start"]
-            for (last, active), (cost, parent) in states.items():
-                active = tuple(item for item in active if notes[item[0]]["end"] > start)
-                for positions in options:
-                    transitions += 1
-                    if transitions > max_transitions:
-                        return self._record_tab_conflict(
-                            notes, group, "assignment search limit exceeded"
-                        )
-                    valid = True
-                    for j, index in enumerate(group):
-                        now = notes[index]["start"]
-                        sounding = [(s, f) for idx, s, f in active if notes[idx]["end"] > now]
-                        sounding.extend(
-                            (positions[k]["string"], positions[k]["fret"])
-                            for k in range(j)
-                            if notes[group[k]]["end"] > now
-                        )
-                        pos = positions[j]
-                        if any(s == pos["string"] for s, _ in sounding):
-                            valid = False
-                            break
-                        frets = [f for _, f in sounding if f > 0]
-                        if pos["fret"] > 0:
-                            frets.append(pos["fret"])
-                        if frets and max(frets) - min(frets) > 4:
-                            valid = False
-                            break
-                    if not valid:
-                        continue
-                    held = tuple(item for item in active if notes[item[0]]["end"] > end_of_group)
-                    held += tuple(
-                        (index, pos["string"], pos["fret"])
-                        for index, pos in zip(group, positions, strict=True)
-                        if notes[index]["end"] > end_of_group
-                    )
-                    last_position = positions[-1]
-                    key: TabState = ((last_position["string"], last_position["fret"]), held)
-                    elapsed = start - notes[group[0] - 1]["start"] if group[0] else 0.0
-                    previous = {"string": last[0], "fret": last[1]} if last else None
-                    new_cost = cost + self.calculate_cost(previous, positions[0], elapsed)
-                    if key not in next_states or new_cost < next_states[key][0]:
-                        assignment = tuple(
-                            (index, pos["string"], pos["fret"])
-                            for index, pos in zip(group, positions, strict=True)
-                        )
-                        nodes.append((parent, assignment))
-                        next_states[key] = (new_cost, len(nodes) - 1)
-            if not next_states:
-                return self._record_tab_conflict(
-                    notes, group, "overlapping notes cannot be assigned"
-                )
-            if len(next_states) > max_states:
-                return self._record_tab_conflict(notes, group, "assignment search limit exceeded")
-            states = next_states
-
-        _, node = min(states.values(), key=lambda value: value[0])
-        chosen: list[tuple[int, int, int]] = []
-        while node:
-            node, assignment = nodes[node]
-            chosen.extend(assignment)
-        chosen.sort(key=lambda item: item[0])
-        return [
-            {
-                "string": string,
-                "fret": fret,
-                "technique": "pick",
-                "start_time": notes[index]["start"],
-            }
-            for index, string, fret in chosen
-        ]
+        return tab

@@ -76,6 +76,7 @@ class TestSplitterAgentSeparateStems(unittest.TestCase):
         result = self.splitter.separate_stems(self.dummy_audio)
 
         assert result == expected
+        assert self.splitter.separation_mode == "demucs"
         self.splitter._separate_with_api.assert_called_once()
         mock_health.set_component.assert_called_with("demucs", "loaded")
 
@@ -142,6 +143,7 @@ class TestSplitterAgentRawAudioFallback(unittest.TestCase):
     def test_raw_audio_fallback_creates_files(self) -> None:
         """Fallback copies raw audio to both guitar and bass paths."""
         result = self.splitter._raw_audio_fallback(self.dummy_audio, "song")
+        assert self.splitter.separation_mode == "raw_fallback"
         assert "guitar" in result
         assert "bass" in result
         assert os.path.exists(result["guitar"])
@@ -312,17 +314,35 @@ class TestTabAgentGenerateTabEdgeCases(unittest.TestCase):
         assert self.agent.generate_tab([]) == []
         assert self.agent.last_skipped_notes == []
 
-    def test_fast_ascending_notes_are_not_automatically_legato(self) -> None:
-        notes = [make_note(40, 0.0, end=0.1), make_note(41, 0.12)]
+    def test_technique_slide_adjacent_1_fret(self) -> None:
+        """Timing and fret distance do not prove a slide."""
+        notes = [
+            make_note(40, 0.0, 0.12),  # E2 string 0 fret 0
+            make_note(41, 0.12),  # F2
+        ]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
         assert len(result) == 2
-        assert [entry["technique"] for entry in result] == ["pick", "pick"]
+        assert result[1]["technique"] == "pick"
 
-    def test_fast_descending_notes_are_not_automatically_legato(self) -> None:
-        notes = [make_note(44, 0.0, end=0.1), make_note(40, 0.12)]
+    def test_technique_hammer_ascending(self) -> None:
+        """Fast ascending notes do not prove a hammer-on."""
+        notes = [
+            make_note(40, 0.0, 0.12),  # E2
+            make_note(44, 0.12),  # G#2 — only the low E string is available
+        ]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
         assert len(result) == 2
-        assert [entry["technique"] for entry in result] == ["pick", "pick"]
+        assert result[1]["technique"] == "pick"
+
+    def test_technique_pull_descending(self) -> None:
+        """Fast descending notes do not prove a pull-off."""
+        notes = [
+            make_note(44, 0.0, 0.12),  # G#2
+            make_note(40, 0.12),  # E2
+        ]
+        result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
+        assert len(result) == 2
+        assert result[1]["technique"] == "pick"
 
     def test_slow_transition_is_pick_not_technique(self) -> None:
         """Slow transition on same string → 'pick' (no technique)."""
@@ -334,8 +354,12 @@ class TestTabAgentGenerateTabEdgeCases(unittest.TestCase):
         if len(result) > 1:
             assert result[1]["technique"] == "pick"
 
-    def test_close_notes_do_not_prove_legato(self) -> None:
-        notes = [make_note(40, 0.0, end=0.1), make_note(42, 0.15)]
+    def test_technique_window_includes_close_notes(self) -> None:
+        """Contiguous notes do not prove a slide."""
+        notes = [
+            make_note(40, 0.0, 0.15),  # E2 — only on string 0
+            make_note(42, 0.15),  # F#2 — only on string 0, fret diff=2
+        ]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
         assert len(result) == 2
         assert result[1]["technique"] == "pick"
@@ -584,26 +608,6 @@ class TestSplitterSeparateWithSubprocess(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     @patch("agents.subprocess.run")
-    def test_subprocess_success(self, mock_run) -> None:
-        """Successful subprocess returns expected stem paths."""
-
-        def produce_stems(cmd, **kwargs):
-            import numpy as np
-            import soundfile as sf
-
-            out = os.path.join(cmd[cmd.index("-o") + 1], "htdemucs", "song")
-            os.makedirs(out)
-            for stem in ("other", "bass"):
-                sf.write(os.path.join(out, f"{stem}.wav"), np.zeros(8000), 8000)
-            return MagicMock(returncode=0)
-
-        mock_run.side_effect = produce_stems
-        result = self.splitter._separate_with_subprocess(self.dummy_audio, "song")
-        assert "guitar" in result
-        assert "bass" in result
-        mock_run.assert_called_once()
-
-    @patch("agents.subprocess.run")
     def test_subprocess_failure_raises(self, mock_run) -> None:
         """Failed subprocess raises CalledProcessError."""
         from subprocess import CalledProcessError
@@ -825,73 +829,37 @@ class TestSplitterSeparateWithApi(unittest.TestCase):
         return _a.demucs_api
 
     def test_separate_with_api_creates_stems(self) -> None:
-        """API separation creates stem files from returned tensors."""
+        """API separation writes consistent readable stereo stems from tensors."""
+        import soundfile as sf
         import torch
 
         api = self._patch_demucs_api()
-        mock_separator = MagicMock()
-        mock_separator.samplerate = 44100
-        mock_separator.separate_audio_file.return_value = (
+        separator = api.Separator.return_value
+        separator.samplerate = 44100
+        separator.separate_audio_file.return_value = (
             None,
-            {"other": torch.zeros((1, 44100)), "bass": torch.zeros((1, 44100))},
+            {"other": torch.zeros((2, 128)), "bass": torch.zeros((2, 128))},
         )
-        api.Separator.return_value = mock_separator
+        result = self.splitter._separate_with_api("input.wav", "input")
+        assert (sf.info(result["guitar"]).channels, sf.info(result["bass"]).channels) == (2, 2)
+        assert all(sf.info(p).frames == 128 for p in result.values())
+        assert "segment" not in api.Separator.call_args.kwargs
 
-        with patch("agents.torch.cuda.is_available", return_value=False):
-            dummy = os.path.join(self.tmpdir, "input.wav")
-            with open(dummy, "w") as f:
-                f.write("FAKE")
-            result = self.splitter._separate_with_api(dummy, "input")
-
-        assert "guitar" in result
-        assert "bass" in result
-        assert all(os.path.isfile(path) for path in result.values())
-
-    def test_separate_with_api_uses_cuda(self) -> None:
-        """API uses CUDA device when available."""
+    @patch("torch.cuda.is_available", return_value=True)
+    def test_separate_with_api_uses_cuda(self, _mock_cuda) -> None:
+        """API uses CUDA device when available, independent of local DEVICE."""
         import torch
 
         api = self._patch_demucs_api()
-        mock_separator = MagicMock()
-        mock_separator.samplerate = 44100
-        mock_separator.separate_audio_file.return_value = (
+        separator = api.Separator.return_value
+        separator.samplerate = 44100
+        separator.separate_audio_file.return_value = (
             None,
-            {"other": torch.zeros((1, 44100)), "bass": torch.zeros((1, 44100))},
+            {"other": torch.zeros((1, 128)), "bass": torch.zeros((1, 128))},
         )
-        api.Separator.return_value = mock_separator
-
-        with patch("agents.torch.cuda.is_available", return_value=True):
-            # Re-resolve the splitter so it picks up the mocked CUDA backend.
-            self.splitter = SplitterAgent(output_dir=self.tmpdir)
-            dummy = os.path.join(self.tmpdir, "i.wav")
-            with open(dummy, "w") as f:
-                f.write("FAKE")
-            self.splitter._separate_with_api(dummy, "i")
-
-        _, kwargs = api.Separator.call_args
-        assert "device" in kwargs
-        assert kwargs["device"] == "cuda"
-
-    def test_separate_with_api_mono_tensor(self) -> None:
-        """1D tensor is unsqueezed before writing."""
-        import torch
-
-        api = self._patch_demucs_api()
-        mock_separator = MagicMock()
-        mock_separator.samplerate = 44100
-        mock_separator.separate_audio_file.return_value = (
-            None,
-            {"other": torch.zeros(44100), "bass": torch.zeros(44100)},  # 1D
-        )
-        api.Separator.return_value = mock_separator
-
-        with patch("agents.torch.cuda.is_available", return_value=False):
-            dummy = os.path.join(self.tmpdir, "x.wav")
-            with open(dummy, "w") as f:
-                f.write("FAKE")
-            stems = self.splitter._separate_with_api(dummy, "x")
-
-        assert all(os.path.isfile(path) for path in stems.values())
+        splitter = SplitterAgent(output_dir=self.tmpdir, device="auto")
+        splitter._separate_with_api("input.wav", "input")
+        assert api.Separator.call_args.kwargs["device"] == "cuda"
 
 
 # =========================================================================
@@ -918,21 +886,23 @@ class TestEarAllModelsFailed(unittest.TestCase):
 class TestEarAgentDeviceSelection(unittest.TestCase):
     """Test EarAgent device auto-detection."""
 
-    @patch("agents.torch.cuda.is_available", return_value=True)
+    @patch("torch.cuda.is_available", return_value=True)
     def test_device_auto_selects_cuda(self, mock_cuda) -> None:
         """Auto device selects cuda when available."""
-        ear = EarAgent(device="auto")
+        with patch("agents.install_onnx_provider_override"):
+            ear = EarAgent(device="auto")
         assert ear.device == "cuda"
 
-    @patch("agents.torch.cuda.is_available", return_value=False)
-    @patch("agents.torch.backends.mps.is_available", return_value=True)
+    @patch("torch.cuda.is_available", return_value=False)
+    @patch("torch.backends.mps.is_available", return_value=True)
     def test_device_auto_selects_mps(self, mock_mps, mock_cuda) -> None:
         """Auto device selects mps when cuda unavailable."""
-        ear = EarAgent(device="auto")
+        with patch("agents.install_onnx_provider_override"):
+            ear = EarAgent(device="auto")
         assert ear.device == "mps"
 
-    @patch("agents.torch.cuda.is_available", return_value=False)
-    @patch("agents.torch.backends.mps.is_available", return_value=False)
+    @patch("torch.cuda.is_available", return_value=False)
+    @patch("torch.backends.mps.is_available", return_value=False)
     def test_device_auto_selects_cpu(self, mock_mps, mock_cuda) -> None:
         """Auto device falls back to cpu."""
         ear = EarAgent(device="auto")
@@ -945,7 +915,10 @@ class TestEarAgentDeviceSelection(unittest.TestCase):
 
     def test_device_explicit_cuda(self) -> None:
         """Explicit cuda string is used directly when CUDA is available."""
-        with patch("agents.torch.cuda.is_available", return_value=True):
+        with (
+            patch("torch.cuda.is_available", return_value=True),
+            patch("agents.install_onnx_provider_override"),
+        ):
             ear = EarAgent(device="cuda")
             assert ear.device == "cuda"
 

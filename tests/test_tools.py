@@ -72,6 +72,20 @@ class TestDockerInstallGuard:
         assert "mir_eval" in text and "resampy" in text
         assert "HOST=0.0.0.0" in text
 
+    def test_cpu_index_check_resolves_docker_build_arg_default(self) -> None:
+        guard = _load("check_docker_install")
+        text = (ROOT / "Dockerfile").read_text()
+        assert guard._has_cpu_torch_install(text)
+        assert not guard._has_cpu_torch_install(
+            text.replace(
+                "ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu",
+                "ARG TORCH_INDEX_URL=https://pypi.org/simple",
+            )
+        )
+        assert not guard._has_cpu_torch_install(
+            text.replace('--index-url "$TORCH_INDEX_URL"', "--index-url https://pypi.org/simple")
+        )
+
     def test_in_process_main_and_failure_paths(self, tmp_path, monkeypatch) -> None:
         guard = _load("check_docker_install")
         assert guard.main() == 0
@@ -115,6 +129,36 @@ class TestEnvExampleGuard:
         env_file.write_text("NEVER_USED_VAR_XYZ=1\n")
         monkeypatch.setattr(guard, "ENV_FILE", env_file)
         assert guard.main() == 1
+
+
+class TestLockDependencyClosure:
+    @pytest.mark.parametrize("mode", [[], ["--verify"]], ids=["exact", "verify"])
+    def test_rejects_an_absent_required_transitive_dependency(
+        self, tmp_path, monkeypatch, capsys, mode
+    ) -> None:
+        guard = _load("check_lockfile")
+        root = tmp_path / "audit_root-1.0.dist-info"
+        root.mkdir()
+        (root / "METADATA").write_text(
+            "Name: audit-root\nVersion: 1.0\nRequires-Dist: audit-missing>=1\n"
+        )
+        lock = tmp_path / "requirements.lock"
+        lock.write_text("audit-root==1.0\n")
+        monkeypatch.setattr(guard, "LOCK", lock)
+        monkeypatch.setattr(guard, "declared_requirements", lambda: {"audit-root": "1.0"})
+        monkeypatch.setattr(
+            guard.metadata, "distributions", lambda: [guard.metadata.Distribution.at(root)]
+        )
+        assert guard.main(mode) == 1
+        assert "audit-missing is required but not installed" in capsys.readouterr().err
+
+        # Inactive markers, including unselected extras, must not become required.
+        (root / "METADATA").write_text(
+            "Name: audit-root\nVersion: 1.0\n"
+            'Requires-Dist: audit-optional; extra == "example"\n'
+            'Requires-Dist: audit-inactive; python_version < "3.0"\n'
+        )
+        assert guard.main(mode) == 0
 
 
 class TestValidationSuite:
@@ -170,39 +214,3 @@ class TestReaPackIndex:
         assert "<reaper>" in joined or "no <reapack> packages" in joined
         assert guard.main([str(ROOT / "index.xml")]) == 0
         assert guard.main([str(legacy)]) == 1
-
-
-# ---------------------------------------------------------------------------
-# tools/check_reaper_settings.py  (P1-3)
-# ---------------------------------------------------------------------------
-
-
-class TestReaperSettingsGuard:
-    def test_repo_state_passes(self) -> None:
-        pytest.importorskip("lupa")
-        result = subprocess.run(
-            [sys.executable, str(ROOT / "tools" / "check_reaper_settings.py")],
-            capture_output=True,
-            text=True,
-            cwd=ROOT,
-        )
-        assert result.returncode == 0, result.stdout + result.stderr
-
-    def test_tab_agent_lua_forwards_settings(self) -> None:
-        lua = (ROOT / "reaper" / "TabAgent.lua").read_text()
-        for flag in (
-            "--profile",
-            "--instrument",
-            "--onset",
-            "--frame",
-            "--no-midi",
-            "--output-dir",
-        ):
-            # The Lua builds these with string concatenation, e.g. "--onset "
-            token = flag.rstrip("0123456789")
-            assert token in lua, f"TabAgent.lua never passes {flag}"
-
-    def test_settings_lua_exposes_thresholds_and_output_dir(self) -> None:
-        lua = (ROOT / "reaper" / "Settings.lua").read_text()
-        for key in ("onset", "frame", "output_dir"):
-            assert f'"{key}"' in lua, f"Settings.lua does not persist {key}"

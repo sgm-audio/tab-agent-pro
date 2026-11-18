@@ -5,10 +5,8 @@
 # `requirements.txt` is the declared, resolver-facing dependency list. That list
 # is deliberately installed in two steps (see Dockerfile / CI) because
 # basic-pitch declares `tensorflow` on Linux even though the code uses the ONNX
-# backend — installing it for real would add ~1 GB and pull in a tree of
-# packages (such as tensorflow and keras) that are not needed by the ONNX
-# backend. Some dependencies such as pillow and protobuf also arrive through
-# other packages and are shipped; this lock includes them for security audits.
+# backend. The TensorFlow/Keras dependencies are not shipped; Pillow comes
+# from Gradio and is part of this lock.
 #
 # This file is the lock for what we actually install and ship. It is checked in
 # by tools/check_lockfile.py, which regenerates the list from a clean
@@ -18,7 +16,7 @@
 #   python tools/check_lockfile.py --write
 #
 # Scope: this is the *runtime* closure only - the declared dependencies plus
-# everything they transitively require (131 packages). Lint, test and audit
+# their transitive dependencies. Lint, test and audit
 # tooling (ruff, black, mypy, pytest, bandit, pip-audit, coverage, lupa ...) is
 # deliberately absent: it is not installed in the image.
 #
@@ -26,7 +24,9 @@
 #
 # NOTE: torch/torchaudio come from the CPU-only index:
 #   pip install torch==2.5.1 torchaudio==2.5.1 \
-#       --index-url https://pypi.org/simple
+#       --index-url https://download.pytorch.org/whl/cpu
+#
+--index-url https://pypi.org/simple
 absl-py==2.5.1
 annotated-doc==0.0.5
 annotated-types==0.8.0
@@ -63,6 +63,7 @@ httpx==0.28.1
 httpx2==2.16.0
 huggingface-hub==2.4.0
 idna==3.20
+importlib-resources==7.1.0
 intervaltree==3.2.1
 ipython==8.29.0
 jedi==0.20.1
@@ -96,7 +97,7 @@ pexpect==4.9.0
 pillow==13.0.0
 platformdirs==4.14.5
 pooch==1.9.0
-pretty-midi==0.2.10
+pretty-midi==0.2.11.post0
 prompt-toolkit==3.0.53
 protobuf==7.36.2
 ptyprocess==0.7.0
@@ -118,18 +119,17 @@ safetensors==0.8.0
 scikit-learn==1.9.1
 scipy==1.17.1
 semantic-version==2.10.0
+setuptools==80.10.2
 shellingham==1.5.4
 six==1.17.0
 sortedcontainers==2.4.0
 soundfile==0.12.1
 soxr==1.1.0
-
 sphn==0.2.1
 stack-data==0.6.3
 starlette==1.10.0
 sympy==1.13.1
 threadpoolctl==3.8.0
-tomli==2.5.0
 tomlkit==0.14.0
 torch==2.5.1
 torchaudio==2.5.1

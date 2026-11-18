@@ -2,9 +2,22 @@
 
 Audited branch base `a4814b2` (2026-11-18). This is a test audit, not a certification of transcription accuracy or REAPER safety.
 
-**Product-fix follow-up:** POSIX shell arguments are single-quoted; Windows inputs containing unsafe shell characters fail closed. REAPER uses an exclusively created per-run output directory and imports only on success. Tab assignment retains sustained-string occupancy across onset groups, applies a conservative four-fret span, and fails closed on conflicts, invalid timing or search limits. `pick` is an unverified default, not proof of a picked note; legato inference is disabled. Suno postprocessing preserves octave pairs and high pitches, although it still quantizes timing. Demucs API and CLI paths validate fresh, readable, nonempty, consistent, finite stems; when both fail, CLI/GUI warn that the full mix is used instead. The four remaining strict xfails and the two fixed earlier are now ordinary passing regressions. These fixes do not certify physical playability or separation quality, and real REAPER/Windows execution, real Demucs, GPU and labelled full-mix accuracy remain unverified. The original audit and earlier follow-up below describe historical pre-fix states.
+This records the independent PR #11 audit. The findings and counts below describe that
+snapshot. See [the combined audit](TEST_AUDIT.md) for current results, test names and
+commands. The merged suite uses `tests/test_reaper_contract.py` for Lua/CLI checks and
+requires `tests/test_model_inference.py` in the default CI suite.
 
-**CI follow-up:** The original lint, formatting, type-check, Docker/env guard, quick-validation and failure-simulator issues described below have since been addressed on this branch. The index pin was independently confirmed to exist remotely and fetched for local testing. The lock now includes the transitive `huggingface-hub` dependency and updates Gradio, Pillow and Tornado to address unaccepted security advisories; obsolete Pillow exceptions were removed. Local results after these changes: 287 passed, 2 skipped, 6 xfailed; real CPU inference 2 passed; failure simulator 15/15. The six strict xfails remain unresolved product defects; these follow-up fixes do not make those safety checks pass.
+**Product-fix follow-up:** Tab search on current main reports individually omitted
+notes and preserves them in MIDI. The merge retains that explicit partial-tab
+contract rather than suppressing every conflicted track. Legato labels are no
+longer inferred from note timing, and Suno note postprocessing preserves
+high notes and octave pairs. Demucs stems are checked for valid, consistent,
+finite audio in fresh staging directories. REAPER runs in a fresh session
+directory and imports only files reported by the successful invocation. The
+coverage includes synthetic and mocked cases; it does not establish real
+Demucs separation quality or real REAPER/Windows execution.
+
+**PR #11 CI follow-up:** The original lint, formatting, type-check, Docker/env guard, quick-validation and failure-simulator issues described below have since been addressed on this branch. The index pin was independently confirmed to exist remotely and fetched for local testing. The lock now includes the transitive `huggingface-hub` dependency and updates Gradio, Pillow and Tornado to address unaccepted security advisories; obsolete Pillow exceptions were removed. Local results after these changes: 287 passed, 2 skipped, 6 xfailed; real CPU inference 2 passed; failure simulator 15/15. The six strict xfails remain unresolved product defects; these follow-up fixes do not make those safety checks pass.
 
 ## Re-verification
 
@@ -17,7 +30,7 @@ Audited branch base `a4814b2` (2026-11-18). This is a test audit, not a certific
 
 ## Findings and executable regressions
 
-`tests/test_transcription_safety.py`, `tests/test_multitrack_contract.py`, `tests/test_reaper_safety.py`, and `tests/test_real_inference.py` implement the following historical audit regressions. Labels and descriptions in this table reflect the original pre-fix state; the six former strict xfails are now passing tests as described in the follow-up above. Prioritize P0 before relying on generated tabs or REAPER automation.
+`tests/test_transcription_safety.py`, `tests/test_multitrack_contract.py`, `tests/test_reaper_safety.py`, and `tests/test_real_inference.py` implement the following. The six known-bug tests are **strict xfail**, deliberately visible in CI: they are not passing safety guarantees. Remove each marker when its underlying behavior is fixed; an unexpected pass fails the run. Prioritize P0 before relying on generated tabs or REAPER automation.
 
 | Priority / test | Required assertion and why |
 |---|---|
@@ -37,21 +50,9 @@ Audited branch base `a4814b2` (2026-11-18). This is a test audit, not a certific
 | P0 `test_settings_gui_to_lua_command_to_cli_parser` | Execute Settings.lua, persist chosen options into ExtState, execute TabAgent.lua, parse the actual captured POSIX argv with the real CLI and verify threshold precedence, instrument, profile, paths with spaces and export flags. This spans the missing Settings.lua boundary but uses a REAPER shim, not real REAPER. |
 | P1 `test_real_basic_pitch_cpu_transcribes_known_tone` and `test_real_basic_pitch_cpu_silence_does_not_invent_notes` | With opt-in enabled, run the real packaged Basic Pitch ONNX model on generated A4 and silence, assert a plausible A4 and no silent-audio notes. Both passed locally. Tone tolerance is a smoke oracle, not a measure of music transcription accuracy. |
 
-## Original proposed tests (priority ordered)
+## Next tests to implement (priority ordered)
 
-These recommendations and weakness descriptions are from the original audit. Some cases are now implemented, but each broader proposal still needs the full coverage described below; see the follow-up at the top for current behavior.
-
-Recent additions include:
-
-| Test | What it asserts | Why prior coverage was weak |
-|---|---|---|
-| `test_sustained_path_matches_brute_force_feasible_minimum` | For a synthetic staggered overlap, independently enumerate valid string/fret paths and compare the minimum cost. | The original monophonic oracle ignored duration and could not detect collisions across onset groups. |
-| `test_overlapping_notes_are_jointly_assigned_and_keep_original_pitches` | A long note remains on a different string from later notes across multiple groups, preserving all pitches. | Adjacent-group-only checking would miss long sustains or reject feasible solutions. |
-| `test_invalid_note_times_fail_closed_with_a_reason` | Zero, reversed and non-finite times suppress the tab and identify invalid timing. | Earlier fixtures often had invalid default end times, hiding missing validation. |
-| `test_cli_rejects_invalid_or_stale_stems` | Mocked CLI success cannot reuse old stems or accept missing, empty, corrupt, mismatched or non-finite PCM. | Previous subprocess mocks returned success without producing usable audio. |
-| `test_api_invalid_audio_falls_back_to_valid_cli` | A mocked API producing NaN audio falls back to a CLI mock that produces valid synthetic PCM, and reports the actual backend. | Prior mocked API tests only checked write calls, not outputs or fallback provenance. |
-| `test_process_audio_warns_when_demucs_uses_passthrough` | The GUI warns that the full mix, not separated stems, was used. | Health state alone did not tell the user their output was degraded. |
-| `test_suno_processing_preserves_high_notes_and_octaves` | Synthetic high and octave notes survive the public postprocessor. | Earlier tests enforced destructive private heuristics without musical ground truth. |
+Each is a proposed test, not a claim that the current product already meets it.
 
 | Priority / proposed name | Must assert | Why the existing suite is weak |
 |---|---|---|
@@ -69,7 +70,7 @@ Recent additions include:
 ## CI and model policy
 
 * Fast PR tests must run without network downloads and show skipped, xfailed and failed counts (`pytest -ra`, with strict xfails); report application-only **branch** coverage separately from tests/tools. Coverage is a diagnostic, never a quality or accuracy gate by itself.
-* The new CI step sets `TAB_AGENT_REAL_INFERENCE=1` and executes the unmocked CPU Basic Pitch tests. When the flag is set, absent Basic Pitch/runtime/model or inference failure is a failure, not an import skip. Without the flag, local lightweight runs report an explicit skip. The original guard failures noted above have since been addressed; verify the hosted CI run reaches this step.
+* PR #11 ran unmocked CPU Basic Pitch tests in a separate opt-in invocation. In the combined suite, CPU inference runs in default pytest and needs no opt-in; missing Basic Pitch, ONNX Runtime or model weights fails the gate.
 * Add a separate scheduled/release full-inference job using an offline, version-pinned and checksum-verified Demucs weight cache, pinned Basic Pitch/ONNX, and a versioned labelled corpus. Provision weights **before** the test; block network during execution. If a required model, fixture or runtime is missing, fail the job, not skip or use raw passthrough as a successful Demucs test. Record model/fixture hashes, backend, thresholds, timings, event metrics and skips as artifacts. Keep large licensed audio/weights out of Git, with explicit acquisition and licensing instructions.
 * GPU is optional on ordinary PR runners: report an explicit skip with reason, while CPU real inference remains mandatory. A dedicated GPU-labelled scheduled/release runner must fail if hardware/provider/weights are missing, verify actual ONNX and Demucs GPU execution (not just device selection), and compare toleranced CPU results. A provider installed but silently falling back to CPU is not GPU coverage. Never let a skipped GPU lane or passthrough satisfy the real-inference gate.
-* The optional tests can be reproduced with `TAB_AGENT_REAL_INFERENCE=1 python -m pytest -q -o addopts='' tests/test_real_inference.py`; deterministic safety tests with `python -m pytest -q -ra -o addopts='' tests/test_transcription_safety.py tests/test_multitrack_contract.py tests/test_reaper_safety.py`. `lupa` is required for the REAPER shim; skipped shim tests do not substitute for a REAPER integration run.
+* In the combined suite, rerun CPU inference with `python -m pytest -m basic_pitch_model -ra`, or Lua/CLI checks with `python tools/check_reaper_settings.py`. `lupa` is required for the REAPER shim, which does not substitute for a native REAPER integration run.

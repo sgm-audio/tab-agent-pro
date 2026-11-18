@@ -249,6 +249,8 @@ class TestInstrumentContract:
         monkeypatch.setattr(main, "process_suno_audio", lambda *a, **k: ("x.wav", False, {}))
 
         class _Splitter:
+            separation_mode = "demucs"
+
             def __init__(self, *a, **k) -> None:
                 pass
 
@@ -296,7 +298,7 @@ class _NoopPost:
 
 class _NoopTab:
     def __init__(self, *a, **k) -> None:
-        pass
+        self.last_skipped_events: list[dict] = []
 
     def generate_tab(self, notes, technique_sensitivity=0.7):
         return []

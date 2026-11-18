@@ -2,25 +2,25 @@
 #
 # Format:  <ADVISORY-ID>  <EXPIRY YYYY-MM-DD>  <reason>
 #
-# Enforced by tools/check_vulns.py in CI. An entry that passes its expiry date
-# fails the build, so nothing can be swept under the rug indefinitely. Do not
-# add entries without a concrete reason and a reviewer.
+# Enforced by tools/check_vulns.py in CI. Reported advisories fail the build
+# unless they have an unexpired entry. Do not add entries without a concrete
+# reason and a reviewer.
 
 # --- torch 2.5.1 -------------------------------------------------------------
 # Dockerfile pins torch==2.5.1 from the CPU-only index. demucs 4.1.0 requires
 # torch>=2.1 and basic-pitch's ONNX runtime is validated against the 2.5 line.
 #
 # Exposure analysis for this project:
-#   * No user-supplied model files. The only torch.load()-adjacent path is
-#     Demucs weight loading (handled by demucs itself) and Basic Pitch, which
-#     loads an ONNX model via onnxruntime, not torch.load of arbitrary checkpoints.
+#   * No user-supplied model files. Basic Pitch loads a bundled ONNX model.
+#     Demucs can download and deserialize upstream checkpoints; the legacy
+#     loader does not use weights_only. Model supply-chain trust still matters.
 #   * No torch.jit / torch.compile / inductor usage in the codebase, which is
 #     what most of these advisories target.
 #   * The web UI is the only untrusted-input surface, and audio never reaches a
 #     deserialiser.
 # Upgrading past 2.5 is a deliberate, tested change (CUDA/ONNX compatibility),
 # tracked as the Q1 dependency-refresh item.
-PYSEC-2025-41  2027-01-31  torch<2.6 torch.load RCE: not reachable (weights_only + pinned revision, no user model files)
+PYSEC-2025-41  2027-01-31  torch.load: no uploaded model files; Demucs weight loading trusts upstream
 PYSEC-2025-189 2027-01-31  torch auto-grad/tensor API issue; not reachable from this pipeline's fixed call graph
 PYSEC-2025-190 2027-01-31  torch issue in training-only code paths; this project only runs inference
 PYSEC-2025-191 2027-01-31  torch 2.6.0 issue affects training paths; inference-only usage
@@ -37,23 +37,17 @@ PYSEC-2025-207 2027-01-31  cummin + inductor bug; inductor is not used
 PYSEC-2025-208 2027-01-31  Conv2d buffer overflow; the audio models are 1-D/transformers
 PYSEC-2025-209 2027-01-31  Tensor DoS advisory; not reachable from this pipeline
 PYSEC-2026-139 2027-01-31  torch advisory with no upstream fix version yet; inference-only usage
-PYSEC-2026-1856 2027-01-31  weights_only unpickler bypass: mitigated by revision pinning + no user-supplied checkpoints
+PYSEC-2026-1856 2027-01-31  weights_only unpickler advisory: no uploaded checkpoints; upstream model trust remains
 PYSEC-2026-1970 2027-01-31  torch function-level advisory in a path this pipeline does not call
 PYSEC-2026-2286 2027-01-31  torch advisory fixed in 2.10; blocked by the demucs/ONNX compatibility line
-PYSEC-2026-1970 2027-01-31  duplicate advisory identifier reported by two feeds
-PYSEC-2025-191 2027-01-31  duplicate listing (torch training path)
-PYSEC-2025-41  2027-01-31  duplicate listing (torch.load RCE)
 
-# --- setuptools 66.x/80.x (<81) ---------------------------------------------
-# The pin is load-bearing: pretty_midi 0.2.10 does `import pkg_resources`, which
-# setuptools removed in 81. Verified in an isolated venv that setuptools 84.1.0
-# makes `import pretty_midi` fail, which breaks the Basic Pitch transcription
-# fallback entirely (see SECURITY.md, "setuptools is pinned deliberately").
-# All three advisories target package-installation code paths
-# (package_index / sdist building), which this project never runs at runtime.
-PYSEC-2025-49   2027-01-31  setuptools package_index path traversal: install-time only, never runs in the image
-PYSEC-2026-1918 2027-01-31  setuptools package_index RCE: install-time only, never runs in the image
-PYSEC-2026-3447 2027-01-31  setuptools sdist build advisory: this project builds wheels only, not sdists
+# --- setuptools 80.10.2 -----------------------------------------------------
+# Basic Pitch 0.4.0 requires resampy<0.4.3, which still imports pkg_resources.
+# Keep the runtime compatibility pin until the supported stack drops that import.
+# These advisories apply to installer/build actions, not the audio request path.
+PYSEC-2025-49   2027-01-31  setuptools package_index path traversal: installation only, not called from audio processing
+PYSEC-2026-1918 2027-01-31  setuptools package_index RCE: installation only, not called from audio processing
+PYSEC-2026-3447 2027-01-31  setuptools sdist build advisory: no sdist builds in the audio request path
 GHSA-xmj3-9gf7-h52w 2027-01-31 setuptools Windows wheel .dist-info advisory; image is Linux and never installs wheels at runtime
 
 # --- black 26.5.1 ------------------------------------------------------------

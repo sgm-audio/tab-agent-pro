@@ -339,13 +339,14 @@ def main(argv: list[str] | None = None) -> int:
 
         # Timing alone does not establish a legato technique.
         fast_notes = [
-            note_seq.NoteSequence.Note(pitch=40, start_time=0.0, end_time=0.1, velocity=80),
+            note_seq.NoteSequence.Note(pitch=40, start_time=0.0, end_time=0.15, velocity=80),
             note_seq.NoteSequence.Note(pitch=42, start_time=0.15, end_time=0.45, velocity=80),
         ]
         fast_tab = agent.generate_tab(fast_notes, technique_sensitivity=0.9)
+        techniques = [e["technique"] for e in fast_tab]
         check(
             "Fast notes do not invent legato techniques",
-            len(fast_tab) == 2 and all(e["technique"] == "pick" for e in fast_tab),
+            len(techniques) == 2 and all(t == "pick" for t in techniques),
         )
     except Exception as e:
         check("TabAgent tablature generation", False, str(e))

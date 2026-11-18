@@ -19,14 +19,14 @@ All licenses below were verified from the installed distribution metadata
 | [soundfile](https://github.com/bastibe/python-soundfile) | 0.12.1 | BSD-3-Clause | Bastian Bechtold |
 | [scipy](https://github.com/scipy/scipy) | 1.17.1 | BSD-3-Clause | SciPy Developers |
 | [numpy](https://github.com/numpy/numpy) | 2.4.6 | BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 | NumPy Developers |
-| [pretty-midi](https://github.com/craffel/pretty-midi) | 0.2.10 | MIT | Colin Raffel |
+| [pretty-midi](https://github.com/craffel/pretty-midi) | 0.2.11.post0 | MIT | Colin Raffel |
 | [note-seq](https://github.com/magenta/note-seq) | 0.0.5 | Apache-2.0 | Google LLC |
 | [mir_eval](https://github.com/craffel/mir_eval) | 0.8.2 | MIT | Colin Raffel and contributors |
 | [mido](https://github.com/mido/mido) | 1.3.3 | MIT | Ole Martin Bjørndalen |
 | [pydub](https://github.com/jiaaro/pydub) | 0.25.1 | MIT | James Robert |
 | [resampy](https://github.com/bmcfee/resampy) | 0.4.2 | ISC | Brian McFee |
 | [numba](https://github.com/numba/numba) | 0.68.1 | BSD-2-Clause | Anaconda, Inc. |
-| [gradio](https://github.com/gradio-app/gradio) | 6.31.0 | Apache-2.0 | Gradio Inc. |
+| [gradio](https://github.com/gradio-app/gradio) | 6.32.0 | Apache-2.0 | Gradio Inc. |
 | [gradio-client](https://github.com/gradio-app/gradio) | 2.7.2 | Apache-2.0 | Gradio Inc. |
 | [fastapi](https://github.com/fastapi/fastapi) | 0.162.0 | MIT | Sebastián Ramírez |
 | [uvicorn](https://github.com/encode/uvicorn) | 0.54.0 | BSD-3-Clause | Tom Christie |

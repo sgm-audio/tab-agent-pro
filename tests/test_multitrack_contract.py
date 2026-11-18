@@ -22,6 +22,8 @@ def test_all_instruments_export_correct_track_notes_and_tunings(tmp_path, monkey
     seen = []
 
     class FakeSplitter:
+        separation_mode = "demucs"
+
         def __init__(self, **kwargs):
             pass
 
@@ -94,13 +96,13 @@ def test_all_instruments_export_correct_track_notes_and_tunings(tmp_path, monkey
         assert [n.pitch for inst in midi.instruments for n in inst.notes] == pitches[target]
 
 
-def test_unplayable_chord_warns_and_preserves_midi_without_fake_tab(tmp_path, monkeypatch, capsys):
+def test_unplayable_chord_reports_omission_and_preserves_midi(tmp_path, monkeypatch, capsys):
     audio = tmp_path / "song.wav"
     audio.touch()
     output = tmp_path / "out"
 
     class FakeSplitter:
-        separation_mode = "passthrough"
+        separation_mode = "raw_fallback"
 
         def __init__(self, **kwargs):
             pass
@@ -123,11 +125,13 @@ def test_unplayable_chord_warns_and_preserves_midi_without_fake_tab(tmp_path, mo
     monkeypatch.setattr(main, "SplitterAgent", FakeSplitter)
     monkeypatch.setattr(main, "EarAgent", StubInferenceEar)
     main.main([str(audio), "--instrument", "Bass", "--output-dir", str(output), "--device", "cpu"])
-    message = capsys.readouterr().out
-    assert "unplayable chord" in message
-    assert "[23, 24]" in message
-    assert "full mix" in message and "not isolated stems" in message
-    assert not (output / "song_bass.tab").exists()
-    assert not (output / "song_bass.json").exists()
+    captured = capsys.readouterr()
+    assert "omitted from the tab" in captured.err
+    assert "unseparated audio" in captured.err
+    data = json.loads((output / "song_bass.json").read_text())
+    assert len(data["tablature"]) == 1
+    assert data["skipped_notes"][0]["reason"] == "fingering_conflict"
+    assert data["separation_mode"] == "raw_fallback"
+    assert (output / "song_bass.tab").is_file()
     midi = pretty_midi.PrettyMIDI(str(output / "song_bass.mid"))
     assert [n.pitch for inst in midi.instruments for n in inst.notes] == [23, 24]

@@ -8,10 +8,10 @@
     3. Run this script (Actions → Tab Agent)
     4. MIDI files are imported to new tracks automatically
 
-  Progress is streamed live to the REAPER console while the pipeline runs.
+  Pipeline output is forwarded to the REAPER console.
 
   Requirements:
-    - Python 3.10+ with Tab Agent dependencies (pip install -r requirements.txt)
+    - Python 3.11+ with the ONNX runtime dependencies (see README.md)
     - Tab Agent Pro cloned to a known path (auto-detected or set via Settings)
 
   Settings configured in "Tab Agent Settings" (profile, instrument, thresholds,
@@ -20,6 +20,8 @@
   Author: Scott Mills
   License: MIT
 ]]--
+
+local is_windows = reaper.GetOS():match("^Win") ~= nil
 
 -- ============================================================================
 -- PATH DETECTION
@@ -89,8 +91,9 @@ local function get_audio_path()
   local src = reaper.GetMediaItemTake_Source(take)
   if not src then return nil end
 
-  local _, fn = reaper.GetMediaSourceFileName(src, "")
-  if fn == "" or not reaper.file_exists(fn) then
+  -- ReaScript's Lua binding returns the filename as its only result.
+  local fn = reaper.GetMediaSourceFileName(src, "")
+  if type(fn) ~= "string" or fn == "" or not reaper.file_exists(fn) then
     reaper.MB(
       "This item is not backed by a file on disk.\n\n" ..
       "Glue it first: right-click the item → Glue items\n" ..
@@ -106,61 +109,75 @@ end
 -- BUILD COMMAND
 -- ============================================================================
 
-local function quote(value)
-  value = tostring(value)
-  if reaper.GetOS():match("Win") then
-    -- cmd.exe expands %...% and potentially !...! even inside double quotes.
-    -- Refuse shell syntax rather than attempting unsafe escaping. Double quotes
-    -- are not valid Windows path characters; rejecting them also makes the
-    -- CRT argument quoting below unambiguous.
-    if value:find('[%c"%%!&|<>%^()]') then
-      error("Unsupported shell characters in a setting or path on Windows")
-    end
-    -- Backslashes immediately before the closing quote must be doubled for
-    -- the Windows C runtime argument parser.
-    value = value:gsub('(\\+)$', '%1%1')
-    return '"' .. value .. '"'
+local function quote(value, for_cd)
+  if value:find("%c") then error("A command argument contains a control character.") end
+  if not is_windows then
+    return "'" .. value:gsub("'", [['"'"']]) .. "'"
   end
-  -- POSIX single quotes suppress substitutions, backticks and backslashes.
-  return "'" .. value:gsub("'", "'\\''") .. "'"
+  -- cmd.exe expands percent variables even inside double quotes. Reject
+  -- ambiguous shell characters rather than interpreting them as commands.
+  if value:find('["%%!%^&|<>]') then
+    error("A path or setting contains characters unsupported by the Windows command shell.")
+  end
+  -- The Windows Python runtime interprets backslashes before a closing quote.
+  if not for_cd then value = value:gsub("(\\+)$", "%1%1") end
+  return '"' .. value .. '"'
 end
 
-local function build_args(settings, audio_path)
-  local args = { "main.py", quote(audio_path) }
+local function absolute_path(path)
+  if is_windows then return path:match("^%a:[/\\]") ~= nil end
+  return path:sub(1, 1) == "/"
+end
+
+local function resolve_output_dir(install_path, configured)
+  if configured == "" then configured = "output" end
+  if absolute_path(configured) then return configured end
+  if is_windows and (configured:match("^[/\\]") or configured:match("^%a:")) then
+    error("Use an absolute drive path (for example C:\\Tab Agent) or a relative output directory.")
+  end
+  return install_path .. "/" .. configured
+end
+
+local function build_command(install_path, settings, audio_path, output_dir)
+  if not absolute_path(install_path) or not absolute_path(audio_path) then
+    error("Use absolute paths for the Tab Agent installation and audio source.")
+  end
+  local args = { "main.py", "--reaper-report-midi", "--fresh-output-dir", "--output-dir", quote(output_dir) }
 
   if settings.profile ~= "" then
     table.insert(args, "--profile " .. quote(settings.profile))
   end
-
   if settings.instrument ~= "" then
     table.insert(args, "--instrument " .. quote(settings.instrument))
   end
-  if tonumber(settings.onset) then
-    table.insert(args, "--onset " .. tostring(tonumber(settings.onset)))
-  end
-  if tonumber(settings.frame) then
-    table.insert(args, "--frame " .. tostring(tonumber(settings.frame)))
+  for _, key in ipairs({ "onset", "frame" }) do
+    local value = settings[key]
+    if value ~= "" then
+      local threshold = tonumber(value)
+      if not threshold or not (threshold >= 0 and threshold <= 1) then
+        error("Invalid " .. key .. " threshold. Use a number from 0 to 1 or leave it blank.")
+      end
+      table.insert(args, "--" .. key .. " " .. tostring(threshold))
+    end
   end
 
   if not settings.export_midi then table.insert(args, "--no-midi") end
   if not settings.export_tab then table.insert(args, "--no-tab") end
   if not settings.export_json then table.insert(args, "--no-json") end
+  table.insert(args, "--")
+  table.insert(args, quote(audio_path))
 
-  -- REAPER always uses an exclusive, per-run output directory. A failed or
-  -- concurrent run can never make old same-basename MIDI look like new output.
-  table.insert(args, "--output-dir " .. quote(settings.output_dir))
-  table.insert(args, "--fresh-output-dir")
-
-  return args
+  local cd = is_windows and "cd /d " or "cd "
+  local python = is_windows and "python" or "python3"
+  return cd .. quote(install_path, true) .. " && " .. python .. " " .. table.concat(args, " ") .. " 2>&1"
 end
 
 -- ============================================================================
 -- PIPELINE RUNNER WITH STREAMED CONSOLE OUTPUT
 --
 -- Runs main.py via io.popen so its stdout/stderr ([tab-agent] progress lines)
--- are forwarded to the REAPER console in real time. Uses reaper.defer to poll
--- for output so REAPER stays responsive during a long transcription instead of
--- blocking on os.execute.
+-- are forwarded to the REAPER console. reaper.defer schedules one read at a
+-- time; the pipe read can still block until the child writes or exits.
 -- ============================================================================
 
 local Pipeline = {}
@@ -171,6 +188,7 @@ function Pipeline.new(install_path, audio_path, settings)
   self.install_path = install_path
   self.audio_path = audio_path
   self.settings = settings
+  self.midi_written = {}
   self.stream = nil
   self.finished = false
   self.success = false
@@ -179,11 +197,15 @@ end
 
 function Pipeline:start()
   local ok, err = pcall(function()
-    local windows = reaper.GetOS():match("Win")
-    local python = windows and "python" or "python3"
-    local args = build_args(self.settings, self.audio_path)
-    local cd = windows and "cd /d" or "cd"
-    local cmd = string.format('%s %s && %s %s 2>&1', cd, quote(self.install_path), python, table.concat(args, " "))
+    local output_root = resolve_output_dir(self.install_path, self.settings.output_dir)
+    -- The CLI atomically creates this candidate and fails closed on collision.
+    local temp_path = os.tmpname()
+    if not temp_path then error("Could not create a unique session name.") end
+    os.remove(temp_path)
+    local name = (temp_path:match("([^/\\]+)$") or ""):gsub("[^%w_-]", "")
+    if name == "" then error("Could not create a unique session name.") end
+    self.output_dir = output_root .. "/tab-agent-" .. name
+    local cmd = build_command(self.install_path, self.settings, self.audio_path, self.output_dir)
     reaper.ShowConsoleMsg("Tab Agent: " .. cmd .. "\n")
     self.stream = io.popen(cmd, "r")
   end)
@@ -204,6 +226,8 @@ function Pipeline:poll()
 
   local line = self.stream:read("*l")
   if line then
+    local suffix = line:match("^%[tab%-agent%-midi%] ([a-zA-Z_]+)$")
+    if suffix then self.midi_written[suffix] = true end
     reaper.ShowConsoleMsg(line .. "\n")
     return "streaming", nil
   end
@@ -212,9 +236,7 @@ function Pipeline:poll()
   local ok, err, code = self.stream:close()
   self.stream = nil
   self.finished = true
-  -- io.popen close: ok=true on clean exit, err=exit code string, code=number.
-  -- Treat any clean close (ok == true) or code == 0 as success.
-  self.success = (ok == true) or (code == 0)
+  self.success = ok == true and (code == nil or code == 0)
   return "done", self.success
 end
 
@@ -222,25 +244,32 @@ end
 -- IMPORT MIDI
 -- ============================================================================
 
-local function import_midi(basename, output_dir)
-  local midi_files = {
-    { name = "Lead Guitar",     file = basename .. "_lead_guitar.mid" },
-    { name = "Rhythm Guitar L", file = basename .. "_rhythm_L.mid" },
-    { name = "Rhythm Guitar R", file = basename .. "_rhythm_R.mid" },
-    { name = "Bass",            file = basename .. "_bass.mid" },
+local function import_midi(basename, output_dir, midi_written)
+  local midi_tracks = {
+    { name = "Lead Guitar",     suffix = "lead_guitar" },
+    { name = "Rhythm Guitar L", suffix = "rhythm_L" },
+    { name = "Rhythm Guitar R", suffix = "rhythm_R" },
+    { name = "Bass",            suffix = "bass" },
   }
   local imported = 0
-  for _, mf in ipairs(midi_files) do
-    local path = output_dir .. "/" .. mf.file
-    if reaper.file_exists(path) then
-      -- InsertMedia creates a new track automatically
-      reaper.InsertMedia(path, 0)
-      -- Name the last created track
-      local track = reaper.GetTrack(0, reaper.GetNumTracks() - 1)
-      if track then
-        reaper.GetSetMediaTrackInfo_String(track, "P_NAME", basename .. " - " .. mf.name, true)
+  for _, mf in ipairs(midi_tracks) do
+    local path = output_dir .. "/" .. basename .. "_" .. mf.suffix .. ".mid"
+    if midi_written[mf.suffix] and reaper.file_exists(path) then
+      local existing = {}
+      for i = 0, reaper.GetNumTracks() - 1 do
+        existing[reaper.GetTrackGUID(reaper.GetTrack(0, i))] = true
       end
-      imported = imported + 1
+      -- Mode 0 inserts on the selected track; mode 1 requests a new track.
+      if reaper.InsertMedia(path, 1) > 0 then
+        for i = 0, reaper.GetNumTracks() - 1 do
+          local track = reaper.GetTrack(0, i)
+          if not existing[reaper.GetTrackGUID(track)] then
+            reaper.GetSetMediaTrackInfo_String(track, "P_NAME", basename .. " - " .. mf.name, true)
+            imported = imported + 1
+            break
+          end
+        end
+      end
     end
   end
   return imported
@@ -250,8 +279,6 @@ end
 -- MAIN
 -- ============================================================================
 
-reaper.Undo_BeginBlock()
-
 local install_path = find_install_path()
 if not install_path then
   reaper.MB(
@@ -260,38 +287,20 @@ if not install_path then
     "or clone the repo to ~/tab-agent-pro.",
     "Tab Agent — Not Found", 0
   )
-  reaper.Undo_EndBlock("Tab Agent — Cancel", -1)
   return
 end
 
 local audio_path = get_audio_path()
 if not audio_path then
-  reaper.Undo_EndBlock("Tab Agent — Cancel", -1)
   return
 end
 
 local settings = load_settings()
 
--- os.tmpname supplies a unique candidate; the CLI atomically creates the
--- output directory and fails if it already exists. Never reuse a directory.
-local ok_tmp, temp_path = pcall(os.tmpname)
-if not ok_tmp or not temp_path then
-  reaper.MB("Could not create a unique session name.", "Tab Agent — Error", 0)
-  reaper.Undo_EndBlock("Tab Agent — Failed", -1)
-  return
-end
-os.remove(temp_path)
-local temp_name = temp_path:match("([^/\\]+)$") or ""
-temp_name = temp_name:gsub("[^%w_-]", "")
-if temp_name == "" then
-  reaper.MB("Could not create a unique session name.", "Tab Agent — Error", 0)
-  reaper.Undo_EndBlock("Tab Agent — Failed", -1)
-  return
-end
-local output_root = settings.output_dir ~= "" and settings.output_dir or (install_path .. "/output")
-settings.output_dir = output_root .. "/tab-agent-" .. temp_name
-
-local basename = audio_path:match("([^/\\]+)%.[^.]+$") or "unknown"
+local filename = audio_path:match(is_windows and "[^/\\]+$" or "[^/]+$") or "unknown"
+local stem = filename:match("^(.+)%.[^.]*$")
+local basename = stem and stem:find("[^.]") and stem or filename
+local project = reaper.EnumProjects(-1, "")
 
 reaper.ShowConsoleMsg("\nTab Agent — Transcribing " .. basename .. "\n")
 reaper.ShowConsoleMsg("  Audio:    " .. audio_path .. "\n")
@@ -317,11 +326,10 @@ if not pipe:start() then
     "Common: pip install -r requirements.txt, install Demucs.",
     "Tab Agent — Error", 0
   )
-  reaper.Undo_EndBlock("Tab Agent — Failed", -1)
   return
 end
 
--- Poll the pipeline stream on REAPER's idle loop so the UI stays responsive.
+-- Don't keep an undo block open while the child process is running.
 local function poll_pipeline()
   local phase, success = pipe:poll()
   if phase == "streaming" then
@@ -330,34 +338,37 @@ local function poll_pipeline()
   end
 
   if not success then
-    reaper.Undo_EndBlock("Tab Agent — Failed", -1)
-    reaper.MB(
-      "Transcription failed.\n\n" ..
-      "Check the REAPER console for details.\n" ..
-      "Common: pip install -r requirements.txt, install Demucs.",
-      "Tab Agent — Error", 0
-    )
+    reaper.MB("Transcription failed. Check the REAPER console for details.", "Tab Agent — Error", 0)
+    return
+  end
+  if not settings.export_midi then
+    reaper.ShowConsoleMsg(string.format("\nDone — exports written to %s (MIDI export disabled).\n", pipe.output_dir))
+    return
+  end
+  if project ~= reaper.EnumProjects(-1, "") then
+    reaper.MB("The active project changed. Import the exports manually from:\n" .. pipe.output_dir,
+      "Tab Agent — Project Changed", 0)
     return
   end
 
-  -- Only a successful run's exclusively-created directory can be imported.
-  local output_dir = settings.output_dir
-  local imported = settings.export_midi and import_midi(basename, output_dir) or 0
-
-  reaper.Undo_EndBlock("Tab Agent — Transcribe " .. basename, -1)
-
-  if not settings.export_midi then
-    reaper.ShowConsoleMsg(string.format("\nDone — exports written to %s (MIDI export disabled).\n", output_dir))
-  elseif imported > 0 then
+  local imported = 0
+  if next(pipe.midi_written) then
+    reaper.Undo_BeginBlock()
+    local ok, count = pcall(import_midi, basename, pipe.output_dir, pipe.midi_written)
+    reaper.Undo_EndBlock("Tab Agent — Transcribe " .. basename, -1)
+    if not ok then
+      reaper.ShowConsoleMsg("Tab Agent: MIDI import error: " .. tostring(count) .. "\n")
+      reaper.MB("Could not import MIDI. Check the REAPER console.", "Tab Agent — Error", 0)
+      return
+    end
+    imported = count
+  end
+  if imported > 0 then
     reaper.ShowConsoleMsg(string.format("\nDone — imported %d MIDI track(s).\n", imported))
   else
-    reaper.MB(
-      "Transcription finished but no MIDI files found in:\n  " .. output_dir ..
-        "\n\nCheck the REAPER console for details.",
-      "Tab Agent — No Output", 0
-    )
+    reaper.MB("No MIDI from this run could be imported from:\n" .. pipe.output_dir ..
+      "\n\nCheck the REAPER console for details.", "Tab Agent — No Output", 0)
   end
-
 end
 
 reaper.defer(poll_pipeline)
