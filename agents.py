@@ -738,7 +738,7 @@ class TabAgent:
                     self._keep_path(
                         next_paths,
                         _TabPath(
-                            occupied[:string] + (i,) + occupied[string + 1 :],
+                            (*occupied[:string], i, *occupied[string + 1 :]),
                             _PlacedNote(i, position, prev),
                             path.omitted,
                             path.cost + cost,

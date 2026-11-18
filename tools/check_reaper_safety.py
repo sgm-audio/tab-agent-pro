@@ -210,7 +210,7 @@ def main():
 
     def t6():
         audio = "it's a song.wav"
-        imported, _dialogs, console = run(0, stale=False, audio_name=audio)
+        _imported, _dialogs, console = run(0, stale=False, audio_name=audio)
         # The basename in REAPER comes from the source filename; a quote must not
         # break the shell command (the pipeline still runs and reports).
         return "stub ran" in console, f"console={console.splitlines()[:2]}"
