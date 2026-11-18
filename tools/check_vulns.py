@@ -25,6 +25,7 @@ import datetime as dt
 import json
 import subprocess  # nosec B404
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -88,18 +89,61 @@ def describe(vuln: dict) -> str:
     return f"{ids[0]} (aliases: {', '.join(ids[1:])})"
 
 
-def audit() -> list[dict]:
-    """Run pip-audit against the installed environment and return its JSON."""
-    result = subprocess.run(  # nosec B603, B607
-        [sys.executable, "-m", "pip_audit", "--progress-spinner", "off", "--format", "json"],
-        capture_output=True,
-        text=True,
-        timeout=900,
-    )
-    if not result.stdout.strip():
-        msg = f"pip-audit produced no output (exit {result.returncode}): {result.stderr[-500:]}"
-        raise RuntimeError(msg)
-    return json.loads(result.stdout).get("dependencies", [])
+# pip-audit resolves every installed package against PyPI, so one slow response
+# can abort an otherwise clean scan with a ReadTimeout and no JSON on stdout.
+# That is a transport failure, not a finding, and it reddened CI while the
+# advisory set was unchanged. Retrying is safe because pip-audit is read-only,
+# and a real finding still exits 1 with valid JSON, which is never retried.
+AUDIT_ATTEMPTS = 3
+AUDIT_BACKOFF_SECONDS = 5.0
+# pip-audit defaults to a 15 s per-request timeout and issues one request per
+# installed package (~120). A loaded PyPI exceeds 15 s often enough that the
+# common case -- a slow index -- should be a slow success, not a red build.
+AUDIT_TIMEOUT_SECONDS = 90
+
+
+def audit(attempts: int = AUDIT_ATTEMPTS) -> list[dict]:
+    """Run pip-audit against the installed environment and return its JSON.
+
+    Transient failures are retried with linear backoff. A response that parses
+    is returned immediately even when it reports findings: findings are the
+    caller's business, and retrying them would only delay a failing gate.
+    """
+    last = ""
+    for attempt in range(1, attempts + 1):
+        result = subprocess.run(  # nosec B603, B607
+            [
+                sys.executable,
+                "-m",
+                "pip_audit",
+                "--progress-spinner",
+                "off",
+                "--format",
+                "json",
+                "--timeout",
+                str(AUDIT_TIMEOUT_SECONDS),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=900,
+        )
+        if result.stdout.strip():
+            try:
+                return json.loads(result.stdout).get("dependencies", [])
+            except json.JSONDecodeError:
+                last = f"unparseable JSON (exit {result.returncode}): {result.stdout[:200]}"
+        else:
+            last = f"no output (exit {result.returncode}): {result.stderr[-300:]}"
+        if attempt < attempts:
+            print(
+                f"⚠️  pip-audit attempt {attempt}/{attempts} failed "
+                f"({last.splitlines()[-1][:120]}); "
+                f"retrying in {AUDIT_BACKOFF_SECONDS * attempt:.0f}s",
+                file=sys.stderr,
+            )
+            time.sleep(AUDIT_BACKOFF_SECONDS * attempt)
+    msg = f"pip-audit produced no usable output after {attempts} attempts: {last}"
+    raise RuntimeError(msg)
 
 
 def main(argv: list[str] | None = None, ignore_path: Path | None = None) -> int:
