@@ -16,17 +16,21 @@
 
 ## Addendum (2026-11-18) — P0 remediation
 
-All three P0 findings from §9 are now fixed. Two were fixed upstream while this
-audit was in progress (`#11`, `#12`), and the third — the chord collapse, which
-`#12` had recorded as three strict-`xfail` tests against a `StringOccupancyError`
-that its `agents.py` never raised — was fixed in `#14`. This branch's contribution
-is therefore **verification, not repair**: an independent adversarial harness that
-proves the fixes hold, plus corrections to four test fixtures that asserted
-impossible or stale premises.
+All three P0 findings from §9 are now fixed upstream. `#11`/`#12` fixed
+stale-MIDI import and shell injection; `#14` replaced the per-note DP with
+`_assign_positions` (beam search over per-string occupancy states); and `#16`
+added chord feasibility to the cost model (`CHORD_TOLERANCE`,
+`SAME_STRING_CHORD_PENALTY`). Both chord mechanisms were verified independently
+here rather than taken on trust — the measurement below applies to `#16`'s
+final code.
+
+This branch's contribution is therefore **verification, not repair**: an
+independent adversarial harness, measurements that would catch a regression, and
+corrections to four test fixtures that asserted impossible or stale premises.
 
 | P0 | Original defect | Now | Evidence |
 |---|---|---|---|
-| **Chord collapse** | `generate_tab` placed each note independently, so a chord's notes landed on one string. 375/990 dyads collapsed | `_assign_positions` tracks per-string occupancy, so a simultaneous event is injective on strings, with sustains and a fret span limit | `tests/test_tab_playability.py`, and the independent scan below |
+| **Chord collapse** | `generate_tab` placed each note independently, so a chord's notes landed on one string. 375/990 dyads collapsed | `_assign_positions` tracks per-string occupancy; `#16` adds a chord-feasibility penalty. Measured: **0/300** dyads and **0** triads put two simultaneous notes on one string | `tests/test_tab_playability.py`, and the independent scan below |
 | **Stale MIDI imported on failure** | `poll_pipeline` imported before checking the exit status | Import gated on `close()` returning exit 0 **and** on the suffix having been announced by this run via `[tab-agent-midi]` | `tools/check_reaper_safety.py` cases 1–4, 7 |
 | **Shell injection via filename** | `quote()` escaped only `"`, then ran through `/bin/sh` | POSIX single-quoting with `'"'"'` escaping; Windows rejects shell metacharacters | `tools/check_reaper_safety.py` cases 5–6 |
 
@@ -40,10 +44,20 @@ stale MIDI files on disk, a run that exits 0 having regenerated only the bass,
 and asserts that only the bass is imported. **7/7 pass.**
 
 *Independent chord scan.* Rather than trusting the upstream tests, the fix is
-measured directly against the property that matters: for 300 dyads over the whole
-fretboard, 63 triads, and an over-full 7-notes-on-6-strings event, the number of
-**silent** drops is **0** — every note is either written to the tab or reported in
-`last_skipped_notes` / `last_skipped_events` with a reason.
+measured directly against the two properties that matter, over 300 dyads across
+the fretboard and 63 triads:
+
+- **same-string collisions: 0** — no simultaneous pair ever shares a string;
+- **silent drops: 0** — 290 dyads are tabbed in full, and each of the 10
+  physically impossible ones is reported in `last_skipped_events` with a reason.
+
+Mutation-tested: the scans fail (4 cases) when `_assign_positions`' occupancy
+guard — `if occupied[string] >= 0 ... continue` — is removed, and pass when the
+guard is restored. Zeroing `SAME_STRING_CHORD_PENALTY` alone changes nothing,
+which is worth recording because it locates the real enforcement: the hard
+constraint is the occupancy check in `_assign_positions`, and `#16`'s penalty is
+a cost-model hint layered on top. A reader of `#16` alone would reasonably assume
+the opposite.
 
 *Fixture corrections.* Four upstream tests asserted premises that are physically
 impossible or stale, and would either have blocked a correct fix or passed for the

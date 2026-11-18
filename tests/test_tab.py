@@ -196,9 +196,7 @@ class TestTabAgentChordFeasibility(unittest.TestCase):
             key = round(pos["start_time"], 2)
             groups.setdefault(key, []).append(pos["string"])
         for strings in groups.values():
-            assert len(strings) == len(set(strings)), (
-                f"chord collides on a string: {strings}"
-            )
+            assert len(strings) == len(set(strings)), f"chord collides on a string: {strings}"
 
     def test_impossible_chord_is_feasible(self) -> None:
         """E2 + E6 + B3 simultaneous must not emit two frets on one string.
@@ -218,10 +216,9 @@ class TestTabAgentChordFeasibility(unittest.TestCase):
         assert len(tab) == 3, f"all three chord notes must survive: {tab}"
         self._assert_no_same_string_chord(tab)
         # Three simultaneous notes with no collision must occupy three strings.
-        assert len({e["string"] for e in tab}) == 3, (
-            "chord must use three distinct strings: "
-            + str([(e["string"], e["fret"]) for e in tab])
-        )
+        assert (
+            len({e["string"] for e in tab}) == 3
+        ), "chord must use three distinct strings: " + str([(e["string"], e["fret"]) for e in tab])
 
     def test_same_string_chord_cost_is_penalised(self) -> None:
         """A simultaneous same-string transition carries the chord penalty."""
@@ -260,19 +257,17 @@ class TestTabAgentChordFeasibility(unittest.TestCase):
         # Power chord (root + fifth), major triad, and a dense 4-note chord,
         # each as a single simultaneous onset.
         voicings = [
-            [40, 47],            # E2 + B2 (power chord)
-            [48, 52, 55],        # C3 + E3 + G3 (C major)
-            [40, 45, 52, 55],    # E2 + A2 + E3 + G3 (E major shape)
-            [55, 59, 64, 67],    # G3 + B3 + E4 + G4 (G major shape)
+            [40, 47],  # E2 + B2 (power chord)
+            [48, 52, 55],  # C3 + E3 + G3 (C major)
+            [40, 45, 52, 55],  # E2 + A2 + E3 + G3 (E major shape)
+            [55, 59, 64, 67],  # G3 + B3 + E4 + G4 (G major shape)
         ]
         for pitches in voicings:
-            tab = self.agent.generate_tab(
-                [make_note(p, 0.0) for p in pitches]
-            )
+            tab = self.agent.generate_tab([make_note(p, 0.0) for p in pitches])
             # Every note must survive (these are all playable chords).
-            assert len(tab) == len(pitches), (
-                f"chord {pitches} lost notes: {len(tab)}/{len(pitches)}"
-            )
+            assert len(tab) == len(
+                pitches
+            ), f"chord {pitches} lost notes: {len(tab)}/{len(pitches)}"
             self._assert_no_same_string_chord(tab)
 
     def test_rendered_output_has_no_collision_markers(self) -> None:
@@ -286,13 +281,12 @@ class TestTabAgentChordFeasibility(unittest.TestCase):
         notes = [make_note(40, 0.0), make_note(88, 0.0), make_note(59, 0.0)]
         tab = self.agent.generate_tab(notes)
         text = main.render_tab_text(tab)
+        assert text is not None
         # Split on the column separator and check no cell contains '/'.
         for line in text.splitlines():
             if "|" in line and not line.startswith("Legend"):
                 for cell in line.split("|")[1:]:
-                    assert "/" not in cell, (
-                        f"collision marker '/' in rendered cell: {cell!r}"
-                    )
+                    assert "/" not in cell, f"collision marker '/' in rendered cell: {cell!r}"
 
 
 if __name__ == "__main__":
