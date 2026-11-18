@@ -121,46 +121,41 @@ class TestTabAgentGenerateTab(unittest.TestCase):
         for entry in result:
             assert "technique" in entry
 
-    def test_every_note_has_technique(self) -> None:
-        """Every output entry has a technique annotation."""
+    def test_every_note_has_the_unmarked_technique_value(self) -> None:
+        """Keep the legacy field, without inferring technique from notes."""
         notes = [
             make_note(60, 0.0),
             make_note(62, 0.3),
             make_note(64, 0.6),
         ]
         result = self.agent.generate_tab(notes)
-        for entry in result:
-            assert "technique" in entry
-            assert entry["technique"] in ["pick", "slide", "hammer", "pull"]
+        assert [entry["technique"] for entry in result] == ["pick"] * len(notes)
 
-    def test_technique_detection_slide(self) -> None:
-        """Adjacent notes on same string 1-2 frets apart → slide."""
+    def test_contiguous_notes_do_not_claim_slide(self) -> None:
+        """Close same-string notes do not prove a slide."""
         # E2 (open string 0) → F#2 (fret 2 on string 0)
         notes = [
             make_note(40, 0.0, 0.15),  # E2 releases at the next onset
             make_note(42, 0.15),  # F#2 — fast, same string, 2 frets apart
         ]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
-        # The DP may choose the same string for efficiency
-        techniques = [r["technique"] for r in result]
-        assert "slide" in techniques
+        assert [r["technique"] for r in result] == ["pick", "pick"]
 
-    def test_technique_detection_hammer_on(self) -> None:
-        """Ascending notes on same string → hammer-on."""
+    def test_ascending_notes_do_not_claim_hammer_on(self) -> None:
+        """Even contiguous ascending notes may be picked separately."""
         # E2 (open string 0) → G#2 (fret 4 on string 0)
         notes = [
             make_note(40, 0.0, 0.15),  # E2 releases at the next onset
             make_note(44, 0.15),  # G#2 — fast, same string, ascending
         ]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
-        techniques = [r["technique"] for r in result]
-        assert "hammer" in techniques
+        assert [r["technique"] for r in result] == ["pick", "pick"]
 
-    def test_technique_detection_pull_off(self) -> None:
+    def test_descending_notes_do_not_claim_pull_off(self) -> None:
         """Descending notes on same string → pull-off."""
         notes = [make_note(44, 0.0, 0.15), make_note(40, 0.15)]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
-        assert [r["technique"] for r in result] == ["pick", "pull"]
+        assert [r["technique"] for r in result] == ["pick", "pick"]
 
     def test_bass_five_string_tuning(self) -> None:
         """5-string bass tuning works correctly."""

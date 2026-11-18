@@ -231,8 +231,9 @@ class SunoNotePostprocessor:
         if not is_suno:
             return notes  # No processing needed for clean audio
 
-        notes = self._remove_octave_errors(notes)
-        notes = self._remove_spurious_high_notes(notes)
+        # Octave pairs and high notes can be intentional musical material.
+        # Without evidence identifying an artifact, preserve them rather than
+        # irreversibly deleting legitimate chord tones or lead notes.
         return self._smooth_timing(notes)
 
     def _remove_octave_errors(
@@ -240,9 +241,9 @@ class SunoNotePostprocessor:
         notes: list[note_seq.NoteSequence.Note],
     ) -> list[note_seq.NoteSequence.Note]:
         """
-        Remove octave doubling errors (common in Suno transcriptions).
+        Legacy destructive heuristic; not used by the public pipeline.
 
-        Suno's metallic shimmer often causes false harmonics. Checks all
+        Suno's metallic shimmer can cause false harmonics. Checks all
         simultaneous notes (within 50ms) so octave doublings inside 3+ note
         chords are also caught, keeping the lower note of each octave pair.
         """
@@ -277,9 +278,10 @@ class SunoNotePostprocessor:
         threshold_pitch: int = 84,  # High E (12th fret, high E string)
     ) -> list[note_seq.NoteSequence.Note]:
         """
-        Remove spurious ultra-high notes caused by HF artifacts.
+        Legacy destructive heuristic; not used by the public pipeline.
 
-        Suno often transcribes metallic shimmer as very high notes.
+        Metallic shimmer can be transcribed as very high notes, but high
+        notes can also be intentional.
         """
         # Count notes above threshold
         high_notes = [n for n in notes if n.pitch > threshold_pitch]
