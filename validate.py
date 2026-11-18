@@ -300,8 +300,20 @@ def main(argv: list[str] | None = None) -> int:
         splitter = SplitterAgent(output_dir=_tmp("stems"))
         result = splitter.process_guitars("examples/guitar_solo.wav")
         check("Splitter.process_guitars() returns lead path", os.path.exists(result["lead"]))
-        check("Splitter.process_guitars() returns left path", os.path.exists(result["left"]))
-        check("Splitter.process_guitars() returns right path", os.path.exists(result["right"]))
+        # examples/guitar_solo.wav is mono. The old code synthesised a fake
+        # stereo pair and then wrote two "rhythm" stems that were the centre
+        # signal at -14 dB, one inverted; this gate asserted those files
+        # existed, so it was locking the defect in. A mono source must now say
+        # so and write no rhythm stems.
+        check(
+            "Splitter reports no stereo information for a mono source",
+            result["stereo"] is False and result["left"] is None and result["right"] is None,
+            f"stereo={result.get('stereo')!r} left={result.get('left')!r}",
+        )
+        check(
+            "Splitter writes no rhythm stems for a mono source",
+            not os.path.exists(os.path.join(splitter.output_dir, "processed_rhythm_L.wav")),
+        )
         bass_out = splitter.process_bass("examples/bass_groove.wav")
         check("Splitter.process_bass() returns path", os.path.exists(bass_out))
     except Exception as e:

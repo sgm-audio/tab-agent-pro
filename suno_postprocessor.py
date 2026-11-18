@@ -157,11 +157,15 @@ class SunoAudioPreprocessor:
 
         The cutoff has to sit *below* the lowest note the instrument pipeline
         can transcribe, which for a 5-string bass is B0 (23, MIDI) = 30.9 Hz.
-        A 4th-order Butterworth at 40 Hz attenuated B0 by 9.5 dB, C1 by 7.8 dB
-        and E1 by 2.5 dB *before* stem separation and transcription, which is
-        the opposite of what a pre-transcription cleanup should do.
+        A 4th-order Butterworth at 40 Hz cost B0 18.9 dB, C1 15.5 dB and E1
+        5.2 dB *before* stem separation and transcription, which is the
+        opposite of what a pre-transcription cleanup should do.
 
-        At 23 Hz (one third of an octave under B0) the same filter costs B0
+        Note the filter is run through ``filtfilt``, i.e. forward and back, so
+        attenuation is squared: it is twice the single-pass Butterworth figure
+        in dB. Measure it with ``filtfilt``, not with ``freqz``.
+
+        At 23 Hz (a third of an octave under B0) the same filter costs B0
         0.9 dB, C1 0.6 dB and E1 0.1 dB while still removing 12.2 dB of the
         20 Hz rumble that sits below the instrument range entirely.
         """

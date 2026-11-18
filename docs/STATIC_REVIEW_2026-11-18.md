@@ -21,7 +21,7 @@ Still present and **not** fixed: **P0-6** (mid/side emits three stems from one s
 
 Corrections to earlier drafts of this document, kept so the record is honest:
 - **P0-6 was overstated.** `rhythm_l` and `rhythm_r` are identical only for mono input. For genuine stereo they differ (`max|Δ| = 0.32`, `corr = −0.58`); what is actually wrong is that neither is a *side* signal. Rewritten below.
-- **P1-10's attenuation figures were wrong in the conservative direction.** Measured values for the 4th-order Butterworth at 40 Hz are B0 −9.5 dB, C1 −7.8 dB, E1 −2.5 dB (the draft said −10.5/−5.1); the conclusion and the fix are unchanged, and the cutoff is now 23 Hz, measured at B0 −0.9 dB / E1 −0.1 dB with 20 Hz rumble still down 12.2 dB.
+- **P1-10's attenuation figures were wrong twice, both times understated.** The code calls `filtfilt`, which applies the Butterworth twice, so dB attenuation doubles; both earlier tables were computed with `freqz` (single pass). The true figures are B0 −18.9 dB, C1 −15.5 dB, E1 −5.2 dB — the defect is roughly twice as bad as either draft said. The cutoff is now 23 Hz, measured at B0 −0.9 dB / E1 −0.1 dB with 20 Hz rumble still down 12.2 dB.
 - **`Undo_EndBlock` flags.** An intermediate draft of the fix asserted that `-1` is the value that suppresses an undo point. That is backwards: `-1` means "everything changed" and is what the REAPER docs recommend for scripts that modify project state directly; flags *other than* `-1` are what risk creating no undo point. `main`'s `-1` is correct.
 
 ---
@@ -280,16 +280,24 @@ after ONE NoBackendError                    -> is_ready False, status 'starting'
 The Dockerfile healthcheck probes `/ready`, so a single malformed upload takes a healthy container out of rotation and keeps it out until some other user's upload succeeds. Separately, `agents.py:58` hard-codes `set_status("up")` at import — the exact anti-pattern `monitoring.py`'s own docstring says was removed.
 **Fix:** distinguish *capability* failures (import/load) from *request* failures. Keep per-request errors in `record_request`/`last_error` only; never let a transcription exception rewrite a required component's status. Drop line 58 (the derived status already handles "starting"). Treat `starting` as not-ready.
 
-## P1-10 The "AI audio" preprocessor deletes the bass fundamental (down 10.5 dB at B0)
+## P1-10 The "AI audio" preprocessor deletes the bass fundamental (down 18.9 dB at B0)
 
 **Where:** `suno_postprocessor.py:139` + `152-158`: `_highpass_filter(y, sr, cutoff=40)`.
-Verified magnitudes through that 4th-order Butterworth:
+Verified magnitudes through that 4th-order Butterworth, **applied with `filtfilt`**
+(which runs the filter forward and backward, so attenuation is squared — twice the
+single-pass figure in dB):
 
-| note | freq | attenuation |
-|---|---|---|
-| B0 (5-string bass open) | 30.87 Hz | **−10.5 dB** |
-| E1 | 41.2 Hz | −5.1 dB |
-| A1 | 55 Hz | −0.2 dB |
+| note | freq | single-pass | `filtfilt` (what runs) |
+|---|---|---|---|
+| B0 (5-string bass open) | 30.87 Hz | −9.5 dB | **−18.9 dB** |
+| C1 | 32.70 Hz | −7.8 dB | −15.5 dB |
+| E1 | 41.2 Hz | −2.5 dB | −5.2 dB |
+| 20 Hz rumble | 20 Hz | −24.1 dB | −39.9 dB |
+
+Both earlier drafts of this table were wrong: the first quoted −10.5/−5.1 dB, the
+second −9.5/−2.5 dB, because both were computed with `freqz`, which models a
+single pass. Measuring the signal that `filtfilt` actually returns roughly doubles
+every figure. The defect is therefore worse than originally reported, not milder.
 
 `process_suno_audio` runs this on the **whole mix before Demucs** (`main.py:418`), and the `bass_5_string` profile sets `suno_aggressive_mode: True`, so the documented 5-string-bass path actively removes the low B and weakens E1 — and a weakened, phase-shifted fundamental is the classic trigger for octave errors in pitch trackers.
 **Fix:** cutoff ≤ 20 Hz for the mix, or apply the high-pass only to the guitar stem after separation, or skip it when the requested instrument is bass. Document the number in the docstring instead of "remove ultra-low rumble".

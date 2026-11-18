@@ -68,11 +68,15 @@ def test_cli_all_writes_distinct_lead_rhythm_bass_note_content(
 
     monkeypatch.setattr(agents, "DEMUCS_API_AVAILABLE", True)
     monkeypatch.setattr(agents, "demucs_api", SimpleNamespace(Separator=separator), raising=False)
+    # The three stems are asserted by *separation quality*, not by waveform.
+    # The old contract pinned `L - 0.8*mid`, which is the centre content at
+    # -14 dB with opposite polarity on each side: "rhythm L/R" was the lead
+    # inverted, and the assertion below is what let that ship.
     expected = {
-        "processed_lead": (lead, center_pcm + (left_pcm + right_pcm) / 2),
-        "processed_rhythm_L": (left, 0.2 * center_pcm + 0.6 * left_pcm - 0.4 * right_pcm),
-        "processed_rhythm_R": (right, 0.2 * center_pcm - 0.4 * left_pcm + 0.6 * right_pcm),
-        "processed_bass_clean": (bass, None),
+        "processed_lead": (lead, center_pcm, {"left_pcm": left_pcm, "right_pcm": right_pcm}),
+        "processed_rhythm_L": (left, left_pcm, {"center": center_pcm, "right_pcm": right_pcm}),
+        "processed_rhythm_R": (right, right_pcm, {"center": center_pcm, "left_pcm": left_pcm}),
+        "processed_bass_clean": (bass, None, None),
     }
     calls = []
 
@@ -82,10 +86,19 @@ def test_cli_all_writes_distinct_lead_rhythm_bass_note_content(
         assert kwargs["onset_threshold"] == 0.62
         assert kwargs["frame_threshold"] == 0.3  # profile, not an explicit CLI flag
         pcm, rate = sf.read(path)
-        events, guitar_pcm = expected[stem]
+        events, wanted, unwanted = expected[stem]
         assert rate == SAMPLE_RATE and pcm.shape == center_pcm.shape
-        if guitar_pcm is not None:
-            np.testing.assert_allclose(pcm, guitar_pcm, atol=9e-5)
+        if unwanted is not None:
+            # The stem must actually contain the source it is named after...
+            # (a *recording* of it, so the tolerance has to allow the STFT
+            # round-trip: 2048/512 overlap-add is near-transparent but not
+            # bit-exact, and the panning mask softens band edges by design).
+            projection = np.dot(pcm, wanted) / np.dot(wanted, wanted)
+            assert projection > 0.9, f"{stem} is missing its own source: {projection:.3f}"
+            # ...and must not still contain the parts that belong elsewhere.
+            for name, other in unwanted.items():
+                leak = np.dot(pcm, other) / np.dot(other, other)
+                assert abs(leak) < 0.05, f"{stem} still carries {name}: {leak:.3f}"
         else:
             # Bass fundamentals are kept; fret buzz above the cutoff is halved.
             assert abs(np.dot(pcm, buzz) / np.dot(buzz, buzz) - 0.5) < 0.03
@@ -220,8 +233,13 @@ def test_incomplete_demucs_outputs_fall_back_to_readable_mix(
     assert set(stems) == {"guitar", "bass"}
     assert len(set(stems.values())) == 2
     assert all(Path(path).read_bytes() == source.read_bytes() for path in stems.values())
+    guitar = splitter.process_guitars(stems["guitar"])
     processed = [
-        *splitter.process_guitars(stems["guitar"]).values(),
+        guitar["lead"],
+        # `left`/`right` are None when the fallback mix carries no stereo
+        # information; there is nothing to assert about a stem that was never
+        # written, and nothing should have been written in that case.
+        *[path for path in (guitar["left"], guitar["right"]) if path is not None],
         splitter.process_bass(stems["bass"]),
     ]
     assert all(sf.info(path).frames == len(left) for path in processed)

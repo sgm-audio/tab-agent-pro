@@ -179,12 +179,28 @@ def test_stereo_mid_side_routing_with_distinct_tones(tmp_path):
     )
     result = SplitterAgent(str(tmp_path / "out"), device="cpu").process_guitars(str(source))
     original, _ = sf.read(source, always_2d=True)
-    mid = (original[:, 0] + original[:, 1]) / 2
-    for key, expected in (
-        ("lead", mid),
-        ("left", original[:, 0] - 0.8 * mid),
-        ("right", original[:, 1] - 0.8 * mid),
-    ):
-        data, rate = sf.read(result[key])
-        assert rate == sr
-        np.testing.assert_allclose(data, expected, atol=4e-5)
+
+    # Assert routing by content, not by waveform. The previous version of this
+    # test pinned `channel - 0.8*mid`, which is the *centre* signal at -14 dB
+    # with opposite polarity in each stem: it was asserting the bug.
+    def magnitude(signal, freq):
+        spectrum = np.abs(np.fft.rfft(signal))
+        freqs = np.fft.rfftfreq(len(signal), 1 / sr)
+        return float(spectrum[np.argmin(np.abs(freqs - freq))])
+
+    assert result["stereo"] is True
+    lead, rate = sf.read(result["lead"])
+    left, _ = sf.read(result["left"])
+    right, _ = sf.read(result["right"])
+    assert rate == sr
+    for stem in (lead, left, right):
+        assert len(stem) == len(original)
+
+    # 440 Hz is centred, 330 Hz is left-only, 550 Hz is right-only.
+    assert magnitude(lead, 440) > 100 * max(magnitude(lead, 330), magnitude(lead, 550))
+    assert magnitude(left, 330) > 100 * max(magnitude(left, 440), magnitude(left, 550))
+    assert magnitude(right, 550) > 100 * max(magnitude(right, 440), magnitude(right, 330))
+    # And the two rhythm stems are genuinely different signals, not the same
+    # one inverted (their correlation must not be -1).
+    correlation = float(np.corrcoef(left, right)[0, 1])
+    assert abs(correlation) < 0.9, f"rhythm L/R are the same signal: r={correlation:.3f}"
