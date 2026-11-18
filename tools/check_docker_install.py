@@ -86,6 +86,27 @@ def check_app_binds_externally() -> None:
         )
 
 
+def _has_cpu_torch_install(text: str) -> bool:
+    """Require the torch install to use the CPU default, including ARG overrides."""
+    lines = [line.strip() for line in text.splitlines() if not line.lstrip().startswith("#")]
+    default_cpu = any(
+        re.fullmatch(r"ARG\s+TORCH_INDEX_URL=https://download\.pytorch\.org/whl/cpu", line)
+        for line in lines
+    )
+    for line in lines:
+        if not re.search(r"\bpip\s+install\b.*\btorch(?:[=<>\[]|\s)", line):
+            continue
+        direct = re.search(
+            r"--index-url\s+[\"']?https://download\.pytorch\.org/whl/cpu(?:[\"']|\s|$)", line
+        )
+        variable = re.search(
+            r"""--index-url\s+["']?(?:\$TORCH_INDEX_URL|\$\{TORCH_INDEX_URL\})(?:["']|\s|$)""", line
+        )
+        if direct or (default_cpu and variable):
+            return True
+    return False
+
+
 def check_hardening() -> None:
     """Production-hardening invariants added by the phase-5 pass."""
     text = (ROOT / "Dockerfile").read_text()
@@ -106,9 +127,9 @@ def check_hardening() -> None:
             "Dockerfile CMD must use exec form so SIGTERM reaches the server " "(graceful shutdown)"
         )
 
-    if "--index-url https://download.pytorch.org/whl/cpu" not in text:
+    if not _has_cpu_torch_install(text):
         failures.append(
-            "torch must install from the CPU-only index; the PyPI wheel pulls "
+            "torch must install from the CPU-only index by default; the PyPI wheel pulls "
             "~2.5 GB of unusable NVIDIA CUDA packages"
         )
 

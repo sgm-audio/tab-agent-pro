@@ -27,7 +27,6 @@ requested GPU provider whenever one is available.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 
 from monitoring import get_logger
