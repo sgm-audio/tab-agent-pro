@@ -44,55 +44,6 @@ PYSEC-2026-1970 2027-01-31  duplicate advisory identifier reported by two feeds
 PYSEC-2025-191 2027-01-31  duplicate listing (torch training path)
 PYSEC-2025-41  2027-01-31  duplicate listing (torch.load RCE)
 
-# --- pillow 12.3.0 -----------------------------------------------------------
-# pillow is NOT a declared dependency: it reaches the environment transitively
-# through the TensorFlow chain that basic-pitch declares and this project does
-# not install (basic-pitch is installed --no-deps; the ONNX backend needs no
-# image library). It is not imported by any module here — there is no
-# `import PIL` / `from PIL` anywhere in the source tree.
-# Recorded rather than removed so a future dependency that really does need
-# pillow is an explicit, reviewed decision.
-PYSEC-2026-4326 2027-01-31  pillow: not imported by this project and absent from the shipped image
-PYSEC-2026-4327 2027-01-31  pillow: not imported by this project and absent from the shipped image
-PYSEC-2026-4328 2027-01-31  pillow: not imported by this project and absent from the shipped image
-PYSEC-2026-4329 2027-01-31  pillow: not imported by this project and absent from the shipped image
-PYSEC-2026-4330 2027-01-31  pillow: not imported by this project and absent from the shipped image
-PYSEC-2026-4331 2027-01-31  pillow: not imported by this project and absent from the shipped image
-PYSEC-2026-4332 2027-01-31  pillow: not imported by this project and absent from the shipped image
-PYSEC-2026-4333 2027-01-31  pillow: not imported by this project and absent from the shipped image
-PYSEC-2026-4334 2027-01-31  pillow: not imported by this project and absent from the shipped image
-PYSEC-2026-4335 2027-01-31  pillow: not imported by this project and absent from the shipped image
-PYSEC-2026-4336 2027-01-31  pillow: not imported by this project and absent from the shipped image
-PYSEC-2026-4337 2027-01-31  pillow: not imported by this project and absent from the shipped image
-PYSEC-2026-4338 2027-01-31  pillow: not imported by this project and absent from the shipped image
-PYSEC-2026-4339 2027-01-31  pillow: not imported by this project and absent from the shipped image
-PYSEC-2026-4340 2027-01-31  pillow: not imported by this project and absent from the shipped image
-PYSEC-2026-4341 2027-01-31  pillow: not imported by this project and absent from the shipped image
-PYSEC-2026-4342 2027-01-31  pillow: not imported by this project and absent from the shipped image
-PYSEC-2026-4343 2027-01-31  pillow: not imported by this project and absent from the shipped image
-CVE-2026-112390 2027-01-31  pillow: not imported by this project and absent from the shipped image
-CVE-2026-112391 2027-01-31  pillow: not imported by this project and absent from the shipped image
-CVE-2026-112392 2027-01-31  pillow: not imported by this project and absent from the shipped image
-CVE-2026-112393 2027-01-31  pillow: not imported by this project and absent from the shipped image
-CVE-2026-112395 2027-01-31  pillow: not imported by this project and absent from the shipped image
-CVE-2026-112399 2027-01-31  pillow: not imported by this project and absent from the shipped image
-CVE-2026-112400 2027-01-31  pillow: not imported by this project and absent from the shipped image
-CVE-2026-112401 2027-01-31  pillow: not imported by this project and absent from the shipped image
-CVE-2026-112404 2027-01-31  pillow: not imported by this project and absent from the shipped image
-CVE-2026-112406 2027-01-31  pillow: not imported by this project and absent from the shipped image
-CVE-2026-112891 2027-01-31  pillow: not imported by this project and absent from the shipped image
-CVE-2026-112892 2027-01-31  pillow: not imported by this project and absent from the shipped image
-CVE-2026-112893 2027-01-31  pillow: not imported by this project and absent from the shipped image
-CVE-2026-112894 2027-01-31  pillow: not imported by this project and absent from the shipped image
-CVE-2026-112895 2027-01-31  pillow: not imported by this project and absent from the shipped image
-CVE-2026-112897 2027-01-31  pillow: not imported by this project and absent from the shipped image
-CVE-2026-112899 2027-01-31  pillow: not imported by this project and absent from the shipped image
-CVE-2026-112900 2027-01-31  pillow: not imported by this project and absent from the shipped image
-CVE-2026-96638  2027-01-31  pillow: not imported by this project and absent from the shipped image
-CVE-2026-96640  2027-01-31  pillow: not imported by this project and absent from the shipped image
-CVE-2026-96778  2027-01-31  pillow: not imported by this project and absent from the shipped image
-GHSA-78g4-xqwv-q3g8 2027-01-31 pillow: not imported by this project and absent from the shipped image
-
 # --- setuptools 66.x/80.x (<81) ---------------------------------------------
 # The pin is load-bearing: pretty_midi 0.2.10 does `import pkg_resources`, which
 # setuptools removed in 81. Verified in an isolated venv that setuptools 84.1.0

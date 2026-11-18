@@ -176,9 +176,7 @@ class SunoAudioPreprocessor:
         # has no matches and np.argmax would return 0, producing an empty slice.
         if np.any(freqs >= 8000):
             hi_freq_start = int(np.argmax(freqs >= 8000))
-            hi_freq_end = (
-                int(np.argmax(freqs >= 16000)) if np.any(freqs >= 16000) else len(freqs)
-            )
+            hi_freq_end = int(np.argmax(freqs >= 16000)) if np.any(freqs >= 16000) else len(freqs)
             # Apply reduction (0.3 = reduce to 30% of original)
             mag[hi_freq_start:hi_freq_end, :] *= 0.3
 

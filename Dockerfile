@@ -67,8 +67,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     # reverse proxy in front of it) can reach the web UI.
     HOST=0.0.0.0 \
     PORT=7860 \
-    # Writable cache location for the owner of /app; models land here.
-    CACHE_DIR=/app/.cache/tab_agent \
+    # Writable cache locations for the owner of /app, including Demucs weights.
     XDG_CACHE_HOME=/app/.cache \
     TORCH_HOME=/app/.cache/torch
 

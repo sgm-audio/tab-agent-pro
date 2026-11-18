@@ -14,7 +14,6 @@ otherwise invisible to the original suite:
   * threshold values from user memory must be range-validated
 """
 
-import os
 import sys
 import threading
 from pathlib import Path

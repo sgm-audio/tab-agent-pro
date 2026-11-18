@@ -161,7 +161,6 @@ Environment variables (all optional; `.env` is read by `app.py`, `main.py`, and 
 | `HOST` | `0.0.0.0` | Bind address for the web UI |
 | `PORT` | `7860` | Port for the web UI |
 | `DEVICE` | `auto` | Compute device for transcription: `auto`, `cpu`, `cuda`, `rocm`, `vulkan`, `mps`, `directml` |
-| `CACHE_DIR` | `~/.cache/tab_agent` | Model cache (Basic Pitch ONNX model, Demucs weights) |
 | `MAX_CONCURRENT_REQUESTS` | `1` | Transcriptions allowed in flight at once |
 | `QUEUE_MAX_SIZE` | `32` | Bounded backlog; requests beyond this are rejected |
 | `UPLOAD_TTL_SEC` | `900` | Upload temp files older than this are pruned |

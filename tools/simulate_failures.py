@@ -131,10 +131,8 @@ def simulate_transcription_backend_down() -> None:
     """transcribe_stem must raise (escalate) when no model is available."""
     import agents
 
-    ear = agents.EarAgent.__new__(agents.EarAgent)
-    ear.model = None
-    ear.processor = None
     with patch.object(agents, "BASIC_PITCH_AVAILABLE", False), patch.object(agents, "health"):
+        ear = agents.EarAgent(device="cpu")
         try:
             ear.transcribe_stem(str(ROOT / "examples" / "guitar_solo.wav"))
         except RuntimeError as e:
@@ -147,10 +145,8 @@ def simulate_demucs_offline() -> None:
     """Demucs failing must degrade to raw audio, not crash the pipeline."""
     import agents
 
-    splitter = agents.SplitterAgent.__new__(agents.SplitterAgent)
     tmp = _fresh_cwd()
-    splitter.output_dir = tmp
-    splitter.log = agents.get_logger("splitter")
+    splitter = agents.SplitterAgent(output_dir=tmp, device="cpu")
     audio = ROOT / "examples" / "guitar_solo.wav"
     with (
         patch.object(agents, "DEMUCS_API_AVAILABLE", False),
@@ -188,16 +184,29 @@ def simulate_unwritable_output() -> None:
 # ---------------------------------------------------------------------------
 
 
-def simulate_malformed_mt3_tokens(capsys) -> None:
+def simulate_malformed_basic_pitch_output() -> None:
+    """Invalid model output must fail rather than masquerade as an empty transcription."""
     import agents
 
-    ear = agents.EarAgent.__new__(agents.EarAgent)
-    notes = ear._parse_mt3_tokens(
-        ["NOTE_ON", "sixty", "TIME_SHIFT", "0.5", "NOTE_OFF", "60"], min_duration=0.05
-    )
-    out = capsys.readouterr().out
-    check(notes == [], "malformed MT3 tokens yield no notes")
-    check("mt3_token_skipped" in out, "malformed MT3 tokens are logged", out.strip()[:120])
+    with (
+        patch.object(agents, "BASIC_PITCH_AVAILABLE", True),
+        patch.object(agents, "basic_pitch_predict", return_value=(None, None, None)),
+        patch.object(agents, "health") as health,
+    ):
+        ear = agents.EarAgent(device="cpu")
+        try:
+            ear.transcribe_stem(str(ROOT / "examples" / "guitar_solo.wav"))
+        except RuntimeError:
+            check(True, "malformed Basic Pitch output raises")
+        else:
+            check(False, "malformed Basic Pitch output raises", "no exception raised")
+        check(
+            any(
+                call.args == ("basic_pitch", "error: AttributeError")
+                for call in health.set_component.call_args_list
+            ),
+            "malformed Basic Pitch output marks backend error",
+        )
 
 
 def main() -> int:
@@ -211,23 +220,13 @@ def main() -> int:
         simulate_transcription_backend_down,
         simulate_demucs_offline,
         simulate_unwritable_output,
+        simulate_malformed_basic_pitch_output,
     ]
     for sim in simulations:
         try:
             sim()
         except Exception as e:
             check(False, sim.__name__, f"simulation raised {type(e).__name__}: {e}")
-
-    # Needs capsys; run separately through pytest-compatible capture.
-    import contextlib
-    import io
-
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        try:
-            simulate_malformed_mt3_tokens(type("C", (), {"readouterr": lambda self: type("R", (), {"out": buf.getvalue()})()})())  # type: ignore[arg-type]
-        except Exception as e:
-            check(False, "simulate_malformed_mt3_tokens", str(e))
 
     failures = [r for r in RESULTS if not r[0]]
     for ok, name, detail in RESULTS:
