@@ -21,9 +21,9 @@ the service.
 ```bash
 # 1. Verify the tree is release-clean (same gates CI runs)
 ruff check . && black --check . && mypy .
-python -m pytest tests/ -q
+python -m pytest -q
 python tools/check_vulns.py
-python tools/check_lockfile.py
+python tools/check_lockfile.py --verify --extra pytest --extra pytest-cov
 
 # 2. Build and run the Docker image (CPU by default)
 docker build -t tab-agent .
@@ -68,9 +68,9 @@ curl -s https://<host>/health/metrics | jq .
   Readiness is gated on transcription only. **Demucs is deliberately not a
   readiness gate**: separation has a documented raw-audio passthrough, so an
   instance without Demucs weights still transcribes whole-mix audio (with the
-  quality loss reported in `degraded_components` and flagged on tab/JSON exports). Gating on it made a perfectly
-  serving instance answer `503` — which would pull it out of rotation for no
-  reason. Watch `degraded_components` for quality, `/ready` for availability.
+  quality loss reported in `degraded_components` and flagged in tab/JSON exports).
+  Gating on it made a serving instance answer `503`, pulling it out of rotation.
+  Watch `degraded_components` for quality, `/ready` for availability.
 - `/health/metrics` — per-stage `count`, `total_s`, `avg_s`, `error_rate` plus a
   bounded window average.
 
@@ -229,10 +229,11 @@ Rules that are not negotiable:
 
 ## 8. Release checklist
 
-- [ ] All gates green: `ruff`, `black --check`, `mypy`, `pytest` (290+),
-      `simulate_failures.py` (15/15), `check_index.py`, `check_env_example.py`,
+- [ ] All gates green: `ruff`, `black --check`, `mypy`, `pytest` (including real CPU ONNX and Lua tests),
+      `simulate_failures.py` (all checks), `check_index.py`, `check_env_example.py`,
       `check_docker_install.py`, `check_lockfile.py` (+ `--static`),
-      `check_vulns.py`, `validate.py`
+      `check_vulns.py`, `validate.py`. Report model skips and expected failures
+      separately; see the [test audit](TEST_AUDIT.md) for release checks.
 - [ ] `requirements.lock` regenerated if any dependency changed
 - [ ] `.pip-audit-ignore` reviewed; no expiry in the past
 - [ ] `THIRD_PARTY_NOTICES.md` updated if dependencies were added/removed

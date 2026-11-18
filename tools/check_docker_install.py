@@ -87,7 +87,7 @@ def check_app_binds_externally() -> None:
         )
 
 
-def _default_torch_index_is_cpu(dockerfile: str) -> bool:
+def _has_cpu_torch_install(dockerfile: str) -> bool:
     """Check the pip install's actual index argument, resolving our build arg default."""
     cpu_index = "https://download.pytorch.org/whl/cpu"
     index_default = ""
@@ -133,7 +133,7 @@ def check_hardening() -> None:
             "Dockerfile CMD must use exec form so SIGTERM reaches the server " "(graceful shutdown)"
         )
 
-    if not _default_torch_index_is_cpu(text):
+    if not _has_cpu_torch_install(text):
         failures.append("torch must install from the CPU-only index by default")
 
     # The build must (a) re-apply the lock so the installed set matches what was

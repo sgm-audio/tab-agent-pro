@@ -125,8 +125,8 @@ def render_tab_text(
     tab_data,
     instrument="Guitar",
     num_strings: int | None = None,
-    *,
     tuning: list[int] | None = None,
+    *,
     skipped_notes: list[dict] | None = None,
     separation_mode: str | None = None,
 ) -> str | None:
@@ -135,7 +135,9 @@ def render_tab_text(
         return None
 
     max_used = max(pos["string"] for pos in tab_data) + 1
-    num_strings = len(tuning) if tuning is not None else max(max_used, num_strings or 0)
+    num_strings = max(max_used, num_strings or 0, len(tuning) if tuning is not None else 0)
+    if tuning is not None and len(tuning) != num_strings:
+        tuning = None
     labels = _string_labels(num_strings, tuning)
     show_time = any("start_time" in pos for pos in tab_data)
 
@@ -189,8 +191,8 @@ def export_tab_to_txt(
     output_path,
     instrument="Guitar",
     num_strings: int | None = None,
-    *,
     tuning: list[int] | None = None,
+    *,
     skipped_notes: list[dict] | None = None,
     separation_mode: str | None = None,
 ) -> None:
@@ -364,6 +366,8 @@ Examples:
     parser.add_argument("--no-midi", action="store_true", help="Skip MIDI export")
     parser.add_argument("--no-tab", action="store_true", help="Skip ASCII tab export")
     parser.add_argument("--no-json", action="store_true", help="Skip JSON export")
+    # Internal protocol: REAPER imports only MIDI written by this invocation.
+    parser.add_argument("--reaper-report-midi", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--device",
         choices=["auto", "cpu", "cuda", "rocm", "vulkan", "mps", "directml"],
@@ -519,6 +523,14 @@ def main(argv: list[str] | None = None) -> int:
     ear = EarAgent(device=args.device)
     suno_postprocessor = SunoNotePostprocessor()
 
+    def write_midi(notes: list, suffix: str) -> None:
+        if args.no_midi or not notes:
+            return
+        path = os.path.join(output_dir, f"{song_name}_{suffix}.mid")
+        ear.export_midi(notes, path)
+        if args.reaper_report_midi:
+            print(f"[tab-agent-midi] {suffix}", flush=True)
+
     guitar_tuning = config.get("guitar_tuning", [40, 45, 50, 55, 59, 64])
     bass_tuning = config.get("bass_tuning", [23, 28, 33, 38, 43])
     num_frets = int(config.get("num_frets", 24))
@@ -546,9 +558,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         lead_notes = ear.humanize_and_clean(lead_notes_raw, is_bass=False)
         lead_notes = suno_postprocessor.process(lead_notes, is_suno, suno_metrics)
-        if not args.no_midi and lead_notes:
-            lead_midi_path = os.path.join(output_dir, f"{song_name}_lead_guitar.mid")
-            ear.export_midi(lead_notes, lead_midi_path)
+        write_midi(lead_notes, "lead_guitar")
 
         # Transcribe rhythm guitar (left channel)
         rhythm_l_notes_raw = ear.transcribe_stem(
@@ -561,9 +571,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         rhythm_l_notes = ear.humanize_and_clean(rhythm_l_notes_raw, is_bass=False)
         rhythm_l_notes = suno_postprocessor.process(rhythm_l_notes, is_suno, suno_metrics)
-        if not args.no_midi and rhythm_l_notes:
-            rhythm_l_midi_path = os.path.join(output_dir, f"{song_name}_rhythm_L.mid")
-            ear.export_midi(rhythm_l_notes, rhythm_l_midi_path)
+        write_midi(rhythm_l_notes, "rhythm_L")
 
         # Transcribe rhythm guitar (right channel)
         rhythm_r_notes_raw = ear.transcribe_stem(
@@ -576,9 +584,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         rhythm_r_notes = ear.humanize_and_clean(rhythm_r_notes_raw, is_bass=False)
         rhythm_r_notes = suno_postprocessor.process(rhythm_r_notes, is_suno, suno_metrics)
-        if not args.no_midi and rhythm_r_notes:
-            rhythm_r_midi_path = os.path.join(output_dir, f"{song_name}_rhythm_R.mid")
-            ear.export_midi(rhythm_r_notes, rhythm_r_midi_path)
+        write_midi(rhythm_r_notes, "rhythm_R")
 
         # Guitar tablature
         guitar_agent = TabAgent(
@@ -622,9 +628,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         bass_notes = ear.humanize_and_clean(bass_notes_raw, is_bass=True, max_pitch=bass_max_pitch)
         bass_notes = suno_postprocessor.process(bass_notes, is_suno, suno_metrics)
-        if not args.no_midi and bass_notes:
-            bass_midi_path = os.path.join(output_dir, f"{song_name}_bass.mid")
-            ear.export_midi(bass_notes, bass_midi_path)
+        write_midi(bass_notes, "bass")
 
         # Bass tablature
         bass_agent = TabAgent(

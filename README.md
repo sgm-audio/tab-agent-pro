@@ -76,17 +76,24 @@ the stem-separation stack.
 ### Validation
 
 ```bash
-python -m pytest tests/            # run regression tests (requires dev tools)
-python validate.py                 # end-to-end checklist (PASS/FAIL summary)
+python -m pytest                                            # app branch coverage + real Basic Pitch CPU inference
+python validate.py --quick                                  # configuration and component checklist
 
-python tools/check_index.py           # ReaPack index format
-python tools/check_env_example.py     # every documented env var is read
-python tools/check_docker_install.py  # basic-pitch pin + required deps
-python tools/check_reaper_settings.py # Lua settings and completion fixture
-python tools/check_lockfile.py        # installed env == requirements.lock
-python tools/check_vulns.py           # advisories: none unaccepted/expired
-python tools/simulate_failures.py     # failure-mode checks
+python tools/check_index.py                                 # ReaPack index format
+python tools/check_env_example.py                           # every documented env var is read
+python tools/check_docker_install.py                        # Basic Pitch and CPU-index checks
+python tools/check_reaper_settings.py                       # run both Lua scripts in the CLI/MIDI import fixture
+python tools/check_lockfile.py --verify --extra pytest --extra pytest-cov
+python tools/check_vulns.py                                 # advisories: none unaccepted/expired
+python tools/simulate_failures.py                            # failure-mode checks
 ```
+
+Install `pytest`, `pytest-cov` and `lupa` for the test suite. The default run
+uses the ONNX weights shipped in the Basic Pitch wheel and needs no GPU or model
+downloads. Real Demucs inference is opt-in with pre-provisioned weights. See the
+[combined test audit](docs/TEST_AUDIT.md) for lane commands, known tab playability
+gaps, and checks to run before releasing the REAPER scripts. The separate
+[baseline audit](docs/TRANSCRIPTION_TEST_AUDIT.md) records the independent PR #11 findings.
 
 ---
 
@@ -211,13 +218,13 @@ four-fret span for held, fretted notes, not every constraint of human fingering.
 3. Run the Settings action and point it at the checkout containing `main.py`.
 4. Glue and select the audio item you want analysed, then run the Tab Agent action.
 
-The action uses `python3` (`python` on Windows) from REAPER's PATH. Settings
-stores profile, instrument, onset/frame thresholds, output directory and export
-toggles in ExtState. Pipeline messages appear in the REAPER console; pipe reads
-can block while Python is quiet. Use a fresh output directory per run to avoid
-old files sharing the same basename. The checked-in actions are tested against
-a Lua API fixture; native REAPER and the separately indexed ReaPack release
-have not been re-verified.
+`Tab Agent Settings` stores the install path, profile, instrument, onset/frame
+thresholds, output directory and export toggles in REAPER's ExtState. The action
+uses `python3` (`python` on Windows) from REAPER's PATH. Use matching versions
+of the Lua scripts and Python checkout: the action imports only MIDI reported
+by the CLI from the current run. Pipe reads can still block while Python is
+quiet. The Lua API fixture does not replace a native REAPER smoke test, and the
+separately indexed ReaPack release has not been re-verified.
 
 ---
 
@@ -233,7 +240,7 @@ have not been re-verified.
 ├── validate.py            # End-to-end checklist
 ├── reaper/                # REAPER Lua scripts
 ├── tools/                 # Config/deployment guard scripts
-├── tests/                 # Regression tests
+├── tests/                 # Unit, contract and real-inference tests
 ├── examples/              # Demo audio
 ├── docs/RUNBOOK.md        # Deploy / monitor / rollback / dependency refresh
 ├── docs/ACCEPTED_RISKS.md # Every known risk, with exposure and expiry

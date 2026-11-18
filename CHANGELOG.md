@@ -12,8 +12,9 @@
   native segment length rather than an incompatible 10-second override.
 - Web process shutdown only removes sessions owned by that process, so exiting
   a separate worker or validation script does not delete another run's outputs.
-- The checked-in REAPER action reads the filename using the Lua API's return
-  contract and stops before importing MIDI when the child process fails.
+- The checked-in REAPER action imports only nonempty MIDI reported by a successful
+  run, into new tracks in the same project. The Lua/CLI tests cover failure,
+  project changes, and stale files.
 - The wheel includes `device.py`. CI validates the installed dependency closure
   (including missing packages), and installs against the lock as constraints.
   Updated Gradio/Pillow and Tornado to address the baseline advisory findings;

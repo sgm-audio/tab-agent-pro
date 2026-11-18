@@ -19,8 +19,11 @@ from __future__ import annotations
 
 import math
 import os
+import shutil
 import subprocess  # nosec B404 — fixed command list, shell=False, used by Demucs CLI fallback
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 
 import librosa
 import numpy as np
@@ -33,11 +36,14 @@ from monitoring import get_logger, health
 
 # Basic Pitch imports (proven and reliable transcription backend)
 basic_pitch_predict = None
+BASIC_PITCH_MODEL: Path | None = None
 try:
+    from basic_pitch import ONNX_PRESENT, FilenameSuffix, build_icassp_2022_model_path
     from basic_pitch.inference import predict as _bp_predict
 
     basic_pitch_predict = _bp_predict
-    BASIC_PITCH_AVAILABLE = True
+    BASIC_PITCH_MODEL = build_icassp_2022_model_path(FilenameSuffix.onnx)
+    BASIC_PITCH_AVAILABLE = ONNX_PRESENT
 except ImportError:
     BASIC_PITCH_AVAILABLE = False
 
@@ -122,8 +128,6 @@ class SplitterAgent:
         self.log.info("demucs_raw_fallback", file=song_name)
         base_path = os.path.join(self.output_dir, "htdemucs", song_name)
         os.makedirs(base_path, exist_ok=True)
-        import shutil
-
         other_path = os.path.join(base_path, "other.wav")
         bass_path = os.path.join(base_path, "bass.wav")
         shutil.copy2(audio_path, other_path)
@@ -149,44 +153,42 @@ class SplitterAgent:
         base_path = os.path.join(self.output_dir, "htdemucs", song_name)
         os.makedirs(base_path, exist_ok=True)
 
-        stem_map = {"other": "other", "bass": "bass"}
+        missing = {"other", "bass"} - separated.keys()
+        if missing:
+            raise ValueError(f"Demucs API did not return required stems: {sorted(missing)}")
+        for stem_key in ("other", "bass"):
+            tensor = separated[stem_key]
+            if tensor.ndim == 1:
+                tensor = tensor.unsqueeze(0)
+            stem_path = os.path.join(base_path, f"{stem_key}.wav")
+            sf.write(stem_path, tensor.cpu().numpy().T, separator.samplerate)
 
-        for stem_key, file_key in stem_map.items():
-            if stem_key in separated:
-                tensor = separated[stem_key]
-                if tensor.ndim == 1:
-                    tensor = tensor.unsqueeze(0)
-                stem_path = os.path.join(base_path, f"{file_key}.wav")
-                sf.write(stem_path, tensor.cpu().numpy().T, separator.samplerate)
-
-        return {
-            "guitar": os.path.join(base_path, "other.wav"),
-            "bass": os.path.join(base_path, "bass.wav"),
-        }
+        return self._checked_stems(base_path)
 
     def _separate_with_subprocess(self, audio_path, song_name):
         """Fallback: Demucs via CLI subprocess."""
-        cmd = ["demucs", "-n", "htdemucs", "-o", self.output_dir, audio_path]
-
+        # An exit code alone does not prove stems exist. Read only files
+        # created in this attempt; a previous run may have the same basename.
+        cli_dir = tempfile.mkdtemp(prefix="demucs-cli-", dir=self.output_dir)
+        cmd = ["demucs", "-n", "htdemucs", "-d", self.device, "-o", cli_dir, audio_path]
         try:
-            subprocess.run(
-                cmd,
-                check=True,
-                capture_output=True,
-                text=True,
-            )  # nosec B603
-        except subprocess.CalledProcessError:
+            subprocess.run(cmd, check=True, capture_output=True, text=True)  # nosec B603
+            stem_dir = os.path.splitext(song_name)[0]
+            return self._checked_stems(os.path.join(cli_dir, "htdemucs", stem_dir))
+        except Exception:
+            shutil.rmtree(cli_dir, ignore_errors=True)
             raise
 
-        base_path = os.path.join(self.output_dir, "htdemucs", song_name)
-        stem_dir = os.path.splitext(song_name)[0]
-        alt_base = os.path.join(self.output_dir, "htdemucs", stem_dir)
-        if not os.path.exists(base_path) and os.path.exists(alt_base):
-            base_path = alt_base
-        return {
+    @staticmethod
+    def _checked_stems(base_path: str) -> dict[str, str]:
+        stems = {
             "guitar": os.path.join(base_path, "other.wav"),
             "bass": os.path.join(base_path, "bass.wav"),
         }
+        for path in stems.values():
+            if sf.info(path).frames <= 0:
+                raise ValueError(f"Demucs produced an empty stem: {path}")
+        return stems
 
     def process_guitars(self, guitar_stem_path):
         """
@@ -325,6 +327,7 @@ class EarAgent:
         log.info("transcribe_start", file=file, target=target, device=self.device)
 
         # ── Try Basic Pitch ───────────────────────────────────────────
+        failure: Exception | None = None
         if BASIC_PITCH_AVAILABLE:
             try:
                 with metrics.track_stage("basic_pitch_transcription"):
@@ -346,17 +349,23 @@ class EarAgent:
                 )
                 return result
             except Exception as e:
+                failure = e
                 log.warning("basic_pitch_failed", file=file, error=str(e))
 
-        # ── Nothing worked: raise error ──────────────────────────────
         log.error("transcribe_all_failed", file=file, target=target)
         health.record_request(success=False, details=f"transcribe: {file}")
-        msg = (
-            f"No transcription models available for {file}. "
-            "Install Basic Pitch (pip install basic-pitch) with its runtime "
-            "dependencies (mir_eval, resampy)."
-        )
-        raise RuntimeError(msg)
+        if isinstance(failure, ModuleNotFoundError):
+            msg = f"Basic Pitch dependency missing: {failure.name}. Check the runtime installation."
+        elif failure is not None:
+            msg = (
+                f"Basic Pitch could not transcribe {file}. Check the audio, ONNX model and runtime."
+            )
+        else:
+            msg = (
+                f"No transcription models available for {file}. "
+                "Install Basic Pitch with ONNX Runtime and its dependencies (mir_eval, resampy)."
+            )
+        raise RuntimeError(msg) from failure
 
     def _transcribe_with_basic_pitch(
         self,
@@ -379,6 +388,7 @@ class EarAgent:
         try:
             _model_output, midi_data, _note_events = basic_pitch_predict(
                 audio_path,
+                model_or_model_path=BASIC_PITCH_MODEL,
                 onset_threshold=onset_threshold,
                 frame_threshold=frame_threshold,
                 minimum_note_length=int(min_note_duration * 1000),
