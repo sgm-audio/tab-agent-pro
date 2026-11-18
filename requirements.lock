@@ -18,7 +18,7 @@
 #   python tools/check_lockfile.py --write
 #
 # Scope: this is the *runtime* closure only - the declared dependencies plus
-# everything they transitively require (131 packages). Lint, test and audit
+# everything they transitively require (117 packages). Lint, test and audit
 # tooling (ruff, black, mypy, pytest, bandit, pip-audit, coverage, lupa ...) is
 # deliberately absent: it is not installed in the image.
 #
@@ -26,7 +26,7 @@
 #
 # NOTE: torch/torchaudio come from the CPU-only index:
 #   pip install torch==2.5.1 torchaudio==2.5.1 \
-#       --index-url https://pypi.org/simple
+#       --index-url https://download.pytorch.org/whl/cpu
 absl-py==2.5.1
 annotated-doc==0.0.5
 annotated-types==0.8.0

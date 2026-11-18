@@ -404,6 +404,7 @@ def _process_audio_impl(
                     str(tab_path),
                     instrument=f"{instrument_type} - {stem_name}",
                     num_strings=len(tuning),
+                    tuning=tuning,
                 )
                 counted_files.add(tab_path)
                 written += 1
@@ -442,6 +443,7 @@ def _process_audio_impl(
                 lead_tab_data,
                 instrument=f"{instrument_type} - Lead",
                 num_strings=len(tuning),
+                tuning=tuning,
             )
             if tab_text:
                 escaped = tab_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")

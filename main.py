@@ -104,8 +104,11 @@ def _format_position(pos) -> str:
     return str(f)
 
 
-def _string_labels(num_strings: int) -> list[str]:
+def _string_labels(num_strings: int, tuning: list[int] | None = None) -> list[str]:
     """String labels ordered high→low (string index 0 is the lowest string)."""
+    if tuning is not None and len(tuning) == num_strings:
+        names = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+        return [names[pitch % 12] for pitch in reversed(tuning)]
     if num_strings == 6:
         return ["E", "B", "G", "D", "A", "E"]  # high E, B, G, D, A, low E
     if num_strings == 5:
@@ -119,6 +122,7 @@ def render_tab_text(
     tab_data,
     instrument="Guitar",
     num_strings: int | None = None,
+    tuning: list[int] | None = None,
 ) -> str | None:
     """Render tablature to a human-readable text string.
 
@@ -132,12 +136,13 @@ def render_tab_text(
         instrument: label written in the file header
         num_strings: instrument string count; keeps the displayed grid the same
             size as the instrument even when the highest strings are unused
+        tuning: open-string MIDI pitches, low to high, used for row labels
     """
     if not tab_data or not isinstance(tab_data, list):
         return None
 
     max_used = max(pos["string"] for pos in tab_data) + 1
-    num_strings = max(max_used, num_strings or 0)
+    num_strings = max(max_used, num_strings or 0, len(tuning) if tuning is not None else 0)
 
     # Group positions by start_time (within 50ms tolerance)
     groups: list[tuple[float, list]] = []
@@ -171,7 +176,7 @@ def render_tab_text(
         for s in range(num_strings):
             lines[s] += col[s].ljust(w) + separator
 
-    labels = _string_labels(num_strings)
+    labels = _string_labels(num_strings, tuning)
 
     out = [f"=== {instrument} Tablature ===", ""]
     # Display high strings first (reverse order)
@@ -188,9 +193,10 @@ def export_tab_to_txt(
     output_path,
     instrument="Guitar",
     num_strings: int | None = None,
+    tuning: list[int] | None = None,
 ) -> None:
     """Export tablature to human-readable text format."""
-    text = render_tab_text(tab_data, instrument, num_strings)
+    text = render_tab_text(tab_data, instrument, num_strings, tuning)
     if text is None:
         return
     with open(output_path, "w") as f:
@@ -345,6 +351,8 @@ Examples:
     parser.add_argument("--no-midi", action="store_true", help="Skip MIDI export")
     parser.add_argument("--no-tab", action="store_true", help="Skip ASCII tab export")
     parser.add_argument("--no-json", action="store_true", help="Skip JSON export")
+    # Internal protocol: REAPER imports only MIDI written by this invocation.
+    parser.add_argument("--reaper-report-midi", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--device",
         choices=["auto", "cpu", "cuda", "rocm", "vulkan", "mps", "directml"],
@@ -457,6 +465,14 @@ def main(argv: list[str] | None = None) -> None:
     ear = EarAgent(device=args.device)
     suno_postprocessor = SunoNotePostprocessor()
 
+    def write_midi(notes: list, suffix: str) -> None:
+        if args.no_midi or not notes:
+            return
+        path = os.path.join(output_dir, f"{song_name}_{suffix}.mid")
+        ear.export_midi(notes, path)
+        if args.reaper_report_midi:
+            print(f"[tab-agent-midi] {suffix}", flush=True)
+
     guitar_tuning = config.get("guitar_tuning", [40, 45, 50, 55, 59, 64])
     bass_tuning = config.get("bass_tuning", [23, 28, 33, 38, 43])
     num_frets = int(config.get("num_frets", 24))
@@ -482,9 +498,7 @@ def main(argv: list[str] | None = None) -> None:
         )
         lead_notes = ear.humanize_and_clean(lead_notes_raw, is_bass=False)
         lead_notes = suno_postprocessor.process(lead_notes, is_suno, suno_metrics)
-        if not args.no_midi:
-            lead_midi_path = os.path.join(output_dir, f"{song_name}_lead_guitar.mid")
-            ear.export_midi(lead_notes, lead_midi_path)
+        write_midi(lead_notes, "lead_guitar")
 
         # Transcribe rhythm guitar (left channel)
         rhythm_l_notes_raw = ear.transcribe_stem(
@@ -496,9 +510,7 @@ def main(argv: list[str] | None = None) -> None:
         )
         rhythm_l_notes = ear.humanize_and_clean(rhythm_l_notes_raw, is_bass=False)
         rhythm_l_notes = suno_postprocessor.process(rhythm_l_notes, is_suno, suno_metrics)
-        if not args.no_midi:
-            rhythm_l_midi_path = os.path.join(output_dir, f"{song_name}_rhythm_L.mid")
-            ear.export_midi(rhythm_l_notes, rhythm_l_midi_path)
+        write_midi(rhythm_l_notes, "rhythm_L")
 
         # Transcribe rhythm guitar (right channel)
         rhythm_r_notes_raw = ear.transcribe_stem(
@@ -510,9 +522,7 @@ def main(argv: list[str] | None = None) -> None:
         )
         rhythm_r_notes = ear.humanize_and_clean(rhythm_r_notes_raw, is_bass=False)
         rhythm_r_notes = suno_postprocessor.process(rhythm_r_notes, is_suno, suno_metrics)
-        if not args.no_midi:
-            rhythm_r_midi_path = os.path.join(output_dir, f"{song_name}_rhythm_R.mid")
-            ear.export_midi(rhythm_r_notes, rhythm_r_midi_path)
+        write_midi(rhythm_r_notes, "rhythm_R")
 
         # Guitar tablature
         guitar_agent = TabAgent(
@@ -534,6 +544,7 @@ def main(argv: list[str] | None = None) -> None:
                     os.path.join(output_dir, f"{song_name}_{suffix}.tab"),
                     label,
                     num_strings=len(guitar_tuning),
+                    tuning=guitar_tuning,
                 )
             if not args.no_json and tab:
                 export_tab_to_json(
@@ -561,9 +572,7 @@ def main(argv: list[str] | None = None) -> None:
         )
         bass_notes = ear.humanize_and_clean(bass_notes_raw, is_bass=True)
         bass_notes = suno_postprocessor.process(bass_notes, is_suno, suno_metrics)
-        if not args.no_midi:
-            bass_midi_path = os.path.join(output_dir, f"{song_name}_bass.mid")
-            ear.export_midi(bass_notes, bass_midi_path)
+        write_midi(bass_notes, "bass")
 
         # Bass tablature
         bass_agent = TabAgent(
@@ -579,6 +588,7 @@ def main(argv: list[str] | None = None) -> None:
                 os.path.join(output_dir, f"{song_name}_bass.tab"),
                 f"{len(bass_tuning)}-String Bass",
                 num_strings=len(bass_tuning),
+                tuning=bass_tuning,
             )
         if not args.no_json and bass_tab:
             export_tab_to_json(

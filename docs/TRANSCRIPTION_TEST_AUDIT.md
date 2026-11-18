@@ -2,7 +2,12 @@
 
 Audited branch base `a4814b2` (2026-11-18). This is a test audit, not a certification of transcription accuracy or REAPER safety.
 
-**CI follow-up:** The original lint, formatting, type-check, Docker/env guard, quick-validation and failure-simulator issues described below have since been addressed on this branch. The index pin was independently confirmed to exist remotely and fetched for local testing. The lock now includes the transitive `huggingface-hub` dependency and updates Gradio, Pillow and Tornado to address unaccepted security advisories; obsolete Pillow exceptions were removed. Local results after these changes: 287 passed, 2 skipped, 6 xfailed; real CPU inference 2 passed; failure simulator 15/15. The six strict xfails remain unresolved product defects; these follow-up fixes do not make those safety checks pass.
+This records the independent PR #11 audit. The findings and counts below describe that
+snapshot. See [the combined audit](TEST_AUDIT.md) for current results, test names and
+commands. The merged suite uses `tests/test_reaper_contract.py` for Lua/CLI checks and
+requires `tests/test_model_inference.py` in the default CI suite.
+
+**PR #11 CI follow-up:** The original lint, formatting, type-check, Docker/env guard, quick-validation and failure-simulator issues described below have since been addressed on this branch. The index pin was independently confirmed to exist remotely and fetched for local testing. The lock now includes the transitive `huggingface-hub` dependency and updates Gradio, Pillow and Tornado to address unaccepted security advisories; obsolete Pillow exceptions were removed. Local results after these changes: 287 passed, 2 skipped, 6 xfailed; real CPU inference 2 passed; failure simulator 15/15. The six strict xfails remain unresolved product defects; these follow-up fixes do not make those safety checks pass.
 
 ## Re-verification
 
@@ -55,7 +60,7 @@ Each is a proposed test, not a claim that the current product already meets it.
 ## CI and model policy
 
 * Fast PR tests must run without network downloads and show skipped, xfailed and failed counts (`pytest -ra`, with strict xfails); report application-only **branch** coverage separately from tests/tools. Coverage is a diagnostic, never a quality or accuracy gate by itself.
-* The new CI step sets `TAB_AGENT_REAL_INFERENCE=1` and executes the unmocked CPU Basic Pitch tests. When the flag is set, absent Basic Pitch/runtime/model or inference failure is a failure, not an import skip. Without the flag, local lightweight runs report an explicit skip. The original guard failures noted above have since been addressed; verify the hosted CI run reaches this step.
+* PR #11 ran unmocked CPU Basic Pitch tests in a separate opt-in invocation. In the combined suite, CPU inference runs in default pytest and needs no opt-in; missing Basic Pitch, ONNX Runtime or model weights fails the gate.
 * Add a separate scheduled/release full-inference job using an offline, version-pinned and checksum-verified Demucs weight cache, pinned Basic Pitch/ONNX, and a versioned labelled corpus. Provision weights **before** the test; block network during execution. If a required model, fixture or runtime is missing, fail the job, not skip or use raw passthrough as a successful Demucs test. Record model/fixture hashes, backend, thresholds, timings, event metrics and skips as artifacts. Keep large licensed audio/weights out of Git, with explicit acquisition and licensing instructions.
 * GPU is optional on ordinary PR runners: report an explicit skip with reason, while CPU real inference remains mandatory. A dedicated GPU-labelled scheduled/release runner must fail if hardware/provider/weights are missing, verify actual ONNX and Demucs GPU execution (not just device selection), and compare toleranced CPU results. A provider installed but silently falling back to CPU is not GPU coverage. Never let a skipped GPU lane or passthrough satisfy the real-inference gate.
-* The optional tests can be reproduced with `TAB_AGENT_REAL_INFERENCE=1 python -m pytest -q -o addopts='' tests/test_real_inference.py`; deterministic safety tests with `python -m pytest -q -ra -o addopts='' tests/test_transcription_safety.py tests/test_multitrack_contract.py tests/test_reaper_safety.py`. `lupa` is required for the REAPER shim; skipped shim tests do not substitute for a REAPER integration run.
+* In the combined suite, rerun CPU inference with `python -m pytest -m basic_pitch_model -ra`, or Lua/CLI checks with `python tools/check_reaper_settings.py`. `lupa` is required for the REAPER shim, which does not substitute for a native REAPER integration run.
