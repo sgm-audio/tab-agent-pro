@@ -91,6 +91,16 @@ def load_user_memory():
 COLUMN_SEPARATOR = " "
 
 
+def describe_tab_failure(agent) -> str:
+    """Describe why a track has no tab, including any unplayable chord."""
+    conflicts = getattr(agent, "last_unplayable_chords", [])
+    if conflicts:
+        chord = conflicts[0]
+        reason = chord.get("reason", "unplayable chord")
+        return f"unplayable chord/notes at {chord['start_time']:.3f}s (MIDI pitches {chord['pitches']}): {reason}"
+    return "no playable notes for this tuning"
+
+
 def _format_position(pos) -> str:
     """Format a single tab position (fret + optional technique suffix)."""
     t = pos.get("technique", TECHNIQUE_PICK)
@@ -360,6 +370,11 @@ Examples:
     parser.add_argument(
         "--output-dir", "-o", type=str, default=None, help="Output directory (default: ./output)"
     )
+    parser.add_argument(
+        "--fresh-output-dir",
+        action="store_true",
+        help="Require --output-dir to be newly created (prevents importing stale outputs)",
+    )
     parser.add_argument("--version", action="version", version="Tab Agent 1.1.0")
     return parser
 
@@ -397,7 +412,16 @@ def main(argv: list[str] | None = None) -> None:
     else:
         output_dir = "./output"
 
-    os.makedirs(output_dir, exist_ok=True)
+    if args.fresh_output_dir:
+        if not args.output_dir:
+            parser.error("--fresh-output-dir requires --output-dir")
+        # mkdir is atomic: a collision or pre-existing path fails before any
+        # processing or export. Parent directories may be created normally.
+        parent = os.path.dirname(os.path.abspath(output_dir))
+        os.makedirs(parent, exist_ok=True)
+        os.mkdir(output_dir)
+    else:
+        os.makedirs(output_dir, exist_ok=True)
 
     song_name = os.path.splitext(os.path.basename(audio_path))[0]
 
@@ -452,6 +476,10 @@ def main(argv: list[str] | None = None) -> None:
     # Separate stems (use processed audio if Suno)
     _progress("Separating audio stems (Demucs)...")
     stems = splitter.separate_stems(processed_audio)
+    if getattr(splitter, "separation_mode", "") == "passthrough":
+        print(
+            "⚠️  Demucs unavailable: using the full mix for both guitar and bass, not isolated stems."
+        )
 
     # Initialize transcription agent
     ear = EarAgent(device=args.device)
@@ -543,7 +571,7 @@ def main(argv: list[str] | None = None) -> None:
                     num_strings=len(guitar_tuning),
                 )
             if notes and not tab:
-                print(f"⚠️  No playable positions for {label} — skipping its tablature.")
+                print(f"⚠️  No tablature for {label}: {describe_tab_failure(guitar_agent)}.")
 
     if run_bass:
         _progress("Transcribing bass stem to MIDI (Basic Pitch)...")
@@ -588,7 +616,7 @@ def main(argv: list[str] | None = None) -> None:
                 num_strings=len(bass_tuning),
             )
         if bass_notes and not bass_tab:
-            print("⚠️  No playable positions for Bass — skipping its tablature.")
+            print(f"⚠️  No tablature for Bass: {describe_tab_failure(bass_agent)}.")
 
     # Log session to memory
     if os.path.exists(memory_file):

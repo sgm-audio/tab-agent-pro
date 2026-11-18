@@ -133,7 +133,7 @@ def _make_mock_bass_stems():
     return {"bass": "/tmp/bass.wav"}
 
 
-def _run_mocked_pipeline(app, instrument, stems_fn, is_suno=False):
+def _run_mocked_pipeline(app, instrument, stems_fn, is_suno=False, separation_mode="api"):
     mock_progress = MagicMock()
     mock_suno = patch(
         "app.process_suno_audio",
@@ -154,6 +154,7 @@ def _run_mocked_pipeline(app, instrument, stems_fn, is_suno=False):
         patch("app.TabAgent") as tab_cls,
     ):
         splitter_inst = splitter_cls.return_value
+        splitter_inst.separation_mode = separation_mode
         splitter_inst.separate_stems.return_value = {
             "guitar": "/tmp/g.wav",
             "bass": "/tmp/b.wav",
@@ -186,6 +187,15 @@ def test_process_audio_impl_guitar_full_pipeline() -> None:
     assert "Complete!" in msg
     assert zip_path is not None
     assert zip_path.endswith(".zip")
+
+
+def test_process_audio_warns_when_demucs_uses_passthrough() -> None:
+    app = _import_app()
+    msg, zip_path, _tab = _run_mocked_pipeline(
+        app, "Guitar", _make_mock_stems, separation_mode="passthrough"
+    )
+    assert zip_path is not None
+    assert "full mix" in msg and "instead of isolated stems" in msg
 
 
 def test_process_audio_impl_bass_full_pipeline() -> None:

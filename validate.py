@@ -285,7 +285,9 @@ def main(argv: list[str] | None = None) -> int:
             note_seq.NoteSequence.Note(pitch=72, start_time=0.01, end_time=0.5, velocity=80),
         ]
         cleaned = post.process(notes, is_suno=True, metrics={"hi_freq_ratio": 0.4})
-        check("SunoNotePostprocessor removes octave errors", len(cleaned) < len(notes))
+        check(
+            "SunoNotePostprocessor preserves octave notes", [n.pitch for n in cleaned] == [60, 72]
+        )
         check(
             "SunoNotePostprocessor does NOT mutate input",
             notes[0].pitch == 60 and notes[1].pitch == 72,
@@ -335,16 +337,15 @@ def main(argv: list[str] | None = None) -> int:
             f"got {len(mixed_tab)} entries, skipped={agent.last_skipped_notes}",
         )
 
-        # Technique detection
+        # Timing alone does not establish a legato technique.
         fast_notes = [
-            note_seq.NoteSequence.Note(pitch=40, start_time=0.0, end_time=0.3, velocity=80),
+            note_seq.NoteSequence.Note(pitch=40, start_time=0.0, end_time=0.1, velocity=80),
             note_seq.NoteSequence.Note(pitch=42, start_time=0.15, end_time=0.45, velocity=80),
         ]
         fast_tab = agent.generate_tab(fast_notes, technique_sensitivity=0.9)
-        techniques = [e["technique"] for e in fast_tab]
         check(
-            "Technique detection finds slides/hammer/pull",
-            any(t in ("slide", "hammer", "pull") for t in techniques),
+            "Fast notes do not invent legato techniques",
+            len(fast_tab) == 2 and all(e["technique"] == "pick" for e in fast_tab),
         )
     except Exception as e:
         check("TabAgent tablature generation", False, str(e))

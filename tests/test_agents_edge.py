@@ -312,35 +312,17 @@ class TestTabAgentGenerateTabEdgeCases(unittest.TestCase):
         assert self.agent.generate_tab([]) == []
         assert self.agent.last_skipped_notes == []
 
-    def test_technique_slide_adjacent_1_fret(self) -> None:
-        """1-fret difference on same string fast → slide."""
-        notes = [
-            make_note(40, 0.0),  # E2 string 0 fret 0
-            make_note(41, 0.12),  # F2
-        ]
+    def test_fast_ascending_notes_are_not_automatically_legato(self) -> None:
+        notes = [make_note(40, 0.0, end=0.1), make_note(41, 0.12)]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
-        if len(result) > 1:
-            assert result[1]["technique"] == "slide"
+        assert len(result) == 2
+        assert [entry["technique"] for entry in result] == ["pick", "pick"]
 
-    def test_technique_hammer_ascending(self) -> None:
-        """Ascending same-string fast → hammer."""
-        notes = [
-            make_note(40, 0.0),  # E2
-            make_note(45, 0.12),  # A2 — hammer range on same string
-        ]
+    def test_fast_descending_notes_are_not_automatically_legato(self) -> None:
+        notes = [make_note(44, 0.0, end=0.1), make_note(40, 0.12)]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
-        if len(result) > 1:
-            assert result[1]["technique"] in ["slide", "hammer"]
-
-    def test_technique_pull_descending(self) -> None:
-        """Descending same-string fast → pull."""
-        notes = [
-            make_note(55, 0.0),  # G3
-            make_note(52, 0.12),  # E3
-        ]
-        result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
-        if len(result) > 1:
-            assert result[1]["technique"] in ["slide", "hammer", "pull", "pick"]
+        assert len(result) == 2
+        assert [entry["technique"] for entry in result] == ["pick", "pick"]
 
     def test_slow_transition_is_pick_not_technique(self) -> None:
         """Slow transition on same string → 'pick' (no technique)."""
@@ -352,15 +334,11 @@ class TestTabAgentGenerateTabEdgeCases(unittest.TestCase):
         if len(result) > 1:
             assert result[1]["technique"] == "pick"
 
-    def test_technique_window_includes_close_notes(self) -> None:
-        """Close notes within window on same string get 'slide'."""
-        notes = [
-            make_note(40, 0.0),  # E2 — only on string 0
-            make_note(42, 0.15),  # F#2 — only on string 0, fret diff=2
-        ]
+    def test_close_notes_do_not_prove_legato(self) -> None:
+        notes = [make_note(40, 0.0, end=0.1), make_note(42, 0.15)]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
-        if len(result) > 1:
-            assert result[1]["technique"] == "slide"
+        assert len(result) == 2
+        assert result[1]["technique"] == "pick"
 
     def test_technique_window_excludes_distant_notes(self) -> None:
         """Distant notes outside window get 'pick'."""
@@ -608,7 +586,18 @@ class TestSplitterSeparateWithSubprocess(unittest.TestCase):
     @patch("agents.subprocess.run")
     def test_subprocess_success(self, mock_run) -> None:
         """Successful subprocess returns expected stem paths."""
-        mock_run.return_value = MagicMock(returncode=0)
+
+        def produce_stems(cmd, **kwargs):
+            import numpy as np
+            import soundfile as sf
+
+            out = os.path.join(cmd[cmd.index("-o") + 1], "htdemucs", "song")
+            os.makedirs(out)
+            for stem in ("other", "bass"):
+                sf.write(os.path.join(out, f"{stem}.wav"), np.zeros(8000), 8000)
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = produce_stems
         result = self.splitter._separate_with_subprocess(self.dummy_audio, "song")
         assert "guitar" in result
         assert "bass" in result
@@ -835,8 +824,7 @@ class TestSplitterSeparateWithApi(unittest.TestCase):
         _a.DEMUCS_API_AVAILABLE = True
         return _a.demucs_api
 
-    @patch("agents.sf.write")
-    def test_separate_with_api_creates_stems(self, mock_sf_write) -> None:
+    def test_separate_with_api_creates_stems(self) -> None:
         """API separation creates stem files from returned tensors."""
         import torch
 
@@ -857,10 +845,9 @@ class TestSplitterSeparateWithApi(unittest.TestCase):
 
         assert "guitar" in result
         assert "bass" in result
-        assert mock_sf_write.called
+        assert all(os.path.isfile(path) for path in result.values())
 
-    @patch("agents.sf.write")
-    def test_separate_with_api_uses_cuda(self, mock_sf_write) -> None:
+    def test_separate_with_api_uses_cuda(self) -> None:
         """API uses CUDA device when available."""
         import torch
 
@@ -869,7 +856,7 @@ class TestSplitterSeparateWithApi(unittest.TestCase):
         mock_separator.samplerate = 44100
         mock_separator.separate_audio_file.return_value = (
             None,
-            {"other": torch.zeros((1, 44100))},
+            {"other": torch.zeros((1, 44100)), "bass": torch.zeros((1, 44100))},
         )
         api.Separator.return_value = mock_separator
 
@@ -885,8 +872,7 @@ class TestSplitterSeparateWithApi(unittest.TestCase):
         assert "device" in kwargs
         assert kwargs["device"] == "cuda"
 
-    @patch("agents.sf.write")
-    def test_separate_with_api_mono_tensor(self, mock_sf_write) -> None:
+    def test_separate_with_api_mono_tensor(self) -> None:
         """1D tensor is unsqueezed before writing."""
         import torch
 
@@ -895,7 +881,7 @@ class TestSplitterSeparateWithApi(unittest.TestCase):
         mock_separator.samplerate = 44100
         mock_separator.separate_audio_file.return_value = (
             None,
-            {"other": torch.zeros(44100)},  # 1D
+            {"other": torch.zeros(44100), "bass": torch.zeros(44100)},  # 1D
         )
         api.Separator.return_value = mock_separator
 
@@ -903,9 +889,9 @@ class TestSplitterSeparateWithApi(unittest.TestCase):
             dummy = os.path.join(self.tmpdir, "x.wav")
             with open(dummy, "w") as f:
                 f.write("FAKE")
-            self.splitter._separate_with_api(dummy, "x")
+            stems = self.splitter._separate_with_api(dummy, "x")
 
-        mock_sf_write.assert_called()
+        assert all(os.path.isfile(path) for path in stems.values())
 
 
 # =========================================================================

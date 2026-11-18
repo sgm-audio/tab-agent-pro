@@ -6,9 +6,9 @@
 
 **Upload guitar or bass audio. Get tablature, MIDI, and JSON back.**
 
-Tab Agent transcribes guitar and bass recordings into playable tablature using
-a multi-engine AI pipeline. Works on anything from a clean DI track to a full
-mix with drums and vocals.
+Tab Agent transcribes guitar and bass recordings into tablature using an AI
+pipeline. It can process clean DI tracks or full mixes, but transcription and
+playability are not guaranteed; review the results before use.
 
 ---
 
@@ -119,8 +119,8 @@ graph LR
 | **Stem Separation** | Demucs (htdemucs) | Splits the mix into vocals / drums / bass / other; `bass` is transcribed as bass and `other` as guitar |
 | **Spatial Processing** | Mid-Side | Splits lead (centre) from rhythm (sides) by subtraction |
 | **Transcription** | Basic Pitch | Converts audio → MIDI notes |
-| **Tablature** | DP Viterbi | Assigns notes to strings/frets optimally; unplayable notes are skipped |
-| **Technique Detection** | Heuristic | Slides, hammer-ons, pull-offs |
+| **Tablature** | Bounded dynamic programming | Assigns sounding notes to distinct strings with a conservative hand-span constraint |
+| **Technique annotations** | Conservative default | No slide, hammer-on or pull-off is inferred from note timing alone |
 | **Export** | — | MIDI, ASCII tab, JSON |
 
 ---
@@ -128,11 +128,11 @@ graph LR
 ## Features
 
 - **Basic Pitch transcription** — Spotify's lightweight ONNX model, no GPU required
-- **Full-mix processing** — Demucs separates the mix; the residual `other` stem (guitars and other instruments) is transcribed as guitar
+- **Full-mix processing** — Demucs attempts separation; its residual `other` stem (guitars and other instruments) is transcribed as guitar. If separation fails, both paths use the **full mix**, with a warning; this is not isolated audio.
 - **Multi-track output** — Lead guitar, rhythm L/R, bass in separate files
-- **Column-aligned tablature** — Chords grouped vertically; a single unplayable note no longer discards the whole track
-- **AI audio support** — Automatic detection and cleanup for Suno/Udio AI-generated audio
-- **Technique detection** — Slides (`s`), hammer-ons (`h`), pull-offs (`p`) annotated in output
+- **Column-aligned tablature** — Notes within 50 ms use distinct strings, and sustained notes retain their strings until their end time. Concurrent fretted notes are restricted to a four-fret span (open strings excluded). Unassignable overlap, invalid timing or search limits suppress that track's tab with a warning; individually out-of-range notes are skipped and logged, so partial tabs need review. This conservative model is not a guarantee of physical playability.
+- **AI audio support** — Heuristic detection and preprocessing for Suno/Udio audio; postprocessing quantizes timing but no longer deletes octave pairs or high notes solely on pitch.
+- **Technique annotations** — The compatible `pick` field means no legato technique was established, not proof of a picked attack. Slide, hammer-on and pull-off detection are disabled pending reliable evidence; `technique_sensitivity` is currently ignored.
 - **Plug-and-play presets** — 8 profiles (standard, drop D, classical, 4/5-string bass, Suno cleanup, live band) applied with `--profile`
 - **REAPER integration** — Run transcription from the DAW via ReaPack, with the settings-script values passed through as CLI flags
 - **CPU by default, GPU optional** — the transcription stack runs on CPU out of
@@ -218,8 +218,11 @@ into its neighbour, and a string that is unused in a column shows `-`.
 
 `Tab Agent Settings` stores the install path, profile, instrument, onset/frame
 thresholds, output directory and export toggles in REAPER's ExtState.
-`Tab Agent` passes those values to `main.py` as CLI flags, so what you configure
-is what runs.
+`Tab Agent` passes those values to `main.py` as CLI flags. Each run creates a
+fresh `tab-agent-*` subdirectory under the configured output directory (or the
+repository's `output` directory) and imports MIDI only after a successful run.
+On Windows, paths or settings containing shell metacharacters are rejected
+rather than passed to `cmd.exe`.
 
 ---
 

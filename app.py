@@ -58,6 +58,7 @@ _load_dotenv()
 # Import Tab Agent modules
 from agents import EarAgent, SplitterAgent, TabAgent  # noqa: E402
 from main import (  # noqa: E402
+    describe_tab_failure,
     export_tab_to_json,
     export_tab_to_txt,
     render_tab_text,
@@ -316,6 +317,7 @@ def _process_audio_impl(
         # Stage 1-3: Stem separation and processing
         progress(0.2, desc="🎵 Separating audio stems (Demucs)...")
         stems = splitter.separate_stems(processed_audio)
+        raw_fallback = getattr(splitter, "separation_mode", "") == "passthrough"
 
         progress(0.3, desc="🎸 Processing guitar stems...")
         is_bass = instrument_type in BASS_TARGETS
@@ -394,7 +396,7 @@ def _process_audio_impl(
                 lead_tab_data = tab_data
 
             if notes and not tab_data:
-                skipped.append(stem_name)
+                skipped.append(f"{stem_name} ({describe_tab_failure(tab_agent)})")
 
             # Export tab files
             if include_tab and tab_data:
@@ -453,13 +455,16 @@ def _process_audio_impl(
                 """
 
         if not results or not any(results.values()):
-            return (
+            warning = (
                 "⚠️ **No notes were transcribed.** The audio may be too quiet, "
                 "or a transcription backend may be missing "
-                "(check `/health` → `components`).",
-                str(zip_path),
-                inline_tab_html,
+                "(check `/health` → `components`)."
             )
+            if raw_fallback:
+                warning += (
+                    "\n⚠️ Demucs unavailable: the full mix was used instead of isolated stems."
+                )
+            return warning, str(zip_path), inline_tab_html
 
         # Generate status message
         elapsed = time.time() - start_time
@@ -481,11 +486,12 @@ def _process_audio_impl(
 - **Processing Time**: {elapsed:.1f}s
 - **Formats**: {", ".join(enabled_formats) or "none"}
 """
-        if skipped:
+        if raw_fallback:
             status_msg += (
-                f"\n⚠️ No tablature for: {', '.join(skipped)} - notes fell outside the "
-                "instrument's range/tuning.\n"
+                "\n⚠️ Demucs unavailable: the full mix was used instead of isolated stems.\n"
             )
+        if skipped:
+            status_msg += f"\n⚠️ No tablature for: {', '.join(skipped)}.\n"
 
         status_msg += "\n📥 **Download the ZIP file below to get all outputs!**\n"
 

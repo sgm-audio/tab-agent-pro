@@ -60,6 +60,7 @@ def test_all_instruments_export_correct_track_notes_and_tunings(tmp_path, monkey
             "All",
             "--output-dir",
             str(output),
+            "--fresh-output-dir",
             "--onset",
             "0.62",
             "--frame",
@@ -91,3 +92,42 @@ def test_all_instruments_export_correct_track_notes_and_tunings(tmp_path, monkey
         assert (output / f"mix_{suffix}.tab").is_file()
         midi = pretty_midi.PrettyMIDI(str(output / f"mix_{suffix}.mid"))
         assert [n.pitch for inst in midi.instruments for n in inst.notes] == pitches[target]
+
+
+def test_unplayable_chord_warns_and_preserves_midi_without_fake_tab(tmp_path, monkeypatch, capsys):
+    audio = tmp_path / "song.wav"
+    audio.touch()
+    output = tmp_path / "out"
+
+    class FakeSplitter:
+        separation_mode = "passthrough"
+
+        def __init__(self, **kwargs):
+            pass
+
+        def separate_stems(self, path):
+            return {"guitar": "guitar", "bass": "bass"}
+
+        def process_bass(self, path):
+            return "clean_bass"
+
+    class StubInferenceEar(EarAgent):
+        def transcribe_stem(self, path, target, **kwargs):
+            return [
+                note_seq.NoteSequence.Note(pitch=p, start_time=0.2, end_time=0.6, velocity=80)
+                for p in (23, 24)
+            ]
+
+    monkeypatch.setattr(main, "load_user_memory", lambda: (str(tmp_path / "absent.json"), {}))
+    monkeypatch.setattr(main, "process_suno_audio", lambda path, **kw: (path, False, {}))
+    monkeypatch.setattr(main, "SplitterAgent", FakeSplitter)
+    monkeypatch.setattr(main, "EarAgent", StubInferenceEar)
+    main.main([str(audio), "--instrument", "Bass", "--output-dir", str(output), "--device", "cpu"])
+    message = capsys.readouterr().out
+    assert "unplayable chord" in message
+    assert "[23, 24]" in message
+    assert "full mix" in message and "not isolated stems" in message
+    assert not (output / "song_bass.tab").exists()
+    assert not (output / "song_bass.json").exists()
+    midi = pretty_midi.PrettyMIDI(str(output / "song_bass.mid"))
+    assert [n.pitch for inst in midi.instruments for n in inst.notes] == [23, 24]

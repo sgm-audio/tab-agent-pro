@@ -13,7 +13,7 @@ Requires `lupa` (pip install lupa). Skips cleanly when lupa is unavailable.
 from __future__ import annotations
 
 import atexit
-import re
+import shlex
 import shutil
 import sys
 import tempfile
@@ -136,11 +136,16 @@ def main() -> int:
             "--no-midi" not in cmd and "--no-json" not in cmd,
             cmd,
         )
-        expect("passes --output-dir", "--output-dir" in cmd and OUTPUT_DIR in cmd, cmd)
+        argv = shlex.split(cmd)
+        output_index = argv.index("--output-dir")
         expect(
-            "quotes the audio path",
-            re.search(r"main\.py \"[^\"]*song\.wav\"", cmd) is not None,
+            "uses a fresh session under the configured output directory",
+            Path(argv[output_index + 1]).parent == Path(OUTPUT_DIR)
+            and "--fresh-output-dir" in argv,
             cmd,
+        )
+        expect(
+            "passes the audio path literally", argv[argv.index("main.py") + 1] == AUDIO_PATH, cmd
         )
 
     # 2. Defaults: nothing but install_path stored

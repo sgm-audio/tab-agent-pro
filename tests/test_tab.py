@@ -17,7 +17,9 @@ GUITAR_TUNING = [40, 45, 50, 55, 59, 64]  # E2-A2-D3-G3-B3-E4
 BASS_TUNING = [23, 28, 33, 38, 43]  # B0-E1-A1-D2-G2
 
 
-def make_note(pitch, start, end=0.5, velocity=80):
+def make_note(pitch, start, end=None, velocity=80):
+    if end is None:
+        end = start + 0.1
     return note_seq.NoteSequence.Note(
         pitch=pitch,
         start_time=start,
@@ -131,43 +133,23 @@ class TestTabAgentGenerateTab(unittest.TestCase):
             assert "technique" in entry
             assert entry["technique"] in ["pick", "slide", "hammer", "pull"]
 
-    def test_technique_detection_slide(self) -> None:
-        """Adjacent notes on same string 1-2 frets apart → slide."""
-        # E2 (open string 0) → F#2 (fret 2 on string 0)
-        notes = [
-            make_note(40, 0.0),  # E2
-            make_note(42, 0.15),  # F#2 — fast, same string, 2 frets apart
-        ]
+    def test_fast_ascending_notes_do_not_claim_slide(self) -> None:
+        notes = [make_note(40, 0.0), make_note(42, 0.15)]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
-        # The DP may choose the same string for efficiency
-        techniques = [r["technique"] for r in result]
-        assert "slide" in techniques
+        assert len(result) == 2
+        assert [r["technique"] for r in result] == ["pick", "pick"]
 
-    def test_technique_detection_hammer_on(self) -> None:
-        """Ascending notes on same string → hammer-on."""
-        # E2 (open string 0) → G#2 (fret 4 on string 0)
-        notes = [
-            make_note(40, 0.0),  # E2
-            make_note(44, 0.15),  # G#2 — fast, same string, ascending
-        ]
+    def test_fast_ascending_notes_do_not_claim_hammer(self) -> None:
+        notes = [make_note(40, 0.0), make_note(44, 0.15)]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
-        techniques = [r["technique"] for r in result]
-        assert "hammer" in techniques
+        assert len(result) == 2
+        assert [r["technique"] for r in result] == ["pick", "pick"]
 
-    def test_technique_detection_pull_off(self) -> None:
-        """Descending notes on same string → pull-off."""
-        # G3 (open string 3) → E3 (fret 5 on string 4, or fret 9 on string 3)
-        # Force string-4 path by using positions only on string 4
-        notes = [
-            make_note(55, 0.0),  # G3 — playable on many strings
-            make_note(52, 0.15),  # E3
-        ]
+    def test_fast_descending_notes_do_not_claim_pull(self) -> None:
+        notes = [make_note(55, 0.0), make_note(52, 0.15)]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
-        techniques = [r["technique"] for r in result]
-        # At least one technique should be detected
-        assert any(
-            t in ["slide", "hammer", "pull"] for t in techniques
-        ), f"Expected technique detection, got: {techniques}"
+        assert len(result) == 2
+        assert [r["technique"] for r in result] == ["pick", "pick"]
 
     def test_bass_five_string_tuning(self) -> None:
         """5-string bass tuning works correctly."""

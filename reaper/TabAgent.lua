@@ -107,7 +107,22 @@ end
 -- ============================================================================
 
 local function quote(value)
-  return '"' .. tostring(value):gsub('"', '\\"') .. '"'
+  value = tostring(value)
+  if reaper.GetOS():match("Win") then
+    -- cmd.exe expands %...% and potentially !...! even inside double quotes.
+    -- Refuse shell syntax rather than attempting unsafe escaping. Double quotes
+    -- are not valid Windows path characters; rejecting them also makes the
+    -- CRT argument quoting below unambiguous.
+    if value:find('[%c"%%!&|<>%^()]') then
+      error("Unsupported shell characters in a setting or path on Windows")
+    end
+    -- Backslashes immediately before the closing quote must be doubled for
+    -- the Windows C runtime argument parser.
+    value = value:gsub('(\\+)$', '%1%1')
+    return '"' .. value .. '"'
+  end
+  -- POSIX single quotes suppress substitutions, backticks and backslashes.
+  return "'" .. value:gsub("'", "'\\''") .. "'"
 end
 
 local function build_args(settings, audio_path)
@@ -131,9 +146,10 @@ local function build_args(settings, audio_path)
   if not settings.export_tab then table.insert(args, "--no-tab") end
   if not settings.export_json then table.insert(args, "--no-json") end
 
-  if settings.output_dir ~= "" then
-    table.insert(args, "--output-dir " .. quote(settings.output_dir))
-  end
+  -- REAPER always uses an exclusive, per-run output directory. A failed or
+  -- concurrent run can never make old same-basename MIDI look like new output.
+  table.insert(args, "--output-dir " .. quote(settings.output_dir))
+  table.insert(args, "--fresh-output-dir")
 
   return args
 end
@@ -162,12 +178,13 @@ function Pipeline.new(install_path, audio_path, settings)
 end
 
 function Pipeline:start()
-  local python = reaper.GetOS():match("Win") and "python" or "python3"
-  local args = build_args(self.settings, self.audio_path)
-  local cmd = string.format('cd %s && %s %s 2>&1', quote(self.install_path), python, table.concat(args, " "))
-  reaper.ShowConsoleMsg("Tab Agent: " .. cmd .. "\n")
-
   local ok, err = pcall(function()
+    local windows = reaper.GetOS():match("Win")
+    local python = windows and "python" or "python3"
+    local args = build_args(self.settings, self.audio_path)
+    local cd = windows and "cd /d" or "cd"
+    local cmd = string.format('%s %s && %s %s 2>&1', cd, quote(self.install_path), python, table.concat(args, " "))
+    reaper.ShowConsoleMsg("Tab Agent: " .. cmd .. "\n")
     self.stream = io.popen(cmd, "r")
   end)
   if not ok or not self.stream then
@@ -255,6 +272,25 @@ end
 
 local settings = load_settings()
 
+-- os.tmpname supplies a unique candidate; the CLI atomically creates the
+-- output directory and fails if it already exists. Never reuse a directory.
+local ok_tmp, temp_path = pcall(os.tmpname)
+if not ok_tmp or not temp_path then
+  reaper.MB("Could not create a unique session name.", "Tab Agent — Error", 0)
+  reaper.Undo_EndBlock("Tab Agent — Failed", -1)
+  return
+end
+os.remove(temp_path)
+local temp_name = temp_path:match("([^/\\]+)$") or ""
+temp_name = temp_name:gsub("[^%w_-]", "")
+if temp_name == "" then
+  reaper.MB("Could not create a unique session name.", "Tab Agent — Error", 0)
+  reaper.Undo_EndBlock("Tab Agent — Failed", -1)
+  return
+end
+local output_root = settings.output_dir ~= "" and settings.output_dir or (install_path .. "/output")
+settings.output_dir = output_root .. "/tab-agent-" .. temp_name
+
 local basename = audio_path:match("([^/\\]+)%.[^.]+$") or "unknown"
 
 reaper.ShowConsoleMsg("\nTab Agent — Transcribing " .. basename .. "\n")
@@ -293,11 +329,19 @@ local function poll_pipeline()
     return
   end
 
-  -- Pipeline finished: import MIDI and close out.
-  local output_dir = settings.output_dir
-  if output_dir == "" then
-    output_dir = install_path .. "/output"
+  if not success then
+    reaper.Undo_EndBlock("Tab Agent — Failed", -1)
+    reaper.MB(
+      "Transcription failed.\n\n" ..
+      "Check the REAPER console for details.\n" ..
+      "Common: pip install -r requirements.txt, install Demucs.",
+      "Tab Agent — Error", 0
+    )
+    return
   end
+
+  -- Only a successful run's exclusively-created directory can be imported.
+  local output_dir = settings.output_dir
   local imported = settings.export_midi and import_midi(basename, output_dir) or 0
 
   reaper.Undo_EndBlock("Tab Agent — Transcribe " .. basename, -1)
@@ -314,14 +358,6 @@ local function poll_pipeline()
     )
   end
 
-  if not success then
-    reaper.MB(
-      "Transcription failed.\n\n" ..
-      "Check the REAPER console for details.\n" ..
-      "Common: pip install -r requirements.txt, install Demucs.",
-      "Tab Agent — Error", 0
-    )
-  end
 end
 
 reaper.defer(poll_pipeline)

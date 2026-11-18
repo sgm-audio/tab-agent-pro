@@ -9,8 +9,10 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import MagicMock
 
 import numpy as np
+import pytest
 import soundfile as sf
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -88,13 +90,15 @@ class TestSplitterAgent(unittest.TestCase):
         """_separate_with_subprocess finds Demucs stems under htdemucs/<stem_without_ext>/."""
         from unittest.mock import MagicMock, patch
 
-        # Demucs creates htdemucs/song/ even when song_name is "song.wav"
-        demucs_dir = os.path.join(self.tmpdir, "htdemucs", "song")
-        os.makedirs(demucs_dir, exist_ok=True)
-        for s in ("other", "bass", "drums", "vocals"):
-            open(os.path.join(demucs_dir, f"{s}.wav"), "wb").close()
+        # Demucs creates htdemucs/song/ even when song_name is "song.wav".
+        def write_stems(cmd, **kwargs):
+            demucs_dir = os.path.join(cmd[cmd.index("-o") + 1], "htdemucs", "song")
+            os.makedirs(demucs_dir)
+            for stem in ("other", "bass"):
+                sf.write(os.path.join(demucs_dir, f"{stem}.wav"), np.zeros(8000), 8000)
+            return MagicMock(returncode=0)
 
-        with patch("agents.subprocess.run", return_value=MagicMock(returncode=0)):
+        with patch("agents.subprocess.run", side_effect=write_stems):
             stems = self.splitter._separate_with_subprocess("/tmp/song.wav", "song.wav")
         assert stems["guitar"].endswith(os.path.join("htdemucs", "song", "other.wav"))
 
@@ -130,12 +134,18 @@ class TestSplitterAgent(unittest.TestCase):
         """SplitterAgent(device='cpu') passes device='cpu' to demucs_api.Separator."""
         from unittest.mock import MagicMock, patch
 
+        import torch
+
         import agents as _a
 
         sp = SplitterAgent(output_dir=self.tmpdir, device="cpu")
         mock_api = MagicMock()
         mock_sep = MagicMock()
-        mock_sep.separate_audio_file.return_value = (None, {})
+        mock_sep.samplerate = 8000
+        mock_sep.separate_audio_file.return_value = (
+            None,
+            {"other": torch.zeros(8000), "bass": torch.zeros(8000)},
+        )
         mock_api.Separator.return_value = mock_sep
 
         with (
@@ -149,3 +159,65 @@ class TestSplitterAgent(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@pytest.mark.parametrize("mode", ["missing", "empty", "corrupt", "inconsistent", "nan"])
+def test_cli_rejects_invalid_or_stale_stems(tmp_path, monkeypatch, mode):
+    """A successful exit is insufficient; output must be fresh readable audio."""
+    import agents
+
+    old = tmp_path / "htdemucs" / "song"
+    old.mkdir(parents=True)
+    for name in ("bass", "other"):
+        sf.write(old / f"{name}.wav", np.zeros(100), 8000)
+
+    def run(cmd, **kwargs):
+        dest = os.path.join(cmd[cmd.index("-o") + 1], "htdemucs", "song")
+        os.makedirs(dest)
+        sf.write(os.path.join(dest, "other.wav"), np.zeros(100), 8000)
+        path = os.path.join(dest, "bass.wav")
+        if mode == "empty":
+            sf.write(path, np.zeros(0), 8000)
+        elif mode == "corrupt":
+            with open(path, "wb") as f:
+                f.write(b"not audio")
+        elif mode == "inconsistent":
+            sf.write(path, np.zeros(101), 8000)
+        elif mode == "nan":
+            sf.write(path, np.full(100, np.nan), 8000, subtype="FLOAT")
+
+    monkeypatch.setattr(agents.subprocess, "run", run)
+    sp = SplitterAgent(str(tmp_path), device="cpu")
+    with pytest.raises(ValueError):
+        sp._separate_with_subprocess("/tmp/song.wav", "song.wav")
+    assert not list(tmp_path.glob("demucs-cli-*"))
+
+
+def test_api_invalid_audio_falls_back_to_valid_cli(tmp_path, monkeypatch):
+    import torch
+
+    import agents
+
+    source = tmp_path / "song.wav"
+    sf.write(source, np.zeros(100), 8000)
+    api = MagicMock()
+    api.Separator.return_value.samplerate = 8000
+    api.Separator.return_value.separate_audio_file.return_value = (
+        None,
+        {"other": torch.full((1, 100), float("nan")), "bass": torch.zeros((1, 100))},
+    )
+    monkeypatch.setattr(agents, "demucs_api", api, raising=False)
+    monkeypatch.setattr(agents, "DEMUCS_API_AVAILABLE", True)
+
+    def run(cmd, **kwargs):
+        dest = os.path.join(cmd[cmd.index("-o") + 1], "htdemucs", "song")
+        os.makedirs(dest)
+        for stem in ("other", "bass"):
+            sf.write(os.path.join(dest, f"{stem}.wav"), np.zeros(100), 8000)
+
+    monkeypatch.setattr(agents.subprocess, "run", run)
+    sp = SplitterAgent(str(tmp_path / "out"), device="cpu")
+    result = sp.separate_stems(str(source))
+    assert sp.separation_mode == "cli"
+    assert all(os.path.isfile(path) for path in result.values())
+    assert not list((tmp_path / "out").glob("demucs-api-*"))
