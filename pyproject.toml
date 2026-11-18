@@ -80,8 +80,11 @@ target-version = ["py311"]
 python_version = "3.11"
 strict_optional = true
 ignore_missing_imports = true
-# Build artifacts and virtualenvs must not be type-checked
-exclude = ["^build/", "^dist/", "^\\.eggs/", "^\\.venv/", "^venv"]
+# Build artifacts and virtualenvs must not be type-checked. audit_poc/ holds review
+# harnesses plus stand-in modules for torch/librosa/soundfile/note_seq (see
+# RELIABILITY_REVIEW.md); if mypy read those stand-ins it would type-check the
+# shipped code against them.
+exclude = ["^build/", "^dist/", "^\\.eggs/", "^\\.venv/", "^venv", "^audit_poc/"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
