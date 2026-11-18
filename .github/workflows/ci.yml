@@ -136,6 +136,9 @@ jobs:
     - name: Failure-mode simulations
       run: python tools/simulate_failures.py
 
+    - name: Check REAPER subprocess arguments and fresh MIDI imports
+      run: python tools/check_reaper_safety.py
+
     - name: Smoke test the wheel outside the checkout
       run: |
         wheel_dir=$(mktemp -d)
