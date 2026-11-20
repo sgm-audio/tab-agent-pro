@@ -4,12 +4,9 @@ Keep requirements.lock in sync with the environment that actually ships.
 
 Why this exists
 ---------------
-`requirements.txt` is a range-based, resolver-facing list. Because basic-pitch
-declares TensorFlow on Linux (which this project deliberately does not install)
-a vulnerable-looking TensorFlow/keras/pillow tree shows up in any `pip-audit -r
-requirements.txt` run even though none of it is in the image. A lock of the
-real, installed set is what lets the security scan answer "is anything we
-actually ship vulnerable?" instead of "what would the resolver do?".
+`requirements.txt` is a range-based, resolver-facing list. The shipped install
+uses Basic Pitch's ONNX backend and intentionally omits its default TensorFlow
+dependency. Lock the real install so drift checks apply to the shipped set.
 
 Usage:
     python tools/check_lockfile.py           # exact: lock == installed env
@@ -37,12 +34,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 LOCK = ROOT / "requirements.lock"
 
-# Packages that are part of the *input* to the build rather than the shipped
-# runtime (build backends, the installer itself). Everything else that is
-# installed must appear in the lock.
+# Installer/build-only tools. setuptools is not excluded: resampy imports
+# pkg_resources from it at runtime.
 EXCLUDED = {
     "pip",
-    "setuptools",  # pinned <81 in requirements.txt; install-time only
     "wheel",
     "build",
     "pkg-resources",
@@ -112,7 +107,7 @@ def lock_entries(text: str) -> dict[str, str]:
 
 
 def render(packages: dict[str, str]) -> str:
-    header = LOCK.read_text().split("--index-url")[0]
+    header = LOCK.read_text().partition("\n--index-url ")[0] + "\n"
     body = [f"{name}=={ver}" for name, ver in sorted(packages.items())]
     return header + "--index-url https://pypi.org/simple\n" + "\n".join(body) + "\n"
 
@@ -172,8 +167,6 @@ def check_static() -> int:
 
     locked = lock_entries(LOCK.read_text())
     declared = declared_requirements()
-    # Build/install-time only: excluded from the runtime lock by design, and
-    # documented in SECURITY.md (setuptools<81 is a load-bearing pin).
     declared = {n: v for n, v in declared.items() if n not in EXCLUDED}
     missing = sorted(name for name in declared if name not in locked)
 
@@ -270,35 +263,46 @@ def check_interpreter(skip_network: bool = False) -> int:
     return 0
 
 
-def _walk_closure(roots: set[str]) -> set[str]:
-    """Transitive dependency closure of `roots` over the installed metadata."""
-    import re as _re
+BASIC_PITCH_ONNX_OMISSIONS = {"tensorflow", "tensorflow-macos", "tflite-runtime", "coremltools"}
 
-    dists = {}
-    for dist in metadata.distributions():
-        raw = dist.metadata["Name"]
-        if raw:
-            dists[canonical(raw)] = dist
 
-    seen: set[str] = set()
-    todo = [name for name in roots if name in dists]
+def _walk_closure(roots: set[str]) -> tuple[set[str], list[str]]:
+    """Follow active dependency requirements, including missing distributions."""
+    from packaging.requirements import Requirement
+
+    dists = {
+        canonical(raw): dist for dist in metadata.distributions() if (raw := dist.metadata["Name"])
+    }
+    seen: set[tuple[str, str]] = set()
+    closure: set[str] = set()
+    issues: set[str] = set()
+    todo = [(name, "") for name in roots]
     while todo:
-        name = todo.pop()
-        if name in seen:
+        name, extra = todo.pop()
+        if (name, extra) in seen:
             continue
-        seen.add(name)
-        for req in dists[name].requires or []:
-            if "extra ==" in req:  # optional feature, not part of the base install
+        seen.add((name, extra))
+        closure.add(name)
+        dist = dists.get(name)
+        if dist is None:
+            issues.add(f"{name} is required but not installed")
+            continue
+        for raw_req in dist.requires or []:
+            req = Requirement(raw_req)
+            if req.marker and not req.marker.evaluate({"extra": extra}):
                 continue
-            match = _re.match(r"\s*([A-Za-z0-9_.\-]+)", req)
-            if not match:
+            dep = canonical(req.name)
+            if is_cuda_redistributable(dep) or (
+                name == "basic-pitch" and dep in BASIC_PITCH_ONNX_OMISSIONS
+            ):
                 continue
-            dep = canonical(match.group(1))
-            if is_cuda_redistributable(dep):
-                continue  # CPU-only torch: never installed in the image
-            if dep not in seen and dep in dists:
-                todo.append(dep)
-    return seen
+            if dep in dists and not req.specifier.contains(dists[dep].version, prereleases=True):
+                issues.add(
+                    f"{name} requires {req.name}{req.specifier}, installed {dists[dep].version}"
+                )
+            todo.append((dep, ""))
+            todo.extend((dep, feature) for feature in req.extras)
+    return closure, sorted(issues)
 
 
 def check_verify(extra: list[str] | None = None) -> int:
@@ -318,18 +322,10 @@ def check_verify(extra: list[str] | None = None) -> int:
 
     locked = lock_entries(LOCK.read_text())
     declared = declared_requirements()
-    # Exact pins in requirements.txt (e.g. `IPython>=8.0,<8.30`) are walk roots
-    # too: they describe installed packages whose own extra requirements are
-    # part of the shipped set even when nothing else declares them.
-    roots = {name for name in declared if name not in EXCLUDED}
-    exact = {name for name, version in declared.items() if version and name not in EXCLUDED}
-    # setuptools is declared (pinned <81) but excluded from the runtime lock: it
-    # is install-time only. It is still part of the closure, so re-add it as a
-    # walk root and drop it from the comparison instead of hiding it silently.
-    walk_roots = set(roots) | {"setuptools"}
-
+    roots = set(declared) - EXCLUDED
     current = installed()
-    closure = _walk_closure(walk_roots | exact) - EXCLUDED
+    closure, dependency_issues = _walk_closure(set(declared))
+    closure -= EXCLUDED
     tolerated = {canonical(name) for name in (extra or [])}
 
     unlocked = sorted(name for name in closure if name not in locked)
@@ -337,9 +333,6 @@ def check_verify(extra: list[str] | None = None) -> int:
         f"{name} locked=={locked[name]} but installed=={current[name]}"
         for name in closure & set(locked) & set(current)
         if _public_version(name, locked[name]) != _public_version(name, current[name])
-    )
-    absent = sorted(
-        f"{name} locked=={locked[name]} but not installed" for name in closure - set(current)
     )
     extra_entries = sorted(set(locked) - closure - EXCLUDED - tolerated)
 
@@ -354,10 +347,10 @@ def check_verify(extra: list[str] | None = None) -> int:
         print(f"{LOCK.name} pins versions that are not installed:", file=sys.stderr)
         for line in drifted:
             print(f"  ~ {line}", file=sys.stderr)
-    if absent:
+    if dependency_issues:
         problems = True
-        print(f"{LOCK.name} pins packages that are absent:", file=sys.stderr)
-        for line in absent:
+        print("Installed dependency requirements are not satisfied:", file=sys.stderr)
+        for line in dependency_issues:
             print(f"  - {line}", file=sys.stderr)
     if extra_entries:
         problems = True
@@ -440,7 +433,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print(f"{LOCK.name} OK — {len(locked)} packages match the installed environment.")
-    return 0
+    return check_verify()
 
 
 if __name__ == "__main__":

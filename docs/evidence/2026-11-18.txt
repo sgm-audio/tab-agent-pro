@@ -1,0 +1,250 @@
+TAB AGENT PRO — SELECTED PROBE OUTPUTS
+Audit date: 2026-11-18 UTC
+Audited SHA: a4814b2588bbfb93819ab50b1742d9fe6d1b3824
+
+These are excerpts and summaries of diagnostic runs, not CI or Docker attestations.
+Audio: Basic Pitch ONNX (CPU), Demucs raw fallback; no successful model download.
+See ../SUBSTANTIATION_LOG.md for the scope, methods and re-run steps.
+
+Python 3.11.2
+Input SHA-256 (WAV/MP3, plus applicable score references):
+bbe59297f4d219b56ca154ee702ef4e39c931db8bf7d5e6a38755dde3ad8cd5a  examples/bass_groove.wav
+ed8433f41e4ae41d4b859d8b3609a3f8c90aa01cb4775c1f3f086e6f520ed752  examples/guitar_solo.wav
+11dce13aa530f6f72093da3161880db64325aa2710cd1fe3e98d8232e78444c1  A_1.wav
+bbc1f2535f16b61148c5741c2b204a48ec63d4d60070e091bed58ad0cc3a7220  C_1.wav
+9d8035ad723442fad9bf864db5ef59b865e6d81271040560dccc6be8b282cf42  irmas-mix.wav
+120601de9f021caba984b1d36fa10b3318c0d6b728dde9776fc193ec797bfe58  AClassicEducation_NightOwl_STEM_08.wav
+179d027c4fd04b039393389c4ad3935c6b4102fa15f1aa021a74036cfc8f4b3d  barronk-allgodschildren-drummondrrileyb-1990-8b77c067.wav
+7ac358dbc08a01b44d72e29d3c3b6bb9fbe8746fb0dee64d4edd4e9e3306f7ea  4b196e6c99574dd49ad00d56e132712b.mp3
+680102a32eadf4bcd4f4a0033584ceac516b715254e209632c869ab0038432a7  fixtures/drop-d.wav
+14663f6027c60379d3fefa255aefa813c112c7a8b374b19256c38df3853cfe22  fixtures/low-b.wav
+d16612936c3e186c48593b6b25e81b629b0a75d4b428d42ae8b365343b321f9b  AlpacaGuitarSet/open_subset/starlight/audio/starlight_2.3_nylon_guitar.wav
+768241ed5986d6c39d0a55d9e59180965fbb3a5b093a96cb8ef89a10255351be  AlpacaGuitarSet/open_subset/starlight/gmtoken/starlight_n.guit_140.txt
+9ec75ab63777d39305f516be367e37a61110901608a44696f599511260b1dd1c  AlpacaGuitarSet/open_subset/blur_of_life/audio/blur_of_life.wav
+06a5631cdf83b8f0b6c06f30b9f2b556fbed69ec639ed87cce3062bb075e2a92  AlpacaGuitarSet/open_subset/blur_of_life/audio/blur_of_life_4.5_fretless_bass.wav
+666f6263212095d6ac8b2cd3e04d3e2856e533f8f8d0c85db4fbf21395144f76  AlpacaGuitarSet/open_subset/blur_of_life/gmtoken/blur_of_life_fl.bs_120.txt
+68cb2f0f10cefb0a7f60d0827f02d4f4d94f5d33871c461d3bfc42dbdc08f987  AlpacaGuitarSet/open_subset/tec/audio/tec.wav
+1d36e902fe9f18ca5f6694d08bc483394e69a0189ab65d02fa27070419395767  AlpacaGuitarSet/open_subset/tec/gmtoken/tec_od.guit_120.txt
+
+=== Optimizer and renderer probes ===
+Exhaustive per-note cost oracle: 128/128 passed (seed 4814)
+E major [(40, 0, 0, 'pick'), (47, 0, 7, 'hammer'), (52, 0, 12, 'hammer'), (56, 0, 16, 'hammer'), (59, 0, 19, 'hammer'), (64, 0, 24, 'hammer')]
+Same E major, reversed input [(64, 0, 24, 'pick'), (59, 0, 19, 'pull'), (56, 0, 16, 'pull'), (52, 0, 12, 'pull'), (47, 0, 7, 'pull'), (40, 0, 0, 'pull')]
+=== Guitar Tablature ===
+
+E|-
+B|-
+G|-
+D|-
+A|-
+E|0/7h/12h/16h/19h/24h
+
+Legend: s=slide, h=hammer-on, p=pull-off
+
+Seven simultaneous notes [(40, 0, 0, 'pick'), (47, 0, 7, 'hammer'), (52, 0, 12, 'hammer'), (56, 0, 16, 'hammer'), (59, 0, 19, 'hammer'), (64, 1, 19, 'pick'), (67, 1, 22, 'hammer')]
+Over-capacity group: 7 emitted, 0 skipped
+Overlapping A2+B2 (can use distinct strings) [(45, 0, 5, 'pick'), (47, 0, 7, 'slide')]
+All four are picked, with gaps [(40, 0, 0, 'pick'), (42, 0, 2, 'slide'), (46, 0, 6, 'hammer'), (42, 0, 2, 'pull')]
+Different rhythms render identically: True
+Drop D, open D2 [(38, 0, 0, 'pick')]
+=== Guitar Tablature ===
+
+E|-
+B|-
+G|-
+D|-
+A|-
+E|0
+
+Legend: s=slide, h=hammer-on, p=pull-off
+
+Raised tuning: MIDI 90 positions [{'string': 5, 'fret': 24}]
+Same pitch after EarAgent range filter []
+
+=== README CLI separation path (key log events) ===
+'TLS/SSL connection has been closed (EOF) (_ssl.c:992)' thrown while requesting HEAD https://huggingface.co/adefossez/HTDemucs/resolve/main/htdemucs.yaml
+Downloading: "https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/955717e8-8726e21a.th" to /tmp/tab-agent-evidence/torch-weights/hub/checkpoints/955717e8-8726e21a.th
+{"ts": "2026-11-18T01:17:07.854120+00:00", "level": "INFO", "module": "splitter", "event": "demucs_raw_fallback", "uptime_s": 47.903, "file": "guitar_solo.wav"}
+{"ts": "2026-11-18T01:17:07.962595+00:00", "level": "INFO", "module": "ear_agent", "event": "transcribe_done", "uptime_s": 0.108, "file": "processed_lead.wav", "model": "basic_pitch", "device": "cpu", "note_count": 16}
+{"ts": "2026-11-18T01:17:08.056722+00:00", "level": "INFO", "module": "ear_agent", "event": "transcribe_done", "uptime_s": 0.202, "file": "processed_rhythm_L.wav", "model": "basic_pitch", "device": "cpu", "note_count": 15}
+{"ts": "2026-11-18T01:17:08.148447+00:00", "level": "INFO", "module": "ear_agent", "event": "transcribe_done", "uptime_s": 0.294, "file": "processed_rhythm_R.wav", "model": "basic_pitch", "device": "cpu", "note_count": 15}
+✅ Done: guitar_solo
+Strict line comparison after removing Generated: line: False
+Same comparison after trimming right padding: True
+MIDI/tab/JSON files: 9
+D-string events at exact time 1.8924263038548752: [{'string': 2, 'fret': 24, 'technique': 'pick', 'start_time': 1.8924263038548752}, {'string': 2, 'fret': 17, 'technique': 'pull', 'start_time': 1.8924263038548752}]
+
+=== Non-example tab scores (equal MIDI pitch and +/-50 ms onset) ===
+starlight_2.3_nylon_guitar_lead_guitar.json: notes=357, onset_groups=93, largest_group=7, groups_with_string_collisions=64, excess_events_on_same_string/exact_onset=121
+  technique counts: {'hammer': 115, 'pick': 176, 'pull': 64, 'slide': 2}
+  reference=324, matches=313, extra=44, missed=11, F1=0.919 (±50 ms)
+  matches additionally requiring the reference string: 77
+blur_of_life_4.5_fretless_bass_bass.json: notes=238, onset_groups=117, largest_group=3, groups_with_string_collisions=31, excess_events_on_same_string/exact_onset=5
+  technique counts: {'hammer': 19, 'pick': 206, 'pull': 13}
+  reference=96, matches=77, extra=161, missed=19, F1=0.461 (±50 ms)
+  matches additionally requiring the reference string: 54
+blur_of_life_bass.json: notes=538, onset_groups=330, largest_group=6, groups_with_string_collisions=88, excess_events_on_same_string/exact_onset=86
+  technique counts: {'hammer': 102, 'pick': 321, 'pull': 109, 'slide': 6}
+  reference=96, matches=65, extra=473, missed=31, F1=0.205 (±50 ms)
+  matches additionally requiring the reference string: 33
+A_1_lead_guitar.json: notes=27, onset_groups=19, largest_group=3, groups_with_string_collisions=4, excess_events_on_same_string/exact_onset=2
+  technique counts: {'hammer': 5, 'pick': 20, 'pull': 2}
+C_1_lead_guitar.json: notes=20, onset_groups=11, largest_group=4, groups_with_string_collisions=3, excess_events_on_same_string/exact_onset=2
+  technique counts: {'hammer': 5, 'pick': 13, 'pull': 2}
+
+Drop D fixture, standard and Drop D profiles:
+drop-d_lead_guitar.json: notes=11, onset_groups=4, largest_group=3, groups_with_string_collisions=0, excess_events_on_same_string/exact_onset=0
+  technique counts: {'pick': 11}
+  reference=4, matches=2, extra=9, missed=2, F1=0.267 (±50 ms)
+drop-d_lead_guitar.json: notes=13, onset_groups=4, largest_group=4, groups_with_string_collisions=2, excess_events_on_same_string/exact_onset=2
+  technique counts: {'pick': 11, 'pull': 2}
+  reference=4, matches=4, extra=9, missed=0, F1=0.471 (±50 ms)
+
+Low B fixture, 4- and 5-string bass profiles:
+low-b_bass.json: notes=9, onset_groups=5, largest_group=3, groups_with_string_collisions=2, excess_events_on_same_string/exact_onset=0
+  technique counts: {'hammer': 1, 'pick': 8}
+  reference=4, matches=2, extra=7, missed=2, F1=0.308 (±50 ms)
+low-b_bass.json: notes=11, onset_groups=7, largest_group=3, groups_with_string_collisions=1, excess_events_on_same_string/exact_onset=0
+  technique counts: {'hammer': 1, 'pick': 10}
+  reference=4, matches=2, extra=9, missed=2, F1=0.267 (±50 ms)
+
+Technique render, pitch/onset score (not technique accuracy):
+tec_lead_guitar.json: notes=98, onset_groups=93, largest_group=2, groups_with_string_collisions=3, excess_events_on_same_string/exact_onset=0
+  technique counts: {'hammer': 2, 'pick': 66, 'pull': 2, 'slide': 28}
+  reference=47, matches=15, extra=83, missed=32, F1=0.207 (±50 ms)
+  matches additionally requiring the reference string: 4
+Score arrival time, pitch, intended transition; nearby output (delta seconds, label), +/-150 ms:
+14.125 71 hammer [(-0.126, 'pick')]
+14.625 73 hammer [(-0.1268, 'pick')]
+15.125 72 pull [(-0.1275, 'pick'), (0.0698, 'pick')]
+16.625 57 slide [(-0.117, 'pick')]
+17.625 59 slide [(-0.1185, 'pick'), (0.0557, 'pick')]
+
+=== Non-guitar controls and fallback ===
+barronk-allgodschildren-drummondrrileyb-1990-8b77c067_lead_guitar.json: notes=50, onset_groups=37, largest_group=3, groups_with_string_collisions=2, excess_events_on_same_string/exact_onset=0
+  technique counts: {'hammer': 7, 'pick': 26, 'pull': 7, 'slide': 10}
+AClassicEducation_NightOwl_STEM_08_lead_guitar.json: notes=11, onset_groups=10, largest_group=2, groups_with_string_collisions=1, excess_events_on_same_string/exact_onset=0
+  technique counts: {'hammer': 1, 'pick': 7, 'slide': 3}
+AClassicEducation_NightOwl_STEM_08_bass.json: notes=11, onset_groups=11, largest_group=1, groups_with_string_collisions=0, excess_events_on_same_string/exact_onset=0
+  technique counts: {'hammer': 1, 'pick': 5, 'slide': 5}
+IRMAS WAV hashes: preprocessed mix, fallback other/bass below:
+78c890292134693f50fa41eaf2a7df921033ac13341393255c290aa57b77141f  irmas-mix_processed.wav
+78c890292134693f50fa41eaf2a7df921033ac13341393255c290aa57b77141f  stems/htdemucs/irmas-mix_processed.wav/bass.wav
+78c890292134693f50fa41eaf2a7df921033ac13341393255c290aa57b77141f  stems/htdemucs/irmas-mix_processed.wav/other.wav
+DALI no-output case, CLI excerpt:
+{"ts": "2026-11-18T01:18:24.622807+00:00", "level": "INFO", "module": "splitter", "event": "demucs_raw_fallback", "uptime_s": 1.628, "file": "4b196e6c99574dd49ad00d56e132712b_processed.wav"}
+{"ts": "2026-11-18T01:18:24.736834+00:00", "level": "INFO", "module": "ear_agent", "event": "transcribe_done", "uptime_s": 0.113, "file": "processed_lead.wav", "model": "basic_pitch", "device": "cpu", "note_count": 0}
+{"ts": "2026-11-18T01:18:24.837245+00:00", "level": "INFO", "module": "ear_agent", "event": "transcribe_done", "uptime_s": 0.214, "file": "processed_rhythm_L.wav", "model": "basic_pitch", "device": "cpu", "note_count": 0}
+{"ts": "2026-11-18T01:18:24.927895+00:00", "level": "INFO", "module": "ear_agent", "event": "transcribe_done", "uptime_s": 0.305, "file": "processed_rhythm_R.wav", "model": "basic_pitch", "device": "cpu", "note_count": 0}
+{"ts": "2026-11-18T01:18:25.018335+00:00", "level": "INFO", "module": "ear_agent", "event": "transcribe_done", "uptime_s": 0.395, "file": "processed_bass_clean.wav", "model": "basic_pitch", "device": "cpu", "note_count": 0}
+✅ Done: 4b196e6c99574dd49ad00d56e132712b
+   Formats    : MIDI, Tab, JSON
+
+=== In-process Web upload ===
+ready before: {'ready': True, 'status': 'up', 'components': {'basic_pitch': True}}
+upload: 200
+call: 200 [event_id omitted]
+SSE events: ['event: complete']
+status: ✅ **Transcription Complete!**  - **Song**: irmas-mix - **Instrument**: Guitar - **Files Generated**: 15 - **Processing Time**: 2.1s - **Formats**: MIDI, Tab, JSON  📥 **Download the ZIP file below to get all outputs!**
+ZIP: ['irmas-mix_processed.wav', 'irmas-mix_lead.mid', 'irmas-mix_rhythm_l.mid', 'irmas-mix_rhythm_r.mid', 'irmas-mix_lead.tab', 'irmas-mix_lead.json', 'irmas-mix_rhythm_l.tab', 'irmas-mix_rhythm_l.json', 'irmas-mix_rhythm_r.tab', 'irmas-mix_rhythm_r.json', 'stems/processed_lead.wav', 'stems/processed_rhythm_L.wav', 'stems/processed_rhythm_R.wav', 'stems/htdemucs/irmas-mix_processed.wav/other.wav', 'stems/htdemucs/irmas-mix_processed.wav/bass.wav']
+ready after: {'ready': True, 'status': 'degraded', 'components': {'basic_pitch': True}}
+
+=== Lua probes (stubbed, no actual REAPER) ===
+Settings.lua GUI stub stored: {'export_json': '0', 'export_midi': '0', 'export_tab': '1', 'frame': '0.31', 'install_path': '/tmp/Tab Agent', 'instrument': 'Bass', 'onset': '0.62', 'output_dir': '/tmp/My Output', 'profile': 'bass_4_string'}
+Two-return source API fixture, captured (not executed): cd "/tmp/Tab Agent" && python3 main.py "/tmp/Tab Agent/song.wav" --profile "bass_4_string" --instrument "Bass" --onset 0.62 --frame 0.31 --no-midi --no-json --output-dir "/tmp/My Output" 2>&1
+One-return source API fixture: checkout [string "<python>"]:5: expected string, got nil launch: None
+One-return source API fixture: index-pin [string "<python>"]:5: expected string, got nil launch: None
+Deferred callbacks (source failure bypassed) export_midi=0 exit=0 stale=False: no dialogs/imports
+Deferred callbacks (source failure bypassed) export_midi=1 exit=0 stale=False:  | dialog:Tab Agent — No Output
+Deferred callbacks (source failure bypassed) export_midi=1 exit=1 stale=True:  | import:song_lead_guitar.mid | dialog:Tab Agent — Error
+
+=== Release checks ===
+index.xml OK — 2 package(s), commit 4061696b
+
+$ python tools/check_docker_install.py
+Docker install checks FAILED:
+  ✗ torch must install from the CPU-only index; the PyPI wheel pulls ~2.5 GB of unusable NVIDIA CUDA packages
+exit=1
+
+$ python tools/check_env_example.py
+Unused variables documented in .env.example:
+  ✗ CACHE_DIR (no reference in *.py, reaper/*.lua)
+exit=1
+
+$ python tools/check_lockfile.py --static
+requirements.lock covers all 17 declared dependencies (4 exact pins verified).
+exit=0
+
+$ python tools/check_lockfile.py --interpreter --offline
+checking 116 pins against Python 3.11
+All 0 verifiable pins install on Python 3.11 (116 unverified: no PyPI metadata / offline).
+exit=0
+
+$ python tools/check_lockfile.py --verify --extra pytest --extra pytest-cov
+requirements.lock is missing 1 shipped dependencies:
+  + huggingface-hub==2.4.0 (in the install closure)
+
+Regenerate with: python tools/check_lockfile.py --write (from a clean install of the shipped set)
+exit=1
+
+Synthetic gate controls (selected output):
+missing transitive / installed audit-root 1.0
+verify= 0 exact= 0
+missing transitive / installed audit-root 2.0
+verify= 1 exact= 1
+missing declared root static= 1
+advisory probe active: exit=0
+advisory probe expired: exit=1
+advisory probe unaccepted: exit=1
+advisory probe no-hit: exit=0
+advisory probe skip: exit=0
+
+Installed-set scan, pip-audit 2.10.1 (exit 1):
+❌ 4 unaccepted vulnerabilities in the shipped set:
+   pillow 12.3.0: CVE-2026-128066
+   pillow 12.3.0: CVE-2026-128067
+   pillow 12.3.0: PYSEC-2026-4363
+   tornado 6.6: CVE-2026-126347
+
+Fix the dependency, or record an accepted risk with a reason and an expiry date in .pip-audit-ignore.
+
+Wheel import outside checkout (exit 1):
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "<scratch>/wheel-env/agents.py", line 28, in <module>
+    from device import DeviceConfig, install_onnx_provider_override, resolve_device
+ModuleNotFoundError: No module named 'device'
+
+Regression summary (DEVICE unset):
+=========================== short test summary info ============================
+FAILED tests/test_tools.py::TestDockerInstallGuard::test_repo_state_passes - ...
+FAILED tests/test_tools.py::TestDockerInstallGuard::test_in_process_main_and_failure_paths
+FAILED tests/test_tools.py::TestEnvExampleGuard::test_repo_state_passes - Ass...
+FAILED tests/test_tools.py::TestEnvExampleGuard::test_documented_variables_are_read
+FAILED tests/test_tools.py::TestValidationSuite::test_validate_quick_passes
+5 failed, 270 passed, 6 warnings in 11.37s
+
+Validation and failure simulations:
+  ✅ run.sh has shebang
+  ✅ run.sh references requirements.txt
+  ✅ run.sh handles --web flag
+  ✅ No merge conflicts
+  ⏭️  Docker build — skipped by --quick
+
+============================================================
+PASS: 100   FAIL: 1   SKIP: 1
+FAILED CHECKS:
+  ❌ reaper/TabAgent.lua uses os.execute for pipeline —
+============================================================
+  [PASS] undecodable audio message is actionable (not empty)
+  [PASS] 50 MB cap enforced
+  [PASS] extension allowlist
+  [PASS] missing file
+  [PASS] no backend -> status down
+  [PASS] no backend -> not ready
+  [FAIL] simulate_transcription_backend_down — simulation raised AttributeError: 'EarAgent' object has no attribute 'log'
+  [FAIL] simulate_demucs_offline — simulation raised AttributeError: 'SplitterAgent' object has no attribute 'device'
+  [PASS] unwritable output dir raises OSError (not silent)
+  [FAIL] simulate_malformed_mt3_tokens — 'EarAgent' object has no attribute '_parse_mt3_tokens'
+
+11/14 failure-mode checks passed

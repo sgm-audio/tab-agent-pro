@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+- Tablature assignments reserve strings for the duration of each note and enforce
+  a four-fret span for simultaneously held fretted notes. The bounded search
+  reports omitted events instead of placing them on occupied strings.
+- Text tabs show onset times and the actual tuning. JSON retains release times
+  and omitted-note details. Invalid timings are rejected. Playing techniques
+  are no longer inferred from timing and fret choices alone.
+- Suno note cleanup preserves octaves and high pitches rather than removing
+  them on pitch alone. It still adjusts timings.
+- CLI and web exports flag unseparated audio. A CLI run with no detected notes
+  exits with status 2 instead of reporting success. Demucs uses its native
+  segment length and validates fresh, consistent and finite stems.
+- Web process shutdown only removes sessions owned by that process, so exiting
+  a separate worker or validation script does not delete another run's outputs.
+- The checked-in REAPER action uses an exclusively created output directory
+  for each run. It imports only nonempty MIDI reported by a successful run,
+  into new tracks in the same project. Lua/CLI tests cover existing directories,
+  failed children, project changes, and stale files.
+- The wheel includes `device.py`. CI validates the installed dependency closure
+  (including missing packages), and installs against the lock as constraints.
+  Updated Gradio/Pillow and Tornado to address the baseline advisory findings;
+  locked the model-hub client and the setuptools version needed by resampy.
+
+Native REAPER/ReaPack, the Python 3.12 CPU image, and successful real-mix
+separation still need verification. This pass does not validate transcription
+accuracy or confirm that a suggested fingering is comfortable for a player.
+
 ## 1.1.0 (2026-11-07)
 
 Production-readiness pass: the seven-phase audit chain (repo audit → claim
@@ -34,7 +62,7 @@ right to. Three defects, all in the gate rather than the code:
   install came from *ranges*, so it could never pass. A later step also called
   `pip-audit --ignore-vuln-file`, a flag that does not exist in pip-audit.
 
-The lock is now the runtime closure (118 packages, CPU-only, `setuptools`
+The lock is now the runtime closure (117 packages, CPU-only, `setuptools`
 included), CI and the Docker build both **enforce** it (`pip install --no-deps
 -r requirements.lock`) and then verify the result, `tools/check_lockfile.py
 --verify` compares the closure rather than raw equality, and the vulnerability
@@ -72,7 +100,7 @@ checkpoint clone had been hiding every download failure.
   allocator growth, disproved by warm-up-controlled re-measurement).
 
 ### Added — supply chain and CI
-- **`requirements.lock`** — 118 exact pins covering the runtime closure of the
+- **`requirements.lock`** — 117 exact pins covering the runtime closure of the
   declared dependencies (CPU-only: neither the TensorFlow tree nor the NVIDIA
   CUDA redistributables are locked, because neither is installed), with the
   two-stage Basic Pitch install documented in the header. CI and the Docker
@@ -141,7 +169,7 @@ exactly the CI error. It runs in CI before the install and first thing in the
 Docker build.
 
 ### Changed — Python floor is now 3.11
-The pinned dependency set requires it: 16 of the 118 pins declare
+The pinned dependency set requires it: 16 of the 117 pins declare
 `requires-python >= 3.11` (numpy, scipy, onnxruntime, pandas, starlette,
 scikit-learn, tornado, ...). The image has always been `python:3.12-slim`, but
 CI ran 3.10 and `pyproject.toml` advertised 3.10+, so the locked set could not

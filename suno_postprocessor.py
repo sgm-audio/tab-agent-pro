@@ -14,6 +14,8 @@ The harmonic peak filter prevents pure tones (test signals, sine sweeps)
 from being falsely flagged regardless of aggressiveness.
 """
 
+import math
+
 import librosa
 import note_seq
 import numpy as np
@@ -135,8 +137,10 @@ class SunoAudioPreprocessor:
         """
         y, sr = librosa.load(audio_path, sr=self.sample_rate, mono=True)
 
-        # 1. High-pass filter (remove ultra-low rumble common in AI audio)
-        y = self._highpass_filter(y, sr, cutoff=40)
+        # 1. High-pass filter (remove ultra-low rumble common in AI audio).
+        #    23 Hz keeps B0 (30.9 Hz) usable for the bass pipeline; see
+        #    _highpass_filter for the attenuation figures.
+        y = self._highpass_filter(y, sr, cutoff=23)
 
         # 2. Reduce high-frequency metallic shimmer
         y = self._reduce_hi_freq_artifacts(y, sr)
@@ -149,8 +153,20 @@ class SunoAudioPreprocessor:
 
         return output_path
 
-    def _highpass_filter(self, y: np.ndarray, sr: float, cutoff: int = 40) -> np.ndarray:
-        """Apply high-pass filter to remove low-frequency rumble."""
+    def _highpass_filter(self, y: np.ndarray, sr: float, cutoff: int = 23) -> np.ndarray:
+        """
+        Apply high-pass filter to remove low-frequency rumble.
+
+        The cutoff has to sit *below* the lowest note the instrument pipeline
+        can transcribe, which for a 5-string bass is B0 (23, MIDI) = 30.9 Hz.
+        A 4th-order Butterworth at 40 Hz attenuated B0 by 9.5 dB, C1 by 7.8 dB
+        and E1 by 2.5 dB *before* stem separation and transcription, which is
+        the opposite of what a pre-transcription cleanup should do.
+
+        At 23 Hz (one third of an octave under B0) the same filter costs B0
+        0.9 dB, C1 0.6 dB and E1 0.1 dB while still removing 12.2 dB of the
+        20 Hz rumble that sits below the instrument range entirely.
+        """
         from scipy.signal import butter, filtfilt
 
         nyquist = sr / 2
@@ -180,7 +196,10 @@ class SunoAudioPreprocessor:
             # Apply reduction (0.3 = reduce to 30% of original)
             mag[hi_freq_start:hi_freq_end, :] *= 0.3
 
-        # Reconstruct
+        # Reconstruct. `length=` is not cosmetic: the STFT drops the tail that
+        # does not fill a whole frame, so an unset length returns a signal
+        # shorter than the input and every downstream stage is silently
+        # misaligned with the source. `_spectral_gate` has the same need.
         processed = mag * phase
         return librosa.istft(processed, length=len(y))
 
@@ -202,13 +221,15 @@ class SunoAudioPreprocessor:
         # Apply mask
         mag_gated = mag * mask
 
-        # Reconstruct
+        # Reconstruct. Without `length=` the result drops the partial final
+        # frame, so the gated signal comes back shorter than its input and no
+        # longer lines up with the original audio (or with the other stems).
         gated = mag_gated * phase
-        return librosa.istft(gated)
+        return librosa.istft(gated, length=len(y))
 
 
 class SunoNotePostprocessor:
-    """Post-process transcribed notes to fix common Suno errors."""
+    """Adjust note timing for suspected Suno audio without changing pitches."""
 
     def process(
         self,
@@ -217,7 +238,7 @@ class SunoNotePostprocessor:
         metrics: dict,
     ) -> list[note_seq.NoteSequence.Note]:
         """
-        Apply post-processing to fix Suno-specific transcription errors.
+        Apply timing quantization to suspected Suno notes.
 
         Args:
             notes: Transcribed notes
@@ -231,8 +252,9 @@ class SunoNotePostprocessor:
         if not is_suno:
             return notes  # No processing needed for clean audio
 
-        notes = self._remove_octave_errors(notes)
-        notes = self._remove_spurious_high_notes(notes)
+        # Octave pairs and high notes can be intentional musical material.
+        # Without evidence identifying an artifact, preserve them rather than
+        # irreversibly deleting legitimate chord tones or lead notes.
         return self._smooth_timing(notes)
 
     def _remove_octave_errors(
@@ -240,24 +262,41 @@ class SunoNotePostprocessor:
         notes: list[note_seq.NoteSequence.Note],
     ) -> list[note_seq.NoteSequence.Note]:
         """
-        Remove octave doubling errors (common in Suno transcriptions).
+        Legacy destructive heuristic; not used by the public pipeline.
 
-        Suno's metallic shimmer often causes false harmonics. Checks all
+        Suno's metallic shimmer can cause false harmonics. Checks all
         simultaneous notes (within 50ms) so octave doublings inside 3+ note
         chords are also caught, keeping the lower note of each octave pair.
         """
         cleaned = []
         skip_indices: set[int] = set()
 
+        # Only notes within 50 ms of one another can pair, so bucket by onset and
+        # compare each note with its own bucket and the two neighbours. The naive
+        # all-pairs scan was quadratic: 8000 notes took ~6 s, which is minutes on
+        # a long take. A bucket is 50 ms wide, so the neighbourhood covers every
+        # candidate without changing which pairs are considered.
+        window = 0.05
+        buckets: dict[int, list[int]] = {}
+        for index, note in enumerate(notes):
+            buckets.setdefault(math.floor(note.start_time / window), []).append(index)
+
         for i, note in enumerate(notes):
             if i in skip_indices:
                 continue
 
+            bucket = math.floor(note.start_time / window)
+            candidates: list[int] = []
+            for key in (bucket - 1, bucket, bucket + 1):
+                candidates.extend(buckets.get(key, ()))
+            candidates.sort()
+
             is_upper_octave = False
-            for j, other in enumerate(notes):
+            for j in candidates:
                 if i == j or j in skip_indices:
                     continue
-                if abs(other.start_time - note.start_time) < 0.05:
+                other = notes[j]
+                if abs(other.start_time - note.start_time) < window:
                     if note.pitch - other.pitch == 12:
                         # `note` is an octave above simultaneous `other` -> drop `note`
                         is_upper_octave = True
@@ -277,9 +316,10 @@ class SunoNotePostprocessor:
         threshold_pitch: int = 84,  # High E (12th fret, high E string)
     ) -> list[note_seq.NoteSequence.Note]:
         """
-        Remove spurious ultra-high notes caused by HF artifacts.
+        Legacy destructive heuristic; not used by the public pipeline.
 
-        Suno often transcribes metallic shimmer as very high notes.
+        Metallic shimmer can be transcribed as very high notes, but high
+        notes can also be intentional.
         """
         # Count notes above threshold
         high_notes = [n for n in notes if n.pitch > threshold_pitch]

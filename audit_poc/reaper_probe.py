@@ -56,17 +56,13 @@ reaper.Undo_EndBlock = function(desc, flags) log("Undo_EndBlock") end
 reaper.GetSelectedMediaItem = function(_, idx) return 1 end
 reaper.GetActiveTake = function(item) return 1 end
 reaper.GetMediaItemTake_Source = function(take) return 1 end
-reaper.GetMediaSourceFileName = function(src, buf) return AUDIO_PATH, AUDIO_PATH end
-local tracks = { "existing-track" }
-reaper.InsertMedia = function(path, mode)
-  log("InsertMedia_into_" .. ACTIVE_PROJECT)
-  tracks[#tracks + 1] = "track-" .. (#tracks + 1)
-  return 1
-end
-reaper.GetNumTracks = function() return #tracks end
-reaper.GetTrack = function(_, idx) return tracks[idx + 1] end
-reaper.GetTrackGUID = function(track) return track end
-reaper.GetSetMediaTrackInfo_String = function(track, name, value, setnew) log("Rename:" .. tostring(value)) end
+-- ReaScript's Lua binding returns the filename as the only result (the second
+-- "buffer" argument is a Python/EEL idiom that Lua ignores).
+reaper.GetMediaSourceFileName = function(src, buf) return AUDIO_PATH end
+reaper.InsertMedia = function(path, mode) log("InsertMedia_into_" .. ACTIVE_PROJECT) end
+reaper.GetNumTracks = function() return 1 end
+reaper.GetTrack = function(_, idx) return 1 end
+reaper.GetSetMediaTrackInfo_String = function(track, name, value, setnew) end
 reaper.EnumProjects = function(idx, projfn) return ACTIVE_PROJECT end
 reaper.defer = function(cb) PENDING[#PENDING+1] = cb end
 """

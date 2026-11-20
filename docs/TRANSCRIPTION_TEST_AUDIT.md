@@ -9,6 +9,13 @@ requires `tests/test_model_inference.py` in the default CI suite.
 
 **PR #11 CI follow-up:** The original lint, formatting, type-check, Docker/env guard, quick-validation and failure-simulator issues described below have since been addressed on this branch. The index pin was independently confirmed to exist remotely and fetched for local testing. The lock now includes the transitive `huggingface-hub` dependency and updates Gradio, Pillow and Tornado to address unaccepted security advisories; obsolete Pillow exceptions were removed. Local results after these changes: 287 passed, 2 skipped, 6 xfailed; real CPU inference 2 passed; failure simulator 15/15. The six strict xfails remain unresolved product defects; these follow-up fixes do not make those safety checks pass.
 
+**PR #18 reconciliation:** The current pipeline retains timed string occupancy,
+exact-onset columns, and explicit partial-tab omissions from `main`. It also
+rejects invalid event timing, leaves playing techniques unmarked, preserves
+Suno octave pairs and high notes, checks fresh Demucs stems for format and
+finite samples, and creates a fresh output directory per REAPER run. See the
+[combined test audit](TEST_AUDIT.md) for current checks and remaining limits.
+
 ## Re-verification
 
 * Before adding tests, `pytest --collect-only -q -o addopts=''` collected **275 test cases** (268 `test_` functions; parametrization accounts for the difference), not the README's 291. After adding tests, the number changes again; it is not a quality metric.

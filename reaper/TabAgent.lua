@@ -8,10 +8,10 @@
     3. Run this script (Actions → Tab Agent)
     4. MIDI files are imported to new tracks automatically
 
-  Progress is streamed live to the REAPER console while the pipeline runs.
+  Pipeline output is forwarded to the REAPER console.
 
   Requirements:
-    - Python 3.10+ with Tab Agent dependencies (pip install -r requirements.txt)
+    - Python 3.11+ with the ONNX runtime dependencies (see README.md)
     - Tab Agent Pro cloned to a known path (auto-detected or set via Settings)
 
   Settings configured in "Tab Agent Settings" (profile, instrument, thresholds,
@@ -91,8 +91,9 @@ local function get_audio_path()
   local src = reaper.GetMediaItemTake_Source(take)
   if not src then return nil end
 
+  -- ReaScript's Lua binding returns the filename as its only result.
   local fn = reaper.GetMediaSourceFileName(src, "")
-  if not fn or fn == "" or not reaper.file_exists(fn) then
+  if type(fn) ~= "string" or fn == "" or not reaper.file_exists(fn) then
     reaper.MB(
       "This item is not backed by a file on disk.\n\n" ..
       "Glue it first: right-click the item → Glue items\n" ..
@@ -137,11 +138,25 @@ local function resolve_output_dir(install_path, configured)
   return install_path .. "/" .. configured
 end
 
+local function fresh_output_dir(root)
+  -- The OS gives us a unique candidate; Python atomically claims the actual
+  -- output directory and aborts on collision instead of reusing old exports.
+  local temp_path = os.tmpname()
+  if type(temp_path) ~= "string" or temp_path == "" then
+    error("Could not create a unique output directory name.")
+  end
+  os.remove(temp_path)
+  local name = temp_path:match(is_windows and "[^/\\]+$" or "[^/]+$") or ""
+  name = name:gsub("[^%w_-]", "")
+  if name == "" then error("Could not create a unique output directory name.") end
+  return root:gsub(is_windows and "[/\\]+$" or "/+$", "") .. "/tab-agent-" .. name
+end
+
 local function build_command(install_path, settings, audio_path, output_dir)
   if not absolute_path(install_path) or not absolute_path(audio_path) then
     error("Use absolute paths for the Tab Agent installation and audio source.")
   end
-  local args = { "main.py", "--reaper-report-midi", "--output-dir", quote(output_dir) }
+  local args = { "main.py", "--reaper-report-midi", "--fresh-output-dir", "--output-dir", quote(output_dir) }
 
   if settings.profile ~= "" then
     table.insert(args, "--profile " .. quote(settings.profile))
@@ -196,7 +211,8 @@ end
 
 function Pipeline:start()
   local ok, err = pcall(function()
-    self.output_dir = resolve_output_dir(self.install_path, self.settings.output_dir)
+    local output_root = resolve_output_dir(self.install_path, self.settings.output_dir)
+    self.output_dir = fresh_output_dir(output_root)
     local cmd = build_command(self.install_path, self.settings, self.audio_path, self.output_dir)
     reaper.ShowConsoleMsg("Tab Agent: " .. cmd .. "\n")
     self.stream = io.popen(cmd, "r")
@@ -315,7 +331,7 @@ if not pipe:start() then
   reaper.MB(
     "Transcription failed to start.\n\n" ..
     "Check the REAPER console for details.\n" ..
-    "Common: pip install -r requirements.txt, install Demucs.",
+    "Check that the Python environment from README.md is on REAPER's PATH.",
     "Tab Agent — Error", 0
   )
   return

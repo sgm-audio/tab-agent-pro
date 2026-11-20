@@ -1,10 +1,7 @@
-"""Safety regressions with independent oracles; no inference models are mocked as real.
-
-Strict xfails document known product defects, not acceptable output.  An XPASS
-fails CI so the marker must be removed when the underlying defect is fixed.
-"""
+"""Safety regressions with independent oracles and synthetic fixtures."""
 
 import itertools
+import json
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -32,7 +29,8 @@ def note(pitch, start, duration=0.4):
 )
 def test_viterbi_matches_exhaustive_monophonic_minimum(tuning, frets, pitches, times):
     agent = TabAgent(tuning, frets)
-    result = agent.generate_tab([note(p, t) for p, t in zip(pitches, times, strict=True)])
+    # Keep events disjoint: this oracle scores the monophonic transition cost.
+    result = agent.generate_tab([note(p, t, 0.08) for p, t in zip(pitches, times, strict=True)])
     assert len(result) == len(pitches)
     for p, t, pos in zip(pitches, times, result, strict=True):
         assert 0 <= pos["string"] < len(tuning)
@@ -121,29 +119,52 @@ def test_cleaner_preserves_distinct_simultaneous_chord_pitches():
     assert [n.pitch for n in ear.humanize_and_clean(chord)] == [40, 47, 52]
 
 
-class UpperOctaveDroppedError(AssertionError):
-    """Suno cleanup removed only the upper member of a real octave pair."""
-
-
-@pytest.mark.xfail(
-    strict=True,
-    raises=UpperOctaveDroppedError,
-    reason="Suno octave cleanup drops legitimate simultaneous octave chord tones",
+@pytest.mark.parametrize(
+    "start,end",
+    [(-0.1, 0.4), (0.2, 0.2), (0.2, 0.1), (0.2, None), (float("nan"), 0.5), (0.1, float("inf"))],
+    ids=["negative", "zero-duration", "reversed", "missing-end", "nan-onset", "infinite-release"],
 )
-def test_suno_cleanup_preserves_legitimate_octave_chord():
+def test_invalid_note_timing_is_reported_without_discarding_valid_notes(start, end):
+    agent = TabAgent(GUITAR, 24)
+    invalid = SimpleNamespace(pitch=40, start_time=start, end_time=end)
+    tab = agent.generate_tab([invalid, note(45, 0.8, 0.2)])
+    (placed,) = tab
+    assert GUITAR[placed["string"]] + placed["fret"] == 45
+    (omitted,) = agent.last_skipped_events
+    assert omitted["pitch"] == 40
+    assert omitted["reason"] == "invalid_timing" and agent.last_skipped_notes == [40]
+    # Non-finite times become null, not JSON NaN / Infinity.
+    json.dumps(omitted, allow_nan=False)
+    assert agent.generate_tab([note(45, 0.8, 0.2)]) == tab
+    assert agent.last_skipped_events == [] and agent.last_skipped_notes == []
+
+
+def test_cleaner_drops_invalid_times_before_midi_export():
+    ear = EarAgent(device="cpu")
+    valid = note(42, 0.2)
+    invalid = [
+        note(44, float("nan")),
+        note(44, 0.2, float("inf")),
+        note(44, -0.1),
+        note(44, 0.3, -0.1),
+    ]
+    assert ear.humanize_and_clean([*invalid, valid]) == [valid]
+
+
+@pytest.mark.parametrize(
+    "pitches", [[40, 52, 59], [76, 88, 90]], ids=["octave-chord", "high-notes"]
+)
+def test_suno_cleanup_preserves_octaves_and_high_notes(pitches):
     import note_seq
 
     from suno_postprocessor import SunoNotePostprocessor
 
     chord = [
         note_seq.NoteSequence.Note(pitch=p, start_time=0, end_time=0.5, velocity=80)
-        for p in (40, 52, 59)
+        for p in pitches
     ]
     result = SunoNotePostprocessor().process(chord, is_suno=True, metrics={})
-    pitches = sorted(n.pitch for n in result)
-    if pitches == [40, 59]:
-        raise UpperOctaveDroppedError(pitches)
-    assert pitches == [40, 52, 59]
+    assert sorted(n.pitch for n in result) == pitches
 
 
 def test_stereo_mid_side_routing_with_distinct_tones(tmp_path):
@@ -167,3 +188,72 @@ def test_stereo_mid_side_routing_with_distinct_tones(tmp_path):
         data, rate = sf.read(result[key])
         assert rate == sr
         np.testing.assert_allclose(data, expected, atol=4e-5)
+
+
+def _naive_octave_cleanup(notes):
+    """The all-pairs reference the bucketed scan must match exactly."""
+    cleaned = []
+    skip_indices: set[int] = set()
+    for i, note in enumerate(notes):
+        if i in skip_indices:
+            continue
+        is_upper_octave = False
+        for j, other in enumerate(notes):
+            if i == j or j in skip_indices:
+                continue
+            if abs(other.start_time - note.start_time) < 0.05:
+                if note.pitch - other.pitch == 12:
+                    is_upper_octave = True
+                    break
+                if other.pitch - note.pitch == 12:
+                    skip_indices.add(j)
+        if not is_upper_octave:
+            cleaned.append(note)
+    return cleaned
+
+
+def test_octave_cleanup_matches_the_all_pairs_reference() -> None:
+    """Bucketing by onset must not change which notes are dropped."""
+    import random
+
+    import note_seq
+
+    from suno_postprocessor import SunoNotePostprocessor
+
+    rng = random.Random(20261118)
+    processor = SunoNotePostprocessor()
+    for _trial in range(40):
+        notes = [
+            note_seq.NoteSequence.Note(
+                pitch=rng.randint(36, 84),
+                start_time=round(rng.uniform(0.0, 1.0), 3),
+                end_time=0.0,
+            )
+            for _ in range(rng.randint(1, 40))
+        ]
+        for note in notes:
+            note.end_time = note.start_time + 0.2
+        expected = [n.pitch for n in _naive_octave_cleanup(notes)]
+        actual = [n.pitch for n in processor._remove_octave_errors(notes)]
+        assert actual == expected
+
+
+def test_octave_cleanup_is_not_quadratic() -> None:
+    """The old all-pairs scan took ~6 s for 8000 notes and scaled 4x per doubling."""
+    import time
+
+    import note_seq
+
+    from suno_postprocessor import SunoNotePostprocessor
+
+    processor = SunoNotePostprocessor()
+    notes = [
+        note_seq.NoteSequence.Note(pitch=40 + (i % 24), start_time=i * 0.01, end_time=0.0)
+        for i in range(8000)
+    ]
+    for note in notes:
+        note.end_time = note.start_time + 0.05
+    started = time.perf_counter()
+    processor._remove_octave_errors(notes)
+    elapsed = time.perf_counter() - started
+    assert elapsed < 1.0, f"octave cleanup took {elapsed:.2f}s for 8000 notes"

@@ -55,7 +55,7 @@ class TestExportTabToTxt(unittest.TestCase):
         assert "G|" in content
         assert "D|" in content
         assert "A|" in content
-        assert "Legend: s=slide, h=hammer-on, p=pull-off" in content
+        assert "Playing techniques not inferred." in content
 
     def test_export_tab_to_txt_content_bass(self) -> None:
         tab_data = [
@@ -195,6 +195,7 @@ class TestInstrumentCLIFiltering(unittest.TestCase):
                 patch("main.load_user_memory", return_value=(os.path.join(tmpdir, "p.json"), {})),
             ):
                 sp = sp_cls.return_value
+                sp.separation_mode = "demucs"
                 sp.separate_stems.return_value = {"guitar": wav, "bass": wav}
                 sp.process_bass.return_value = wav
                 ear = ear_cls.return_value
@@ -206,6 +207,33 @@ class TestInstrumentCLIFiltering(unittest.TestCase):
 
                 sp.process_guitars.assert_not_called()
                 sp.process_bass.assert_called_once()
+
+
+def test_cli_no_notes_is_not_success(tmp_path, monkeypatch, capsys) -> None:
+    from unittest.mock import Mock
+
+    import main
+
+    audio = tmp_path / "silent.wav"
+    audio.touch()
+    monkeypatch.setattr(main, "load_user_memory", lambda: (str(tmp_path / "prefs.json"), {}))
+    monkeypatch.setattr(main, "process_suno_audio", lambda *_, **kw: (str(audio), False, {}))
+    splitter = Mock(separation_mode="raw_fallback")
+    splitter.separate_stems.return_value = {"bass": str(audio)}
+    splitter.process_bass.return_value = str(audio)
+    monkeypatch.setattr(main, "SplitterAgent", lambda **kw: splitter)
+    ear = Mock()
+    ear.transcribe_stem.return_value = []
+    ear.humanize_and_clean.return_value = []
+    monkeypatch.setattr(main, "EarAgent", lambda **kw: ear)
+    output = tmp_path / "results"
+    assert main.main([str(audio), "--instrument", "Bass", "--output-dir", str(output)]) == 2
+    captured = capsys.readouterr()
+    assert "unseparated audio" in captured.err
+    assert "No notes were transcribed" in captured.err
+    assert "Done:" not in captured.out
+    ear.export_midi.assert_not_called()
+    assert list(output.iterdir()) == []
 
 
 if __name__ == "__main__":

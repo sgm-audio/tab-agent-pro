@@ -17,7 +17,9 @@ GUITAR_TUNING = [40, 45, 50, 55, 59, 64]  # E2-A2-D3-G3-B3-E4
 BASS_TUNING = [23, 28, 33, 38, 43]  # B0-E1-A1-D2-G2
 
 
-def make_note(pitch, start, end=0.5, velocity=80):
+def make_note(pitch, start, end=None, velocity=80):
+    if end is None:
+        end = start + 0.5
     return note_seq.NoteSequence.Note(
         pitch=pitch,
         start_time=start,
@@ -119,55 +121,41 @@ class TestTabAgentGenerateTab(unittest.TestCase):
         for entry in result:
             assert "technique" in entry
 
-    def test_every_note_has_technique(self) -> None:
-        """Every output entry has a technique annotation."""
+    def test_every_note_has_the_unmarked_technique_value(self) -> None:
+        """Keep the legacy field, without inferring technique from notes."""
         notes = [
             make_note(60, 0.0),
             make_note(62, 0.3),
             make_note(64, 0.6),
         ]
         result = self.agent.generate_tab(notes)
-        for entry in result:
-            assert "technique" in entry
-            assert entry["technique"] in ["pick", "slide", "hammer", "pull"]
+        assert [entry["technique"] for entry in result] == ["pick"] * len(notes)
 
-    def test_technique_detection_slide(self) -> None:
-        """Adjacent notes on same string 1-2 frets apart → slide."""
+    def test_contiguous_notes_do_not_claim_slide(self) -> None:
+        """Close same-string notes do not prove a slide."""
         # E2 (open string 0) → F#2 (fret 2 on string 0)
         notes = [
-            make_note(40, 0.0),  # E2
+            make_note(40, 0.0, 0.15),  # E2 releases at the next onset
             make_note(42, 0.15),  # F#2 — fast, same string, 2 frets apart
         ]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
-        # The DP may choose the same string for efficiency
-        techniques = [r["technique"] for r in result]
-        assert "slide" in techniques
+        assert [r["technique"] for r in result] == ["pick", "pick"]
 
-    def test_technique_detection_hammer_on(self) -> None:
-        """Ascending notes on same string → hammer-on."""
+    def test_ascending_notes_do_not_claim_hammer_on(self) -> None:
+        """Even contiguous ascending notes may be picked separately."""
         # E2 (open string 0) → G#2 (fret 4 on string 0)
         notes = [
-            make_note(40, 0.0),  # E2
+            make_note(40, 0.0, 0.15),  # E2 releases at the next onset
             make_note(44, 0.15),  # G#2 — fast, same string, ascending
         ]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
-        techniques = [r["technique"] for r in result]
-        assert "hammer" in techniques
+        assert [r["technique"] for r in result] == ["pick", "pick"]
 
-    def test_technique_detection_pull_off(self) -> None:
+    def test_descending_notes_do_not_claim_pull_off(self) -> None:
         """Descending notes on same string → pull-off."""
-        # G3 (open string 3) → E3 (fret 5 on string 4, or fret 9 on string 3)
-        # Force string-4 path by using positions only on string 4
-        notes = [
-            make_note(55, 0.0),  # G3 — playable on many strings
-            make_note(52, 0.15),  # E3
-        ]
+        notes = [make_note(44, 0.0, 0.15), make_note(40, 0.15)]
         result = self.agent.generate_tab(notes, technique_sensitivity=0.9)
-        techniques = [r["technique"] for r in result]
-        # At least one technique should be detected
-        assert any(
-            t in ["slide", "hammer", "pull"] for t in techniques
-        ), f"Expected technique detection, got: {techniques}"
+        assert [r["technique"] for r in result] == ["pick", "pick"]
 
     def test_bass_five_string_tuning(self) -> None:
         """5-string bass tuning works correctly."""
@@ -182,6 +170,106 @@ class TestTabAgentGenerateTab(unittest.TestCase):
         agent = TabAgent(tuning=drop_d, num_frets=24)
         positions = agent.get_valid_positions(38)
         assert any(p["fret"] == 0 for p in positions)
+
+
+class TestTabAgentChordFeasibility(unittest.TestCase):
+    """Simultaneous pitches must occupy distinct strings in playable chords."""
+
+    def setUp(self) -> None:
+        self.agent = TabAgent(tuning=GUITAR_TUNING, num_frets=24)
+
+    def _assert_no_same_string_chord(self, tab: list) -> None:
+        """No time-group may contain two notes on the same string."""
+        groups: dict[float, list[int]] = {}
+        for pos in tab:
+            key = pos["start_time"]
+            groups.setdefault(key, []).append(pos["string"])
+        for strings in groups.values():
+            assert len(strings) == len(set(strings)), f"chord collides on a string: {strings}"
+
+    def test_impossible_chord_is_feasible(self) -> None:
+        """E2 + E6 + B3 simultaneous must not emit two frets on one string.
+
+        E2(40) uses open low E, E6(88) uses high E fret 24, and B3(59)
+        can stay open on the B string without exceeding the fret span.
+        Without a chord-feasibility constraint B3 was placed on the low E
+        string (fret 19), colliding with E2 (fret 0). The DP must keep all
+        three notes and place them on distinct strings.
+        """
+        notes = [
+            make_note(40, 0.0),  # E2
+            make_note(88, 0.0),  # E6
+            make_note(59, 0.0),  # B3
+        ]
+        tab = self.agent.generate_tab(notes)
+        assert len(tab) == 3, f"all three chord notes must survive: {tab}"
+        self._assert_no_same_string_chord(tab)
+        # Three simultaneous notes with no collision must occupy three strings.
+        assert (
+            len({e["string"] for e in tab}) == 3
+        ), "chord must use three distinct strings: " + str([(e["string"], e["fret"]) for e in tab])
+
+    def test_same_string_chord_cost_is_penalised(self) -> None:
+        """A simultaneous same-string transition carries the chord penalty."""
+        prev = {"string": 0, "fret": 0}
+        curr_same = {"string": 0, "fret": 19}
+        curr_diff = {"string": 1, "fret": 14}
+        cost_same = self.agent.calculate_cost(prev, curr_same, time_delta=0.0)
+        cost_diff = self.agent.calculate_cost(prev, curr_diff, time_delta=0.0)
+        assert cost_same > cost_diff
+        # The penalty dominates the legato bonus, so same-string is never cheaper.
+        assert cost_same >= 1000.0
+
+    def test_rapid_sequential_motion_has_no_chord_penalty(self) -> None:
+        """A 20 ms gap between onsets is not evidence of a chord or a slide."""
+        prev = {"string": 0, "fret": 0}
+        curr = {"string": 0, "fret": 2}
+        cost = self.agent.calculate_cost(prev, curr, time_delta=0.02)
+        assert cost == 3.0 - 5.0  # two-fret motion, favor economical string reuse
+
+    def test_normal_chord_still_renders(self) -> None:
+        """A normal playable chord is unaffected by the constraint."""
+        # C major: C3(48) E3(52) G3(55) — spread across different strings.
+        notes = [make_note(48, 0.0), make_note(52, 0.0), make_note(55, 0.0)]
+        tab = self.agent.generate_tab(notes)
+        assert len(tab) == 3
+        self._assert_no_same_string_chord(tab)
+
+    def test_realistic_chord_voicings_are_feasible(self) -> None:
+        """Common chord shapes never emit a same-string collision."""
+        # Power chord (root + fifth), major triad, and a dense 4-note chord,
+        # each as a single simultaneous onset.
+        voicings = [
+            [40, 47],  # E2 + B2 (power chord)
+            [48, 52, 55],  # C3 + E3 + G3 (C major)
+            [40, 45, 52, 55],  # E2 + A2 + E3 + G3 (E major shape)
+            [55, 59, 64, 67],  # G3 + B3 + E4 + G4 (G major shape)
+        ]
+        for pitches in voicings:
+            tab = self.agent.generate_tab([make_note(p, 0.0) for p in pitches])
+            # Every note must survive (these are all playable chords).
+            assert len(tab) == len(
+                pitches
+            ), f"chord {pitches} lost notes: {len(tab)}/{len(pitches)}"
+            self._assert_no_same_string_chord(tab)
+
+    def test_rendered_output_has_no_collision_markers(self) -> None:
+        """The rendered ASCII tab must never join two frets with '/'.
+
+        render_tab_text joins two same-string positions in one column with
+        'x/y'; a collision marker in the output means the constraint leaked.
+        """
+        import main
+
+        notes = [make_note(40, 0.0), make_note(88, 0.0), make_note(59, 0.0)]
+        tab = self.agent.generate_tab(notes)
+        text = main.render_tab_text(tab)
+        assert text is not None
+        # Split on the column separator and check no cell contains '/'.
+        for line in text.splitlines():
+            if "|" in line and not line.startswith("Legend"):
+                for cell in line.split("|")[1:]:
+                    assert "/" not in cell, f"collision marker '/' in rendered cell: {cell!r}"
 
 
 if __name__ == "__main__":

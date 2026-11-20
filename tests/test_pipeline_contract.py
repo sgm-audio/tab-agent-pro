@@ -136,15 +136,20 @@ def test_cli_all_writes_distinct_lead_rhythm_bass_note_content(
         data = json.loads((output / f"{prefix}.json").read_text())
         tab = data["tablature"]
         assert data["instrument"] == label and data["num_strings"] == len(tuning)
+        assert data["tuning"] == tuning
+        assert data["separation_mode"] == "demucs" and data["skipped_notes"] == []
         pitches = tab_pitches(tab, tuning, 24)
-        assert sorted(zip(pitches, [p["start_time"] for p in tab], strict=True)) == sorted(
-            (pitch, start) for pitch, start, _ in events
-        )
+        assert sorted(
+            (pitch, p["start_time"], p["end_time"]) for pitch, p in zip(pitches, tab, strict=True)
+        ) == sorted(events)
 
+        tab_lines = (output / f"{prefix}.tab").read_text().splitlines()
+        onset_line = next(line for line in tab_lines if line.startswith("t(s)|"))
+        assert onset_line.split("|", 1)[1].split() == sorted(
+            {f"{start:.3f}" for _, start, _ in events}
+        )
         rows = [
-            line.split("|", 1)
-            for line in (output / f"{prefix}.tab").read_text().splitlines()
-            if "|" in line
+            line.strip().split("|", 1) for line in tab_lines if "|" in line and line != onset_line
         ]
         assert [name for name, _ in rows] == (
             ["G", "D", "A", "E", "B"] if suffix == "bass" else ["E", "B", "G", "D", "A", "D"]
@@ -164,7 +169,9 @@ def test_cli_all_writes_distinct_lead_rhythm_bass_note_content(
         ]
 
 
-@pytest.mark.parametrize("cli_artifact", ["absent", "corrupt", "empty"])
+@pytest.mark.parametrize(
+    "cli_artifact", ["absent", "corrupt", "empty", "mismatched_rate", "nonfinite"]
+)
 def test_incomplete_demucs_outputs_fall_back_to_readable_mix(
     tmp_path, monkeypatch, stage_state, capsys, cli_artifact
 ):
@@ -198,12 +205,18 @@ def test_incomplete_demucs_outputs_fall_back_to_readable_mix(
             (folder / "bass.wav").write_bytes(b"not audio")
         elif cli_artifact == "empty":
             sf.write(folder / "bass.wav", np.zeros(0), SAMPLE_RATE)
+        elif cli_artifact == "mismatched_rate":
+            sf.write(folder / "bass.wav", np.zeros(128), SAMPLE_RATE // 2)
+        elif cli_artifact == "nonfinite":
+            sf.write(folder / "bass.wav", np.full(128, np.nan), SAMPLE_RATE, subtype="FLOAT")
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(agents.subprocess, "run", cli)
     splitter = agents.SplitterAgent(str(work), device="cpu")
     stems = splitter.separate_stems(str(source))
 
+    assert splitter.separation_mode == "raw_fallback"
+    assert not list(work.glob("demucs-cli-*"))
     assert set(stems) == {"guitar", "bass"}
     assert len(set(stems.values())) == 2
     assert all(Path(path).read_bytes() == source.read_bytes() for path in stems.values())
@@ -216,3 +229,40 @@ def test_incomplete_demucs_outputs_fall_back_to_readable_mix(
     assert monitor.as_dict()["components"]["demucs"] == "unavailable"
     assert stats.stage_errors["demucs_separation"] == stats.stage_errors["demucs_cli"] == 1
     assert "demucs_raw_fallback" in capsys.readouterr().out
+
+
+def test_nonfinite_api_stem_is_discarded_and_valid_cli_output_is_used(
+    tmp_path, monkeypatch, stage_state
+):
+    audio = tmp_path / "mix.wav"
+    sf.write(audio, np.zeros(128), SAMPLE_RATE)
+    work = tmp_path / "stems"
+    api = SimpleNamespace(
+        samplerate=SAMPLE_RATE,
+        separate_audio_file=lambda _: (
+            None,
+            {"other": torch.zeros(128), "bass": torch.full((1, 128), float("nan"))},
+        ),
+    )
+    monkeypatch.setattr(agents, "DEMUCS_API_AVAILABLE", True)
+    monkeypatch.setattr(
+        agents, "demucs_api", SimpleNamespace(Separator=lambda **_: api), raising=False
+    )
+
+    def cli(command, **_):
+        assert command[command.index("-d") + 1] == "cpu"
+        folder = Path(command[command.index("-o") + 1]) / "htdemucs" / audio.stem
+        folder.mkdir(parents=True)
+        for filename in ("other.wav", "bass.wav"):
+            sf.write(folder / filename, np.zeros(128), SAMPLE_RATE)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(agents.subprocess, "run", cli)
+    splitter = agents.SplitterAgent(str(work), device="cpu")
+    paths = splitter.separate_stems(str(audio))
+    assert splitter.separation_mode == "demucs"
+    assert not list(work.glob("demucs-api-*"))
+    assert all(sf.info(p).frames == 128 for p in paths.values())
+    monitor, stats = stage_state
+    assert monitor.as_dict()["components"]["demucs"] == "loaded (CLI)"
+    assert stats.stage_errors["demucs_separation"] == 1

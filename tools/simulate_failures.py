@@ -234,6 +234,44 @@ def simulate_basic_pitch_runtime_dependency_missing() -> None:
         )
 
 
+def simulate_unplayable_model_notes() -> None:
+    """A transcription backend emitting notes outside the instrument's range.
+
+    Basic Pitch can return pitches that have no valid string/fret position on
+    the configured instrument (e.g. below the lowest open string). The
+    TabAgent must skip such notes and log them — never crash or silently drop
+    the whole track.
+    """
+    import note_seq
+
+    import agents
+
+    agent = agents.TabAgent(tuning=[40, 45, 50, 55, 59, 64], num_frets=24)
+    bad = note_seq.NoteSequence.Note(
+        pitch=39,  # below the lowest open string (E2=40) -> no valid position
+        start_time=0.0,
+        end_time=0.5,
+        velocity=80,
+    )
+    good = note_seq.NoteSequence.Note(
+        pitch=64,  # E4, playable on the high-E string
+        start_time=0.5,
+        end_time=1.0,
+        velocity=80,
+    )
+    tab = agent.generate_tab([bad, good])
+    check(
+        len(tab) == 1,
+        "unplayable model note is skipped, playable note survives",
+        f"tab={tab}",
+    )
+    check(
+        39 in agent.last_skipped_notes,
+        "unplayable model note is reported in last_skipped_notes",
+        str(agent.last_skipped_notes),
+    )
+
+
 def main() -> int:
     RESULTS.clear()
     simulations = [
@@ -248,6 +286,7 @@ def main() -> int:
         simulate_unwritable_output,
         simulate_malformed_basic_pitch_output,
         simulate_basic_pitch_runtime_dependency_missing,
+        simulate_unplayable_model_notes,
     ]
     # Importing app registers a shutdown cleanup. Ensure that the simulations
     # neither use nor remove a running server's temp/output directories.

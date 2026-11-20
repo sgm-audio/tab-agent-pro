@@ -13,6 +13,11 @@ e.g. https://acendan.github.io/reascripts/index.xml
 
 Usage:
     python tools/check_index.py [path/to/index.xml]
+
+The index is what ReaPack clients install from, so it also fails when the pinned
+commit predates the newest change to a published <source>: a green CI with a
+stale pin means users get a script the repository no longer ships.
+
 """
 
 from __future__ import annotations
@@ -73,8 +78,96 @@ def _commit_exists(sha: str) -> bool:
         return True
     if result.returncode != 0:
         # Outside a git checkout the sha cannot be resolved: do not fail.
-        return "not a git repository" in (result.stderr or "").lower()
+        if "not a git repository" in (result.stderr or "").lower():
+            return True
+        # In a shallow clone the pinned commit may simply not have been
+        # fetched even though it exists upstream; do not report a false
+        # failure. The full-history CI checkout is where the SHA is verified.
+        return _is_shallow()
     return result.stdout.strip() in {"commit", "tree", "tag"}
+
+
+def _last_commit_touching(path: str) -> str | None:
+    """The newest commit in HEAD's history that changed ``path`` (None if unknown)."""
+    try:
+        result = subprocess.run(  # nosec B603, B607
+            ["git", "-C", str(ROOT), "log", "-1", "--format=%H", "HEAD", "--", path],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def _is_ancestor(ancestor: str, descendant: str) -> bool | None:
+    """Whether ``ancestor`` is contained in ``descendant``'s history (None if unknown)."""
+    try:
+        result = subprocess.run(  # nosec B603, B607
+            ["git", "-C", str(ROOT), "merge-base", "--is-ancestor", ancestor, descendant],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    return None
+
+
+def _is_shallow() -> bool:
+    """True when the local checkout is a shallow (depth-limited) clone."""
+    try:
+        result = subprocess.run(  # nosec B603, B607
+            ["git", "-C", str(ROOT), "rev-parse", "--is-shallow-repository"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and result.stdout.strip() == "true"
+
+
+def _staleness_problems(root: ET.Element, commit: str) -> list[str]:
+    """
+    Problems where the pinned commit predates a published <source>.
+
+    ReaPack downloads each <source> at the pinned commit, so a pin older than the
+    file serves users a script the repository no longer ships — the failure is
+    silent, and it is how the 1.0.1 index kept handing out a script that froze
+    REAPER for the whole run while main had already been rewritten.
+    """
+    problems: list[str] = []
+    if not commit or not _commit_exists(commit) or _is_shallow():
+        return problems
+    seen: set[str] = set()
+    for category in _findall(root, "category"):
+        for package in _findall(category, "reapack"):
+            for version in _findall(package, "version"):
+                for source in _findall(version, "source"):
+                    target = (source.text or "").strip()
+                    if not target or target.startswith(("http://", "https://")):
+                        continue
+                    if target in seen:
+                        continue
+                    seen.add(target)
+                    newest = _last_commit_touching(target)
+                    if newest is None or newest == commit:
+                        continue
+                    if _is_ancestor(newest, commit) is False:
+                        problems.append(
+                            f"index.xml pins {commit[:8]} but {target} changed in "
+                            f"{newest[:8]} — ReaPack clients would install the older "
+                            "script; update the commit attribute with the sources"
+                        )
+    return problems
 
 
 def check_index(path: Path) -> list[str]:
@@ -106,6 +199,8 @@ def check_index(path: Path) -> list[str]:
             f"commit {commit[:8]} does not exist in this repository — every <source> "
             "URL would 404 for ReaPack clients (regenerate the index at release time)"
         )
+
+    problems.extend(_staleness_problems(root, commit))
 
     for category in _findall(root, "category"):
         # The published format only has <reapack> packages inside a category;

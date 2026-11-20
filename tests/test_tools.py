@@ -11,6 +11,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -70,6 +72,20 @@ class TestDockerInstallGuard:
         assert "mir_eval" in text and "resampy" in text
         assert "HOST=0.0.0.0" in text
 
+    def test_cpu_index_check_resolves_docker_build_arg_default(self) -> None:
+        guard = _load("check_docker_install")
+        text = (ROOT / "Dockerfile").read_text()
+        assert guard._has_cpu_torch_install(text)
+        assert not guard._has_cpu_torch_install(
+            text.replace(
+                "ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu",
+                "ARG TORCH_INDEX_URL=https://pypi.org/simple",
+            )
+        )
+        assert not guard._has_cpu_torch_install(
+            text.replace('--index-url "$TORCH_INDEX_URL"', "--index-url https://pypi.org/simple")
+        )
+
     def test_in_process_main_and_failure_paths(self, tmp_path, monkeypatch) -> None:
         guard = _load("check_docker_install")
         assert guard.main() == 0
@@ -113,6 +129,36 @@ class TestEnvExampleGuard:
         env_file.write_text("NEVER_USED_VAR_XYZ=1\n")
         monkeypatch.setattr(guard, "ENV_FILE", env_file)
         assert guard.main() == 1
+
+
+class TestLockDependencyClosure:
+    @pytest.mark.parametrize("mode", [[], ["--verify"]], ids=["exact", "verify"])
+    def test_rejects_an_absent_required_transitive_dependency(
+        self, tmp_path, monkeypatch, capsys, mode
+    ) -> None:
+        guard = _load("check_lockfile")
+        root = tmp_path / "audit_root-1.0.dist-info"
+        root.mkdir()
+        (root / "METADATA").write_text(
+            "Name: audit-root\nVersion: 1.0\nRequires-Dist: audit-missing>=1\n"
+        )
+        lock = tmp_path / "requirements.lock"
+        lock.write_text("audit-root==1.0\n")
+        monkeypatch.setattr(guard, "LOCK", lock)
+        monkeypatch.setattr(guard, "declared_requirements", lambda: {"audit-root": "1.0"})
+        monkeypatch.setattr(
+            guard.metadata, "distributions", lambda: [guard.metadata.Distribution.at(root)]
+        )
+        assert guard.main(mode) == 1
+        assert "audit-missing is required but not installed" in capsys.readouterr().err
+
+        # Inactive markers, including unselected extras, must not become required.
+        (root / "METADATA").write_text(
+            "Name: audit-root\nVersion: 1.0\n"
+            'Requires-Dist: audit-optional; extra == "example"\n'
+            'Requires-Dist: audit-inactive; python_version < "3.0"\n'
+        )
+        assert guard.main(mode) == 0
 
 
 class TestValidationSuite:
@@ -168,3 +214,200 @@ class TestReaPackIndex:
         assert "<reaper>" in joined or "no <reapack> packages" in joined
         assert guard.main([str(ROOT / "index.xml")]) == 0
         assert guard.main([str(legacy)]) == 1
+
+
+# ---------------------------------------------------------------------------
+# tools/check_vulns.py  (advisory identity matching)
+#
+# An advisory answers to several identifiers. pip-audit collapses records that
+# share an alias set and keeps whichever one the advisory server returned
+# first, so the reported `id` flips between PYSEC-*, GHSA-* and CVE-* between
+# refreshes without the vulnerability changing. The gate must therefore match
+# the ledger on any identifier, or a rename fails the build for an advisory a
+# reviewer already accepted (this is what happened on 2026-11-18).
+# ---------------------------------------------------------------------------
+
+
+class TestVulnGateAcceptsAnyIdentifier:
+    @staticmethod
+    def _ledger(tmp_path, *lines: str):
+        path = tmp_path / "audit-ignore"
+        path.write_text("\n".join(lines) + "\n")
+        return path
+
+    @staticmethod
+    def _deps(*vulns: dict) -> list[dict]:
+        return [{"name": "torch", "version": "2.5.1", "vulns": list(vulns)}]
+
+    def test_advisory_reported_as_ghsa_is_accepted_under_its_pysec_entry(
+        self, tmp_path, monkeypatch, capsys
+    ) -> None:
+        guard = _load("check_vulns")
+        ledger = self._ledger(
+            tmp_path, "PYSEC-2025-191  2099-01-01  torch training path, not used here"
+        )
+        monkeypatch.setattr(
+            guard,
+            "audit",
+            lambda: self._deps(
+                {
+                    "id": "GHSA-3749-ghw9-m3mg",
+                    "aliases": ["CVE-2025-2953", "PYSEC-2025-191"],
+                    "fix_versions": [],
+                }
+            ),
+        )
+        assert guard.main([], ignore_path=ledger) == 0
+        assert "No unaccepted vulnerabilities" in capsys.readouterr().out
+
+    def test_advisory_reported_as_cve_is_accepted_under_its_ghsa_entry(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        guard = _load("check_vulns")
+        ledger = self._ledger(tmp_path, "GHSA-xmj3-9gf7-h52w  2099-01-01  dev tool")
+        monkeypatch.setattr(
+            guard,
+            "audit",
+            lambda: self._deps(
+                {
+                    "id": "CVE-2026-114134",
+                    "aliases": ["GHSA-xmj3-9gf7-h52w"],
+                }
+            ),
+        )
+        assert guard.main([], ignore_path=ledger) == 0
+
+    def test_unaccepted_advisory_is_reported_with_its_aliases(
+        self, tmp_path, monkeypatch, capsys
+    ) -> None:
+        """A new finding must fail, and the message must show the other names."""
+        guard = _load("check_vulns")
+        ledger = self._ledger(tmp_path)  # empty ledger
+        monkeypatch.setattr(
+            guard,
+            "audit",
+            lambda: self._deps(
+                {
+                    "id": "GHSA-aaaa-bbbb-cccc",
+                    "aliases": ["CVE-2099-0001", "PYSEC-2099-1"],
+                }
+            ),
+        )
+        assert guard.main([], ignore_path=ledger) == 1
+        err = capsys.readouterr().err
+        assert "GHSA-aaaa-bbbb-cccc" in err
+        assert "CVE-2099-0001" in err and "PYSEC-2099-1" in err
+
+    def test_expiry_is_enforced_on_the_matched_identifier(
+        self, tmp_path, monkeypatch, capsys
+    ) -> None:
+        guard = _load("check_vulns")
+        ledger = self._ledger(tmp_path, "PYSEC-2020-1  2020-01-01  stale acceptance")
+        monkeypatch.setattr(
+            guard,
+            "audit",
+            lambda: self._deps({"id": "GHSA-zzzz-yyyy-xxxx", "aliases": ["PYSEC-2020-1"]}),
+        )
+        assert guard.main([], ignore_path=ledger) == 1
+        err = capsys.readouterr().err
+        assert "EXPIRED" in err and "PYSEC-2020-1" in err
+
+    def test_advisory_without_aliases_still_matches_by_id(self, tmp_path, monkeypatch) -> None:
+        guard = _load("check_vulns")
+        ledger = self._ledger(tmp_path, "PYSEC-2099-7  2099-01-01  no aliases reported")
+        monkeypatch.setattr(guard, "audit", lambda: self._deps({"id": "PYSEC-2099-7"}))
+        assert guard.main([], ignore_path=ledger) == 0
+
+    def test_advisory_ids_are_deduplicated_and_ordered(self) -> None:
+        guard = _load("check_vulns")
+        vuln = {
+            "id": "GHSA-1",
+            "aliases": ["PYSEC-1", "GHSA-1", "CVE-1", "PYSEC-1"],
+        }
+        assert guard.advisory_ids(vuln) == ["GHSA-1", "PYSEC-1", "CVE-1"]
+        assert guard.describe(vuln) == "GHSA-1 (aliases: PYSEC-1, CVE-1)"
+        assert guard.describe({"id": "PYSEC-2"}) == "PYSEC-2"
+
+
+class TestVulnGateScanFailures:
+    """An unreachable advisory service must not look like a vulnerable package."""
+
+    def test_audit_retries_a_transient_failure(self, monkeypatch) -> None:
+        guard = _load("check_vulns")
+        attempts: list[int] = []
+        slept: list[float] = []
+
+        def flaky() -> list[dict]:
+            attempts.append(1)
+            if len(attempts) < 3:
+                raise guard.ScanUnavailableError("osv: 429 Too Many Requests")
+            return [{"name": "torch", "version": "2.5.1", "vulns": []}]
+
+        monkeypatch.setattr(guard, "_audit_once", flaky)
+        monkeypatch.setattr(guard.time, "sleep", slept.append)
+
+        deps = guard.audit(attempts=3, delay=0.01)
+        assert deps and len(attempts) == 3
+        assert len(slept) == 2, "must back off between attempts"
+
+    def test_audit_gives_up_with_scan_unavailable(self, monkeypatch) -> None:
+        guard = _load("check_vulns")
+        monkeypatch.setattr(
+            guard,
+            "_audit_once",
+            lambda: (_ for _ in ()).throw(guard.ScanUnavailableError("timeout")),
+        )
+        monkeypatch.setattr(guard.time, "sleep", lambda _delay: None)
+        with pytest.raises(guard.ScanUnavailableError):
+            guard.audit(attempts=2, delay=0)
+
+    def test_main_reports_scan_failure_as_exit_2_not_a_finding(
+        self, tmp_path, monkeypatch, capsys
+    ) -> None:
+        guard = _load("check_vulns")
+        ledger = tmp_path / "audit-ignore"
+        ledger.write_text("PYSEC-2099-1  2099-01-01  unrelated\n")
+        monkeypatch.setattr(
+            guard,
+            "audit",
+            lambda *a, **k: (_ for _ in ()).throw(guard.ScanUnavailableError("boom")),
+        )
+        code = guard.main([], ignore_path=ledger)
+        captured = capsys.readouterr()
+        assert code == 2, "scan failure must be distinguishable from a finding"
+        assert "NOT a finding" in captured.err
+        assert "::error" in captured.out
+        assert "unaccepted vulnerabilities" not in captured.err
+
+
+class TestReaPackIndexFreshness:
+    """A pin that predates the shipped script is a silent downgrade for users."""
+
+    def test_pin_older_than_the_published_sources_is_rejected(self, tmp_path) -> None:
+        import xml.etree.ElementTree as ET
+
+        guard = _load("check_index")
+        if guard._is_shallow():
+            pytest.skip("the freshness check needs full history")
+
+        newest = guard._last_commit_touching("reaper/TabAgent.lua")
+        assert newest, "expected a commit history for reaper/TabAgent.lua"
+        parent = subprocess.run(
+            ["git", "-C", str(ROOT), "rev-parse", f"{newest}^"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+        text = (ROOT / "index.xml").read_text(encoding="utf-8")
+        pinned = ET.fromstring(text).get("commit")
+        assert pinned
+        stale = tmp_path / "index.xml"
+        stale.write_text(text.replace(pinned, parent), encoding="utf-8")
+
+        problems = guard.check_index(stale)
+        assert any("changed in" in p for p in problems), problems
+
+    def test_current_index_matches_the_sources(self) -> None:
+        guard = _load("check_index")
+        assert guard.check_index(ROOT / "index.xml") == []

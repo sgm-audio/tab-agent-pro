@@ -64,17 +64,29 @@ print("output:", fmt(tab))
 print("annotated technique:", tab[1]["technique"])
 
 # ---------------------------------------------------------------------------
-show("3. Per-note drops are invisible in the exported JSON")
+show("3. Per-note drops are reported in the tab, JSON and stderr")
 tab = agent.generate_tab([note(64, 0.0), note(30, 0.1)], technique_sensitivity=0.7)
 print("output notes:", fmt(tab))
 print("last_skipped_notes:", agent.last_skipped_notes)
 with tempfile.NamedTemporaryFile("w+", suffix=".json", delete=False) as fh:
     path = fh.name
-main.export_tab_to_json(tab, path, instrument="Guitar", num_strings=6)
+# Mirror the CLI (main._export_cli_tab): the dropped-note list is passed in, not
+# read from the agent by the exporter. An earlier version of this probe omitted
+# the argument and "reproduced" a defect that no longer exists.
+main.export_tab_to_json(
+    tab,
+    path,
+    instrument="Guitar",
+    num_strings=6,
+    skipped_notes=agent.last_skipped_events,
+)
 payload = json.load(open(path))
 print("JSON keys:", sorted(payload))
-print("JSON mentions the dropped pitch 30?", "30" in json.dumps(payload["tablature"]))
-print("JSON has a skipped/ warning field?", any(k for k in payload if "skip" in k or "warn" in k))
+print("skipped_notes in JSON:", payload.get("skipped_notes"))
+print(
+    "dropped pitch 30 recorded?",
+    any(e.get("pitch") == 30 for e in payload.get("skipped_notes") or []),
+)
 os.unlink(path)
 
 # ---------------------------------------------------------------------------
