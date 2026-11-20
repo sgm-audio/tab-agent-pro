@@ -327,11 +327,15 @@ def _process_audio_impl(
         is_bass = instrument_type in BASS_TARGETS
         if not is_bass:
             guitar_stems = splitter.process_guitars(stems["guitar"])
-            processed_stems = {
-                "lead": guitar_stems["lead"],
-                "rhythm_l": guitar_stems["left"],
-                "rhythm_r": guitar_stems["right"],
-            }
+            processed_stems = {"lead": guitar_stems["lead"]}
+            if guitar_stems.get("stereo", False):
+                processed_stems["rhythm_l"] = guitar_stems["left"]
+                processed_stems["rhythm_r"] = guitar_stems["right"]
+            else:
+                progress(
+                    0.3,
+                    desc="🎸 Guitar stem is mono — lead only, no L/R rhythm to split.",
+                )
         else:  # Bass
             bass_clean = splitter.process_bass(stems["bass"])
             processed_stems = {"bass": bass_clean}

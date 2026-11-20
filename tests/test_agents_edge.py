@@ -561,7 +561,11 @@ class TestSplitterAgentSpatialProcessingEdgeCases(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_process_guitars_mono_does_not_crash(self) -> None:
-        """Mono file is duplicated to stereo automatically."""
+        """A mono file yields a lead stem and no invented rhythm stems.
+
+        The old code duplicated the channel to fake stereo, which made
+        `rhythm_l == rhythm_r == 0.2 * mid`: the centre signal at -14 dB, twice.
+        """
         sr = 44100
         import numpy as np
 
@@ -570,9 +574,10 @@ class TestSplitterAgentSpatialProcessingEdgeCases(unittest.TestCase):
         sf = __import__("soundfile")
         sf.write(path, mono, sr)
         result = self.splitter.process_guitars(path)
-        for k in ("lead", "left", "right"):
-            assert k in result
-            assert os.path.exists(result[k])
+        assert set(result) == {"lead", "left", "right", "stereo"}
+        assert result["stereo"] is False
+        assert result["left"] is None and result["right"] is None
+        assert os.path.exists(result["lead"])
 
     def test_process_bass_mono_does_not_crash(self) -> None:
         """Mono bass input is processed correctly."""

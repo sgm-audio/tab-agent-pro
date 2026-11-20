@@ -239,39 +239,175 @@ class SplitterAgent:
                 raise ValueError(f"Demucs stem is missing or unreadable: {path}") from exc
         return stems
 
+    # ── guitar spatial separation ────────────────────────────────────────
+    #
+    # A stereo pair carries exactly two channels, so a single algebraic
+    # mid/side split can only ever recover *two* signals. The previous code
+    # used ``L - 0.8*mid`` and ``R - 0.8*mid``, which is not a side signal at
+    # all: it is the same centre content at -14 dB with opposite polarity on
+    # each side (correlation -0.92), i.e. "rhythm L/R" was the lead inverted.
+    # A correct ``L - mid``/``R - mid`` pair is worse, because those are
+    # *exactly* the same signal (correlation -1.0), so both rhythm tracks would
+    # carry identical notes and every rhythm note would be counted twice.
+    #
+    # Real left/right evidence only appears *per frequency band*: in a band
+    # where the left channel dominates, that band belongs to the left-panned
+    # instrument, and vice versa. Measuring that dominance in the STFT and
+    # scaling the complex spectrum by it separates two hard-panned rhythm
+    # parts from a centre lead, while leaving genuinely centred material in the
+    # lead stem instead of duplicating it. See process_guitars for details.
+
+    # Time-frequency resolution for the panning estimate. 2048/512 (~93 ms /
+    # 23 ms) resolves neighbouring low guitar partials while still tracking
+    # individual attacks.
+    PAN_N_FFT = 2048
+    PAN_HOP = 512
+    # Below this much stereo difference (RMS dB) the pair is not usable as a
+    # stereo source: either it is mono, or the two channels are identical.
+    # Must match the threshold used by analyze_stereo().
+    STEREO_EVIDENCE_DB = -40.0
+
+    @staticmethod
+    def stereo_evidence_db(left, right) -> float:
+        """
+        How much stereo information this pair carries, in dB.
+
+        The mid/side ratio: 0 dB means the side signal is as loud as the mid
+        (wide stereo), -inf dB means the channels are identical (mono). A
+        duplicated-channel file and a true mono file both score -inf, which is
+        exactly the case where a "left" and a "right" guitar cannot exist.
+        """
+        left = np.asarray(left, dtype=np.float64)
+        right = np.asarray(right, dtype=np.float64)
+        mid = (left + right) / 2.0
+        side = (left - right) / 2.0
+        mid_rms = float(np.sqrt(np.mean(mid**2)))
+        side_rms = float(np.sqrt(np.mean(side**2)))
+        if mid_rms <= 1e-12 and side_rms <= 1e-12:
+            return float("-inf")
+        if side_rms <= 1e-12:
+            return float("-inf")
+        if mid_rms <= 1e-12:
+            return float("inf")
+        return 20.0 * float(np.log10(side_rms / mid_rms))
+
+    def analyze_stereo(self, guitar_stem_path) -> dict:
+        """
+        Describe the stereo field of a guitar stem without writing anything.
+
+        Used to decide, before doing any work, whether left/right rhythm parts
+        can be recovered at all, and to report that decision to the user.
+        """
+        y, sr = librosa.load(guitar_stem_path, mono=False, sr=None)
+        if y.ndim == 1:
+            return {"channels": 1, "evidence_db": float("-inf"), "stereo": False}
+        evidence = self.stereo_evidence_db(y[0], y[1])
+        return {
+            "channels": 2,
+            "evidence_db": evidence,
+            "stereo": evidence > self.STEREO_EVIDENCE_DB,
+        }
+
+    def _separate_panned(self, left: np.ndarray, right: np.ndarray) -> tuple:
+        """
+        Split a stereo guitar pair into centre, left and right components.
+
+        For every time-frequency bin the two channels are compared:
+
+        * ``|L|^2 > |R|^2`` -> the band is left-panned: it goes to the left
+          stem, scaled by ``p``, and is removed from the centre.
+        * ``|R|^2 > |L|^2`` -> symmetrical, it goes to the right stem.
+        * equal energy -> ``p == 0``: the band is centred and stays whole in
+          the lead stem.
+
+        The centre stem is ``mid * (1 - |p|)``, so the three stems sum back to
+        the original pair with no gain added: a bin is never duplicated into
+        two stems and never silently dropped. Returns three mono signals, all
+        exactly ``len(left)`` samples.
+        """
+        n_fft = self.PAN_N_FFT
+        hop = self.PAN_HOP
+        length = len(left)
+
+        left_stft = librosa.stft(left, n_fft=n_fft, hop_length=hop)
+        right_stft = librosa.stft(right, n_fft=n_fft, hop_length=hop)
+
+        power_left = np.abs(left_stft) ** 2
+        power_right = np.abs(right_stft) ** 2
+        # Panning coefficient in [-1, 1]: -1 hard right, 0 centre, +1 hard left.
+        # The epsilon keeps a silent bin at 0 (centre) instead of 0/0.
+        pan = (power_left - power_right) / (power_left + power_right + 1e-12)
+
+        left_only = np.maximum(pan, 0.0)
+        right_only = np.maximum(-pan, 0.0)
+        centre = 1.0 - np.abs(pan)
+
+        def back(magnitude_weights: np.ndarray, source: np.ndarray) -> np.ndarray:
+            return librosa.istft(source * magnitude_weights, hop_length=hop, length=length)
+
+        centre_signal = back(centre, (left_stft + right_stft) / 2.0)
+        left_signal = back(left_only, left_stft)
+        right_signal = back(right_only, right_stft)
+        return centre_signal, left_signal, right_signal
+
     def process_guitars(self, guitar_stem_path):
         """
-        Process guitar stem using mid-side technique to separate lead/rhythm.
+        Split the guitar stem into lead (centre) and rhythm L/R (panned).
 
-        Mid-side processing:
-        - Mid (center): Lead guitar (typically center-panned)
-        - Side (L/R): Rhythm guitars (typically panned left/right)
+        Returns a dict with ``lead``, ``left``, ``right`` and ``stereo``. When
+        the source carries no stereo information — a genuine mono file, or the
+        duplicated-channel case this pipeline used to synthesise — there is no
+        left/right rhythm to recover, so ``left`` and ``right`` are ``None``
+        and ``stereo`` is False. Callers must not transcribe those, or they
+        will report the same notes two extra times under different names.
+
+        All returned signals are mono, at the source sample rate, and exactly
+        as long as the input.
         """
         y, sr = librosa.load(guitar_stem_path, mono=False, sr=None)
 
         if y.ndim == 1:
-            # Mono file - duplicate to stereo
-            y = np.vstack((y, y))
+            left = right = np.asarray(y, dtype=np.float64)
+            has_stereo = False
+        else:
+            left, right = np.asarray(y[0], np.float64), np.asarray(y[1], np.float64)
+            has_stereo = self.stereo_evidence_db(left, right) > self.STEREO_EVIDENCE_DB
 
-        left, right = y[0], y[1]
-        mid = (left + right) / 2  # Center content
-
-        # Center kill factor (0.8 = remove 80% of center from sides)
-        # Increase to 0.9 for more aggressive separation
-        center_kill_factor = 0.8
-        rhythm_l = left - (mid * center_kill_factor)
-        rhythm_r = right - (mid * center_kill_factor)
-
-        # Export processed stems
         lead_path = f"{self.output_dir}/processed_lead.wav"
         rhythm_l_path = f"{self.output_dir}/processed_rhythm_L.wav"
         rhythm_r_path = f"{self.output_dir}/processed_rhythm_R.wav"
 
-        sf.write(lead_path, mid, sr)
-        sf.write(rhythm_l_path, rhythm_l, sr)
-        sf.write(rhythm_r_path, rhythm_r, sr)
+        if not has_stereo:
+            lead = (left + right) / 2.0
+            sf.write(lead_path, lead, sr)
+            self.log.info(
+                "guitar_separation",
+                mode="mono",
+                reason="no stereo information; left/right rhythm not separable",
+            )
+            return {
+                "lead": lead_path,
+                "left": None,
+                "right": None,
+                "stereo": False,
+            }
 
-        return {"lead": lead_path, "left": rhythm_l_path, "right": rhythm_r_path}
+        centre, left_signal, right_signal = self._separate_panned(left, right)
+
+        sf.write(lead_path, centre, sr)
+        sf.write(rhythm_l_path, left_signal, sr)
+        sf.write(rhythm_r_path, right_signal, sr)
+        self.log.info(
+            "guitar_separation",
+            mode="stereo",
+            evidence_db=round(self.stereo_evidence_db(left, right), 1),
+        )
+        return {
+            "lead": lead_path,
+            "left": rhythm_l_path,
+            "right": rhythm_r_path,
+            "stereo": True,
+        }
 
     def process_bass(self, bass_stem_path):
         """

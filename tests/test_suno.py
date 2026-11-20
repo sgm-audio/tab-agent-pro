@@ -13,6 +13,7 @@ import unittest
 
 import note_seq
 import numpy as np
+import pytest
 import soundfile as sf
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -141,6 +142,31 @@ class TestSunoAudioPreprocessor(unittest.TestCase):
         filtered = self.preprocessor._highpass_filter(rumble, sr)
         gain_db = 20 * np.log10(np.sqrt(np.mean(filtered**2)) / np.sqrt(np.mean(rumble**2)))
         assert gain_db < -6.0, f"20 Hz rumble only lost {-gain_db:.2f} dB"
+
+    def test_highpass_documented_attenuation_is_measured_through_filtfilt(self) -> None:
+        """The figures in the docstring must match what actually runs.
+
+        `_highpass_filter` uses `filtfilt`, which applies the Butterworth
+        forward *and* backward, so attenuation doubles in dB. Two earlier
+        versions of this review quoted `freqz` figures (single pass) and
+        understated the defect by ~2x. This pins the real numbers.
+        """
+        sr = 22050
+        t = np.linspace(0, 1, sr, endpoint=False)
+
+        def attenuation(cutoff, freq):
+            tone = np.sin(2 * np.pi * freq * t)
+            out = self.preprocessor._highpass_filter(tone, sr, cutoff=cutoff)
+            return 20 * np.log10(np.sqrt(np.mean(out**2)) / np.sqrt(np.mean(tone**2)))
+
+        # The old 40 Hz cutoff: B0 is a full octave-and-a-half down, not 9.5 dB.
+        assert attenuation(40, 30.87) == pytest.approx(-18.9, abs=0.5)
+        assert attenuation(40, 32.70) == pytest.approx(-15.5, abs=0.5)
+        assert attenuation(40, 41.20) == pytest.approx(-5.2, abs=0.5)
+        # The shipped 23 Hz cutoff:
+        assert attenuation(23, 30.87) == pytest.approx(-0.9, abs=0.2)
+        assert attenuation(23, 41.20) == pytest.approx(-0.13, abs=0.1)
+        assert attenuation(23, 20.0) == pytest.approx(-12.2, abs=0.5)
 
     def test_spectral_gate_preserves_signal_length(self) -> None:
         """An unset `length=` drops the partial final frame.

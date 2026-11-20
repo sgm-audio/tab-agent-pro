@@ -578,31 +578,44 @@ def main(argv: list[str] | None = None) -> int:
         lead_notes = suno_postprocessor.process(lead_notes, is_suno, suno_metrics)
         write_midi(lead_notes, "lead_guitar")
 
-        # Transcribe rhythm guitar (left channel)
-        rhythm_l_notes_raw = ear.transcribe_stem(
-            guitar_stems["left"],
-            target="Rhythm Guitar L",
-            onset_threshold=onset_threshold,
-            frame_threshold=frame_threshold,
-            min_pitch=guitar_min_pitch,
-            max_pitch=guitar_max_pitch,
-        )
-        rhythm_l_notes = ear.humanize_and_clean(rhythm_l_notes_raw, is_bass=False)
-        rhythm_l_notes = suno_postprocessor.process(rhythm_l_notes, is_suno, suno_metrics)
-        write_midi(rhythm_l_notes, "rhythm_L")
+        # Rhythm parts only exist when the stem actually carried stereo
+        # information. When it did not, `left`/`right` are None and there is
+        # nothing to transcribe: pretending otherwise is what produced three
+        # copies of one guitar under three names.
+        if not guitar_stems.get("stereo", False):
+            print(
+                "No stereo information in the guitar stem — lead only. "
+                "Left/right rhythm parts cannot be separated from a mono source.",
+                file=sys.stderr,
+            )
+            rhythm_l_notes: list = []
+            rhythm_r_notes: list = []
+        else:
+            # Transcribe rhythm guitar (left channel)
+            rhythm_l_notes_raw = ear.transcribe_stem(
+                guitar_stems["left"],
+                target="Rhythm Guitar L",
+                onset_threshold=onset_threshold,
+                frame_threshold=frame_threshold,
+                min_pitch=guitar_min_pitch,
+                max_pitch=guitar_max_pitch,
+            )
+            rhythm_l_notes = ear.humanize_and_clean(rhythm_l_notes_raw, is_bass=False)
+            rhythm_l_notes = suno_postprocessor.process(rhythm_l_notes, is_suno, suno_metrics)
+            write_midi(rhythm_l_notes, "rhythm_L")
 
-        # Transcribe rhythm guitar (right channel)
-        rhythm_r_notes_raw = ear.transcribe_stem(
-            guitar_stems["right"],
-            target="Rhythm Guitar R",
-            onset_threshold=onset_threshold,
-            frame_threshold=frame_threshold,
-            min_pitch=guitar_min_pitch,
-            max_pitch=guitar_max_pitch,
-        )
-        rhythm_r_notes = ear.humanize_and_clean(rhythm_r_notes_raw, is_bass=False)
-        rhythm_r_notes = suno_postprocessor.process(rhythm_r_notes, is_suno, suno_metrics)
-        write_midi(rhythm_r_notes, "rhythm_R")
+            # Transcribe rhythm guitar (right channel)
+            rhythm_r_notes_raw = ear.transcribe_stem(
+                guitar_stems["right"],
+                target="Rhythm Guitar R",
+                onset_threshold=onset_threshold,
+                frame_threshold=frame_threshold,
+                min_pitch=guitar_min_pitch,
+                max_pitch=guitar_max_pitch,
+            )
+            rhythm_r_notes = ear.humanize_and_clean(rhythm_r_notes_raw, is_bass=False)
+            rhythm_r_notes = suno_postprocessor.process(rhythm_r_notes, is_suno, suno_metrics)
+            write_midi(rhythm_r_notes, "rhythm_R")
 
         # Guitar tablature
         guitar_agent = TabAgent(
@@ -611,11 +624,10 @@ def main(argv: list[str] | None = None) -> int:
             prefer_low_strings=guitar_prefer_low,
         )
 
-        guitar_tracks = {
-            "lead_guitar": ("Lead Guitar", lead_notes),
-            "rhythm_L": ("Rhythm Guitar L", rhythm_l_notes),
-            "rhythm_R": ("Rhythm Guitar R", rhythm_r_notes),
-        }
+        guitar_tracks = {"lead_guitar": ("Lead Guitar", lead_notes)}
+        if guitar_stems.get("stereo", False):
+            guitar_tracks["rhythm_L"] = ("Rhythm Guitar L", rhythm_l_notes)
+            guitar_tracks["rhythm_R"] = ("Rhythm Guitar R", rhythm_r_notes)
         for suffix, (label, notes) in guitar_tracks.items():
             note_count += len(notes)
             _export_cli_tab(

@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+import pytest
 import soundfile as sf
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -35,31 +36,78 @@ class TestSplitterAgent(unittest.TestCase):
         """Output directory is created on init."""
         assert os.path.isdir(self.splitter.output_dir)
 
-    def test_center_kill_factor_reduces_center(self) -> None:
-        """Mid-side processing isolates centre from sides."""
+    def test_centred_signal_is_not_split_into_false_rhythm_parts(self) -> None:
+        """A hard-centred guitar has no left or right part to recover.
+
+        The old mid-side "centre kill" produced two rhythm stems by subtracting
+        0.8*mid from each channel, which is the centre content at -14 dB with
+        opposite polarity on each side — i.e. the lead, inverted, twice. A
+        centred source now yields a lead stem and no rhythm stems at all.
+        """
         sr = 44100
-        duration = 1.0
-        t = np.linspace(0, duration, int(sr * duration), endpoint=False)
-
-        # Create stereo: same signal in both channels (hard centre)
+        t = np.linspace(0, 1.0, sr, endpoint=False)
         mono_signal = 0.5 * np.sin(2 * np.pi * 440 * t)
-        stereo = np.vstack((mono_signal, mono_signal))
+        stereo = np.column_stack((mono_signal, mono_signal))
+        stereo_path = os.path.join(self.tmpdir, "centred.wav")
+        sf.write(stereo_path, stereo, sr)
 
-        # Write temp stereo file
-        stereo_path = os.path.join(self.tmpdir, "stereo_test.wav")
-        sf.write(stereo_path, stereo.T, sr)
-
-        # Process
         result = self.splitter.process_guitars(stereo_path)
 
-        # Read back processed files
-        lead, _lead_sr = sf.read(result["lead"])
+        assert result["stereo"] is False
+        assert result["left"] is None and result["right"] is None
+        lead, _ = sf.read(result["lead"])
+        assert np.max(np.abs(lead)) == pytest.approx(0.5, abs=1e-3)
+
+    def test_panned_parts_are_separated_not_inverted(self) -> None:
+        """Left/right rhythm parts are recovered from their own channels.
+
+        Three distinct tones — one centred, one left-panned, one right-panned —
+        must end up in three different stems. This is the property the old
+        algebra could not provide: `L - mid` and `R - mid` are the same signal
+        with opposite sign, so the left and right stems were identical.
+        """
+        sr = 22050
+        t = np.arange(sr) / sr
+        centre = 0.20 * np.sin(2 * np.pi * 440 * t)
+        left_part = 0.15 * np.sin(2 * np.pi * 330 * t)
+        right_part = 0.15 * np.sin(2 * np.pi * 550 * t)
+        stereo = np.column_stack((centre + 0.9 * left_part, centre + 0.9 * right_part))
+        path = os.path.join(self.tmpdir, "panned.wav")
+        sf.write(path, stereo, sr, subtype="FLOAT")
+
+        result = self.splitter.process_guitars(path)
+        assert result["stereo"] is True
+
+        def magnitude(signal, freq):
+            spectrum = np.abs(np.fft.rfft(signal))
+            freqs = np.fft.rfftfreq(len(signal), 1 / sr)
+            return float(spectrum[np.argmin(np.abs(freqs - freq))])
+
+        lead, _ = sf.read(result["lead"])
         rhythm_l, _ = sf.read(result["left"])
         rhythm_r, _ = sf.read(result["right"])
 
-        # Lead (mid) should be stronger than rhythm sides (after centre kill)
-        assert np.max(np.abs(lead)) > np.max(np.abs(rhythm_l))
-        assert np.max(np.abs(lead)) > np.max(np.abs(rhythm_r))
+        # Each stem answers to its own pitch far more strongly than to the
+        # other two (measured ~47 dB of separation on this mix).
+        assert magnitude(lead, 440) > 100 * max(magnitude(lead, 330), magnitude(lead, 550))
+        assert magnitude(rhythm_l, 330) > 100 * max(
+            magnitude(rhythm_l, 440), magnitude(rhythm_l, 550)
+        )
+        assert magnitude(rhythm_r, 550) > 100 * max(
+            magnitude(rhythm_r, 440), magnitude(rhythm_r, 330)
+        )
+
+    def test_mono_source_is_reported_not_faked(self) -> None:
+        """A mono file must not produce rhythm stems from nothing."""
+        sr = 22050
+        mono = (0.3 * np.sin(2 * np.pi * 220 * np.arange(sr) / sr)).astype(np.float32)
+        path = os.path.join(self.tmpdir, "mono.wav")
+        sf.write(path, mono, sr)
+
+        result = self.splitter.process_guitars(path)
+        assert result["stereo"] is False
+        assert result["left"] is None and result["right"] is None
+        assert os.path.exists(result["lead"])
 
     def test_process_guitars_returns_correct_keys(self) -> None:
         """process_guitars returns dict with lead, left, right keys."""
@@ -69,11 +117,10 @@ class TestSplitterAgent(unittest.TestCase):
         sf.write(stereo_path, stereo.T, sr)
 
         result = self.splitter.process_guitars(stereo_path)
-        assert "lead" in result
-        assert "left" in result
-        assert "right" in result
-        for path in result.values():
-            assert os.path.exists(path)
+        assert set(result) == {"lead", "left", "right", "stereo"}
+        assert result["stereo"] is True
+        for key in ("lead", "left", "right"):
+            assert os.path.exists(result[key])
 
     def test_process_bass_returns_path(self) -> None:
         """process_bass returns a valid file path."""
