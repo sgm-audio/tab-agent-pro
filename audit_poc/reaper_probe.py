@@ -128,23 +128,33 @@ def factory(lines, delay=0.0):
     return _popen
 
 
-print("=== A. undo block spans idle cycles + project switch ===")
-lua = setup(
-    {"install_path": FAKE_INSTALL, "output_dir": OUTPUT_DIR},
-    factory(["l1\n", "l2\n"]),
-)
-print("script body          :", events(lua))
-lua.globals().ACTIVE_PROJECT = "PROJECT-B"  # user switches project tab while it runs
-tick = 0
-while True:
-    cb = take_callback(lua)
-    if cb is None:
-        break
-    tick += 1
-    cb()
-    print(f"defer tick {tick}          :", events(lua))
-print("=> one Undo_BeginBlock, Undo_EndBlock only after", tick, "defer ticks")
-print("=> MIDI imported into:", [e for e in events(lua) if e.startswith("InsertMedia")])
+def run_to_completion(switch_project: bool) -> tuple[list[str], list[str], int]:
+    lua = setup(
+        {"install_path": FAKE_INSTALL, "output_dir": OUTPUT_DIR},
+        factory(["[tab-agent-midi] lead_guitar", "[tab-agent-midi] bass", "done"]),
+    )
+    body_events = events(lua)
+    if switch_project:
+        lua.globals().ACTIVE_PROJECT = "PROJECT-B"  # user switches tabs mid-run
+    ticks = 0
+    while True:
+        cb = take_callback(lua)
+        if cb is None:
+            break
+        ticks += 1
+        cb()
+    return body_events, events(lua), ticks
+
+
+print("=== A1. same project: where do the undo block and the import happen? ===")
+body, final, ticks = run_to_completion(switch_project=False)
+print("script body :", body)
+print(f"after {ticks} defer tick(s):", final)
+
+print("\n=== A2. project switched mid-run ===")
+body, final, ticks = run_to_completion(switch_project=True)
+print("script body :", body)
+print(f"after {ticks} defer tick(s):", final)
 
 print("\n=== B. read('*l') blocks the deferred callback ===")
 lua = setup({"install_path": FAKE_INSTALL}, factory(["late\n"], delay=3.0))

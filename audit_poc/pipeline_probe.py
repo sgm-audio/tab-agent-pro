@@ -67,13 +67,17 @@ with (
     stems = splitter.separate_stems(str(src))
 
 print("returned stems:", stems)
-print("all returned paths exist:", all(Path(p).exists() for p in stems.values()))
+exists = all(Path(p).exists() for p in stems.values())
+print("all returned paths exist:", exists)
 print("health says demucs is:", health.as_dict()["components"]["demucs"])
 try:
     splitter.process_guitars(stems["guitar"])
 except Exception as e:
     print("next stage raises:", type(e).__name__, str(e)[:80])
-print("=> the documented raw-audio fallback is NOT used: no exception was raised")
+# A working fallback returns *existing* files (copies of the mix) and marks demucs
+# unavailable; the old code returned constructed paths that did not exist.
+fallback_used = exists and health.as_dict()["components"]["demucs"] == "unavailable"
+print("=> documented raw-audio fallback used:", fallback_used)
 
 # ---------------------------------------------------------------------------
 print("\n=== B. zero notes => exit 0, 'Done', no artifacts ===")
